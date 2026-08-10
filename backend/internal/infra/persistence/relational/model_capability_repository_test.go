@@ -571,8 +571,8 @@ func TestReplaceProviderRoutesRenamesWebImagePublicIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := repo.ReplaceProviderRoutes(ctx, account.ProviderWeb, []model.Route{
-		{PublicID: "grok-imagine-image-lite", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImage, Enabled: true},
-		{PublicID: "grok-imagine-image-quality-lite", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-2.0", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-quality-2.0", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImage, Enabled: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +580,7 @@ func TestReplaceProviderRoutesRenamesWebImagePublicIDs(t *testing.T) {
 	if err := database.db.WithContext(ctx).Where("provider = ?", account.ProviderWeb).Order("upstream_model ASC").Find(&after).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != 2 || after[0].PublicID != "Web/grok-imagine-image-lite" || after[1].PublicID != "Web/grok-imagine-image-quality-lite" {
+	if len(after) != 2 || after[0].PublicID != "Web/grok-imagine-image-2.0" || after[1].PublicID != "Web/grok-imagine-image-quality-2.0" {
 		t.Fatalf("renamed routes = %#v", after)
 	}
 	beforeIDs := make(map[string]uint64, len(before))
@@ -747,13 +747,13 @@ func TestWebRediscoveryRestoresCatalogRouteDefaults(t *testing.T) {
 	}
 }
 
-func TestWebImageRediscoveryUsesLitePublicNames(t *testing.T) {
+func TestWebImageRediscoveryUsesVersionedPublicNames(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
 	repo := NewModelRepository(database)
 	tests := map[string]string{
-		"grok-imagine-image":         "Web/grok-imagine-image-lite",
-		"grok-imagine-image-quality": "Web/grok-imagine-image-quality-lite",
+		"grok-imagine-image":         "Web/grok-imagine-image-2.0",
+		"grok-imagine-image-quality": "Web/grok-imagine-image-quality-2.0",
 	}
 	for upstreamModel, publicID := range tests {
 		if err := repo.UpsertDiscovered(ctx, account.ProviderWeb, []string{upstreamModel}); err != nil {

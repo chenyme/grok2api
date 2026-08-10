@@ -304,7 +304,7 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	}
 	if protocolModel == "imagine-lite" {
 		if request.Streaming {
-			return invalidImageRequest("grok-imagine-image-lite 不支持 stream")
+			return invalidImageRequest("grok-imagine-image-2.0 不支持 stream")
 		}
 		if count > maxGeneratedImages {
 			return invalidImageRequest("n 不能超过 10")
@@ -469,7 +469,7 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 
 func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provider.ResponseResourceRequest, input openAIRequest, normalized normalizedChatInput, spec ModelSpec) (*provider.Response, error) {
 	if len(normalized.Attachments) > 0 {
-		return invalidImageRequest("grok-imagine-image-lite 只支持纯文本生图；附件请使用对应的图片编辑或对话模型")
+		return invalidImageRequest("grok-imagine-image-2.0 只支持纯文本生图；附件请使用对应的图片编辑或对话模型")
 	}
 	count := 1
 	format := "url"

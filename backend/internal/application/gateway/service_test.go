@@ -1863,8 +1863,8 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{
-		{PublicID: "grok-imagine-image-quality-lite", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: modeldomain.CapabilityImage, Enabled: true},
-		{PublicID: "grok-imagine-image-lite", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: modeldomain.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-quality-2.0", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: modeldomain.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-2.0", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: modeldomain.CapabilityImage, Enabled: true},
 		{PublicID: "grok-imagine-image-edit", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, Enabled: true},
 	}); err != nil {
 		t.Fatal(err)
@@ -1888,7 +1888,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 1)
 
 	result, err := service.GenerateImage(ctx, ImageGenerationInput{
-		RequestID: "req-image-stream", ClientKey: key, PublicModel: "grok-imagine-image-quality-lite",
+		RequestID: "req-image-stream", ClientKey: key, PublicModel: "grok-imagine-image-quality-2.0",
 		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url", Streaming: true, PartialImages: 1,
 	})
 	if err != nil {
@@ -1928,7 +1928,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	}
 
 	liteResult, err := service.GenerateImage(ctx, ImageGenerationInput{
-		RequestID: "req-image-lite", ClientKey: key, PublicModel: "grok-imagine-image-lite",
+		RequestID: "req-image-lite", ClientKey: key, PublicModel: "grok-imagine-image-2.0",
 		Prompt: "test", Count: 1, ResponseFormat: "url",
 	})
 	if err != nil {
@@ -1967,8 +1967,8 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	}
 
 	chatResult, err := service.CreateChatCompletion(ctx, Input{
-		RequestID: "req-image-lite-chat", ClientKey: key, PublicModel: "grok-imagine-image-lite",
-		Body: []byte(`{"model":"grok-imagine-image-lite","messages":[{"role":"user","content":"draw"}],"image_config":{"n":3}}`),
+		RequestID: "req-image-lite-chat", ClientKey: key, PublicModel: "grok-imagine-image-2.0",
+		Body: []byte(`{"model":"grok-imagine-image-2.0","messages":[{"role":"user","content":"draw"}],"image_config":{"n":3}}`),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -2022,7 +2022,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	attemptsBeforeFailure := len(adapter.Attempts())
 	adapter.FailWithEgress(infraegress.NewManager(relational.NewEgressRepository(database), testCipher(t)))
 	if _, err := service.GenerateImage(ctx, ImageGenerationInput{
-		RequestID: "req-image-failed", ClientKey: key, PublicModel: "grok-imagine-image-quality-lite",
+		RequestID: "req-image-failed", ClientKey: key, PublicModel: "grok-imagine-image-quality-2.0",
 		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url",
 	}); err == nil {
 		t.Fatal("expected image transport failure")

@@ -730,9 +730,9 @@ func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (s
 	case account.ProviderWeb:
 		switch upstreamModel {
 		case "grok-imagine-image":
-			return "grok-imagine-image-lite", model.CapabilityImage
+			return "grok-imagine-image-2.0", model.CapabilityImage
 		case "grok-imagine-image-quality":
-			return "grok-imagine-image-quality-lite", model.CapabilityImage
+			return "grok-imagine-image-quality-2.0", model.CapabilityImage
 		case "imagine-image-edit":
 			return "grok-imagine-image-edit", model.CapabilityImageEdit
 		case "grok-imagine-video":

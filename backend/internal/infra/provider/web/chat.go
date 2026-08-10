@@ -224,7 +224,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	spec, ok := Resolve(request.Model)
 	if ok && spec.ProtocolModel == "imagine-lite" && request.Operation == "chat" {
 		if len(tools.ResponseTools) > 0 {
-			return invalidImageRequest("grok-imagine-image-lite 不支持 tools")
+			return invalidImageRequest("grok-imagine-image-2.0 不支持 tools")
 		}
 		return a.forwardLiteChatCompletion(ctx, request, input, normalized, spec)
 	}

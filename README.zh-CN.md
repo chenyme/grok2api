@@ -258,8 +258,8 @@ Web 使用内置目录并按账号等级过滤；更高等级继承低等级模�
 | `grok-chat-auto` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-expert` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-heavy` | 对话 | Heavy | Chat Completions、Responses、Messages |
-| `grok-imagine-image-lite` | 图像 | Basic | Images Generations |
-| `grok-imagine-image-quality-lite` | 图像 | Basic | Images Generations |
+| `grok-imagine-image-2.0` | 图像、图像编辑 | Basic | Images Generations、Images Edits |
+| `grok-imagine-image-quality-2.0` | 图像、图像编辑 | Basic | Images Generations、Images Edits |
 | `grok-imagine-image-edit` | 图像编辑 | Super | Images Edits |
 | `grok-imagine-video` | 视频 | Super | Videos |
 

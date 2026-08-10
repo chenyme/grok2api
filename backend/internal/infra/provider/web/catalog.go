@@ -19,10 +19,15 @@ var catalog = []ModelSpec{
 	{PublicID: "grok-chat-auto", UpstreamModel: "grok-chat-auto", Capability: modeldomain.CapabilityChat, Mode: "auto", MinimumTier: account.WebTierSuper},
 	{PublicID: "grok-chat-expert", UpstreamModel: "grok-chat-expert", Capability: modeldomain.CapabilityChat, Mode: "expert", MinimumTier: account.WebTierSuper},
 	{PublicID: "grok-chat-heavy", UpstreamModel: "grok-chat-heavy", Capability: modeldomain.CapabilityChat, Mode: "heavy", MinimumTier: account.WebTierHeavy},
-	{PublicID: "grok-imagine-image-lite", UpstreamModel: "grok-imagine-image", ProtocolModel: "imagine-lite", Capability: modeldomain.CapabilityImage, Mode: "fast", MinimumTier: account.WebTierBasic},
-	// Image 2.0 is Grok Web Quality Mode (enable_pro=true). Free/basic accounts
-	// now receive a separate imagePro quota and can call this path directly.
-	{PublicID: "grok-imagine-image-quality-lite", UpstreamModel: "grok-imagine-image-quality", ProtocolModel: "imagine", Capability: modeldomain.CapabilityImage, MinimumTier: account.WebTierBasic},
+	// Image 2.0 public names distinguish Web routes from Console without the ambiguous -lite suffix.
+	// Generation and edit share the same upstream so admin grouping shows both capability badges,
+	// matching Console image models. The dedicated edit model below keeps the Super-only path.
+	{PublicID: "grok-imagine-image-2.0", UpstreamModel: "grok-imagine-image", ProtocolModel: "imagine-lite", Capability: modeldomain.CapabilityImage, Mode: "fast", MinimumTier: account.WebTierBasic},
+	{PublicID: "grok-imagine-image-2.0", UpstreamModel: "grok-imagine-image", ProtocolModel: "imagine-lite", Capability: modeldomain.CapabilityImageEdit, MinimumTier: account.WebTierBasic},
+	// Quality Mode (enable_pro=true) is Grok Web Image 2.0. Free/basic accounts now
+	// receive a separate imagePro quota and can call generation directly.
+	{PublicID: "grok-imagine-image-quality-2.0", UpstreamModel: "grok-imagine-image-quality", ProtocolModel: "imagine", Capability: modeldomain.CapabilityImage, MinimumTier: account.WebTierBasic},
+	{PublicID: "grok-imagine-image-quality-2.0", UpstreamModel: "grok-imagine-image-quality", ProtocolModel: "imagine", Capability: modeldomain.CapabilityImageEdit, MinimumTier: account.WebTierBasic},
 	{PublicID: "grok-imagine-image-edit", UpstreamModel: "imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, MinimumTier: account.WebTierSuper},
 	{PublicID: "grok-imagine-video", UpstreamModel: "grok-imagine-video", ProtocolModel: "imagine-video-gen", Capability: modeldomain.CapabilityVideo, MinimumTier: account.WebTierSuper},
 }
