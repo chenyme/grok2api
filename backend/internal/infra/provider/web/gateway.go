@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/websocket"
@@ -20,6 +21,7 @@ import (
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/searchresult"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/sessionidentity"
 	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -370,6 +372,20 @@ func parseGatewayEvent(event map[string]any, parsed *parsedChat) (string, string
 		parsed.ConversationID, _ = conversation["id"].(string)
 	case "response.chunk":
 		chunk, _ := event["chunk"].(map[string]any)
+		if chunk == nil {
+			return "", "", nil
+		}
+		// Current grok.com mgw protocol streams search tools and citations as
+		// dedicated chunk fields (not <grok:render> tokens).
+		if card, _ := chunk["tool_usage_card"].(map[string]any); card != nil {
+			collectGatewayToolUsageCard(parsed, card)
+		}
+		if result, _ := chunk["tool_result"].(map[string]any); result != nil {
+			collectGatewayToolResult(parsed, result)
+		}
+		if cite, _ := chunk["render_citation"].(map[string]any); cite != nil {
+			return applyGatewayRenderCitation(parsed, cite)
+		}
 		text, _ := chunk["text"].(map[string]any)
 		delta, _ := text["text"].(string)
 		channel, _ := text["channel"].(string)
@@ -410,6 +426,199 @@ func parseGatewayEvent(event map[string]any, parsed *parsedChat) (string, string
 	return "", "", nil
 }
 
+// collectGatewayToolUsageCard records mgw tool_usage_card starts (web_search / x_search)
+// and maps them to xAI web_search_call / x_search_call skeletons.
+func collectGatewayToolUsageCard(parsed *parsedChat, card map[string]any) {
+	if parsed == nil || card == nil {
+		return
+	}
+	id := firstString(card, "tool_usage_card_id", "id")
+	if id == "" {
+		id = fmt.Sprintf("card:%d", parsed.ServerTools+1)
+	}
+	if web, _ := card["web_search"].(map[string]any); web != nil {
+		recordGatewaySearchTool(parsed, id, "web_search")
+		query := nestedSearchQuery(web)
+		upsertHostedSearchCall(parsed, id, "web_search", query, "in_progress")
+		return
+	}
+	if xSearch, _ := card["x_search"].(map[string]any); xSearch != nil {
+		recordGatewaySearchTool(parsed, id, "x_search")
+		query := nestedSearchQuery(xSearch)
+		upsertHostedSearchCall(parsed, id, "x_search", query, "in_progress")
+		return
+	}
+	recordGatewaySearchTool(parsed, id, "")
+}
+
+func recordGatewaySearchTool(parsed *parsedChat, id, kind string) {
+	if parsed == nil || id == "" {
+		return
+	}
+	if parsed.serverToolKeys == nil {
+		parsed.serverToolKeys = make(map[string]struct{})
+	}
+	if _, exists := parsed.serverToolKeys[id]; !exists {
+		if len(parsed.serverToolKeys) >= maxTrackedServerTools {
+			return
+		}
+		parsed.serverToolKeys[id] = struct{}{}
+		parsed.ServerTools++
+	}
+	var keys *map[string]struct{}
+	var count *int64
+	switch kind {
+	case "web_search":
+		keys, count = &parsed.webSearchKeys, &parsed.WebSearchTools
+	case "x_search":
+		keys, count = &parsed.xSearchKeys, &parsed.XSearchTools
+	default:
+		return
+	}
+	if *keys == nil {
+		*keys = make(map[string]struct{})
+	}
+	if _, exists := (*keys)[id]; exists || len(*keys) >= maxTrackedServerTools {
+		return
+	}
+	(*keys)[id] = struct{}{}
+	*count++
+}
+
+func nestedSearchQuery(tool map[string]any) string {
+	if tool == nil {
+		return ""
+	}
+	if q := firstString(tool, "query"); q != "" {
+		return q
+	}
+	if args, _ := tool["args"].(map[string]any); args != nil {
+		return firstString(args, "query")
+	}
+	return ""
+}
+
+// collectGatewayToolResult folds mgw tool_result into SearchSources and completes hosted calls.
+func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
+	if parsed == nil || result == nil {
+		return
+	}
+	callID := firstString(result, "tool_call_id", "tool_usage_card_id", "id")
+	if web, _ := result["web_search"].(map[string]any); web != nil {
+		var sources []map[string]any
+		pages, _ := web["webpages"].([]any)
+		for _, raw := range pages {
+			item, _ := raw.(map[string]any)
+			if item == nil {
+				continue
+			}
+			u := firstString(item, "url")
+			title := firstString(item, "title")
+			appendSearchSource(parsed, u, title, "web")
+			if normalized, ok := searchresult.NormalizeURL(u); ok {
+				// OpenAPI WebSearchActionSearch.sources item requires type:"url";
+				// keep title as a non-breaking extension for UI clients.
+				sources = append(sources, map[string]any{
+					"type": "url", "url": normalized, "title": searchresult.NormalizeTitle(title, normalized),
+				})
+			}
+		}
+		call := upsertHostedSearchCall(parsed, callID, "web_search", nestedSearchQuery(web), "completed")
+		appendHostedSearchSources(call, sources)
+		if call != nil {
+			call.Status = "completed"
+			recordGatewaySearchTool(parsed, call.ID, "web_search")
+		}
+	}
+	if xPost, _ := result["x_post"].(map[string]any); xPost != nil {
+		var sources []map[string]any
+		posts, _ := xPost["posts"].([]any)
+		for _, raw := range posts {
+			item, _ := raw.(map[string]any)
+			if item == nil {
+				continue
+			}
+			handle := firstString(item, "userhandle", "username")
+			postID := firstString(item, "post_id", "postId")
+			if handle == "" || postID == "" {
+				continue
+			}
+			rawURL := "https://x.com/" + url.PathEscape(handle) + "/status/" + url.PathEscape(postID)
+			title := firstString(item, "name", "userhandle", "username")
+			if text, _ := item["text"].(string); text != "" && title != "" {
+				title = title + ": " + text
+			} else if text, _ := item["text"].(string); text != "" {
+				title = text
+			}
+			appendSearchSource(parsed, rawURL, title, "x_post")
+			if normalized, ok := searchresult.NormalizeURL(rawURL); ok {
+				sources = append(sources, map[string]any{
+					"type": "url", "url": normalized, "title": searchresult.NormalizeTitle(title, normalized),
+				})
+			}
+		}
+		call := upsertHostedSearchCall(parsed, callID, "x_search", "", "completed")
+		appendHostedSearchSources(call, sources)
+		if call != nil {
+			call.Status = "completed"
+			if call.Kind == "" {
+				call.Kind = "x_search"
+			}
+			recordGatewaySearchTool(parsed, call.ID, "x_search")
+		}
+	}
+}
+
+// applyGatewayRenderCitation turns an mgw render_citation chunk into client citations.
+// When InlineCitations is enabled (default), embeds [[N]](url) and records positional
+// annotations. N stays in the marker while structured metadata retains the source title.
+func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string, string, error) {
+	if parsed == nil || cite == nil {
+		return "", "", nil
+	}
+	rawURL := firstString(cite, "url")
+	normalized, valid := searchresult.NormalizeURL(rawURL)
+	if !valid {
+		return "", "", nil
+	}
+	if parsed.citationIndex == nil {
+		parsed.citationIndex = make(map[string]int)
+	}
+	index, exists := parsed.citationIndex[normalized]
+	if !exists {
+		if len(parsed.citationIndex) >= maxTrackedCitationSources {
+			return "", "", nil
+		}
+		index = len(parsed.citationIndex) + 1
+		parsed.citationIndex[normalized] = index
+	}
+	// Skip consecutive duplicate of the same source (UI collapses them).
+	if parsed.lastCitation == index {
+		return "", "", nil
+	}
+	parsed.lastCitation = index
+
+	annotation := citationAnnotation(parsed, normalized, index)
+	if parsed.DisableInlineCitations {
+		// no_inline_citations: no markdown in text; positional fields omitted later at finalize.
+		if len(parsed.Annotations) < maxTrackedAnnotations {
+			parsed.Annotations = append(parsed.Annotations, annotation)
+		}
+		return "", "", nil
+	}
+	// Inline marker and xAI Responses annotation use the same numeric label.
+	replacement := fmt.Sprintf("[[%d]](%s)", index, normalized)
+	start := parsed.textCharacterLen()
+	parsed.upstreamText.WriteString(replacement)
+	parsed.appendText(replacement)
+	annotation["start_index"] = start
+	annotation["end_index"] = start + utf8.RuneCountInString(replacement)
+	if len(parsed.Annotations) < maxTrackedAnnotations {
+		parsed.Annotations = append(parsed.Annotations, annotation)
+	}
+	return "text", replacement, nil
+}
+
 func appendGatewayDelta(parsed *parsedChat, channel, delta string) (string, string, error) {
 	if delta == "" {
 		return "", "", nil
@@ -424,7 +633,7 @@ func appendGatewayDelta(parsed *parsedChat, channel, delta string) (string, stri
 	}
 	parsed.upstreamText.WriteString(delta)
 	cleaned := cleanChatToken(parsed, delta)
-	parsed.Text.WriteString(cleaned)
+	parsed.appendText(cleaned)
 	return "text", cleaned, nil
 }
 
