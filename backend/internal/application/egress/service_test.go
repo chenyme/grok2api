@@ -25,6 +25,12 @@ func TestNormalizeProxyURLValidatesStructure(t *testing.T) {
 		"http://user:password@127.0.0.1:8080", "https://proxy.example:8443",
 		"socks4://127.0.0.1:1080", "socks4a://proxy.example:1080",
 		"socks5://user:password@127.0.0.1:1080", "socks5h://user:password@proxy.example:1080",
+		"trojan://password@127.0.0.1:8443?allowInsecure=0#remark",
+		"vless://uuid@127.0.0.1:443?encryption=none&flow=xtls-rprx-vision#remark",
+		"ss://base64#remark",
+		"vmess://base64#remark",
+		"hysteria://127.0.0.1:443",
+		"tuic://user:pass@127.0.0.1:443",
 	} {
 		value, err := NormalizeProxyURL(raw)
 		if err != nil || value == "" {

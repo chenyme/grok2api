@@ -855,12 +855,20 @@ func NormalizeProxyURL(value string) (string, error) {
 		return "", errors.New("代理地址格式无效")
 	}
 	switch strings.ToLower(parsed.Scheme) {
-	case "http", "https", "socks4", "socks4a", "socks5", "socks5h":
+	case "http", "https", "socks4", "socks4a", "socks5", "socks5h",
+		"trojan", "vless", "ss", "vmess", "hysteria", "hysteria2", "tuic", "tuicv5":
 	default:
-		return "", errors.New("代理地址协议必须是 HTTP、HTTPS、SOCKS4 或 SOCKS5")
+		return "", errors.New("代理地址协议需为 HTTP、HTTPS、SOCKS4、SOCKS5，或 Trojan、VLESS、SS、VMess、Hysteria 等主流隧道协议。")
 	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return "", errors.New("代理地址不能包含路径、查询参数或片段")
+	tunnelSchemes := map[string]bool{
+		"trojan": true, "vless": true, "ss": true, "vmess": true,
+		"hysteria": true, "hysteria2": true, "tuic": true, "tuicv5": true,
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if !tunnelSchemes[scheme] {
+		if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+			return "", errors.New("代理地址不能包含路径、查询参数或片段")
+		}
 	}
 	if hasAccountPlaceholder {
 		if parsed.User == nil || !strings.Contains(parsed.User.Username(), proxyAccountSentinel) {
