@@ -230,12 +230,14 @@ func normalizeConsoleTools(payload map[string]any) bool {
 				clean["enable_image_understanding"] = enabled
 			}
 			result = append(result, clean)
+			retainedClientTools = true
 		case "x_search":
 			clean := map[string]any{"type": "x_search", "enable_video_understanding": true}
 			if enabled, ok := tool["enable_video_understanding"].(bool); ok {
 				clean["enable_video_understanding"] = enabled
 			}
 			result = append(result, clean)
+			retainedClientTools = true
 		case "function":
 			name, _ := tool["name"].(string)
 			if strings.TrimSpace(name) == "" {

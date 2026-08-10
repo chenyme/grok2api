@@ -76,7 +76,10 @@ export async function createChatResponse(input: {
   const tools: Array<{ type: string }> = [];
   if (input.webSearch) tools.push({ type: "web_search" });
   if (input.xSearch) tools.push({ type: "x_search" });
-  if (tools.length > 0) body.tools = tools;
+  if (tools.length > 0) {
+    body.tools = tools;
+    body.tool_choice = "required";
+  }
   return publicResponsesStream(input.apiKey, body, input.onUpdate, input.signal);
 }
 

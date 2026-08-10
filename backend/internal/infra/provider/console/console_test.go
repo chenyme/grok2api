@@ -265,7 +265,7 @@ func TestNormalizeRequestAppliesConsoleCompatibilityBoundary(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["response_format"] != nil || payload["reasoning"] != nil || payload["tool_choice"] != "auto" {
+	if payload["response_format"] != nil || payload["reasoning"] != nil || payload["tool_choice"] != "required" {
 		t.Fatalf("payload boundary = %#v", payload)
 	}
 	include, _ := payload["include"].([]any)
