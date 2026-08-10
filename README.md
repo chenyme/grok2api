@@ -138,7 +138,7 @@ The Gateway routes requests through the Provider Registry. Account Sync refreshe
 | Routing | Model discovery, Provider pinning, sticky sessions, quota/concurrency guards, and bounded failover |
 | Sessions | Stored responses, compact, prompt-cache affinity, and optional reasoning replay |
 | Media | Image generation/editing, video jobs, local archiving, and URL/Base64/SSE output |
-| Egress | HTTP/SOCKS/Resin, subscriptions, probes, proxy pools, allocation, fallback, and FlareSolverr |
+| Egress | HTTP/SOCKS/Resin and Trojan/VLESS/Shadowsocks/VMess tunnels, subscriptions, probes, proxy pools, allocation, fallback, and FlareSolverr |
 | Operations | Dashboard, model routes, client keys, audits, runtime settings, and media libraries |
 
 ### Provider boundaries
@@ -330,13 +330,16 @@ curl http://127.0.0.1:8000/v1/responses \
 
 Egress nodes are scoped to Build, Web, Console, or Web assets. The admin console supports:
 
-- HTTP, HTTPS, SOCKS4/4A, SOCKS5/5H, and Resin
+- HTTP, HTTPS, SOCKS4/4A, SOCKS5/5H, Resin, Trojan, VLESS, Shadowsocks, and VMess
+- TCP, WebSocket, and TLS tunnel transports; unsupported variants are rejected during import
 - Subscription and text/Base64 import
 - Batch probes, filtering, deletion, assignment, and balancing
 - Fallback per scope: none, direct, or a fixed node
 - Proxy-pool mode without global cooldown after one connection failure
 - Immediate recovery probes after fixed-proxy transport failures, with per-node coalescing and bounded waiting for fast retry
 - Optional [Egress Quality Guard](./tools/egress-quality-guard/README.md) for active per-node model probes, guarded quarantine, and recovery; enable it with the built-in `quality-guard` Compose profile
+
+Hysteria and TUIC are not supported yet. FlareSolverr accepts only HTTP/SOCKS proxy URLs, so automatic clearance refresh cannot use a tunnel share URL directly.
 
 To enable the guard, add a `qualityGuard` section to `config.yaml`, then start
 the profile. The main service creates and reuses a non-exportable system probe

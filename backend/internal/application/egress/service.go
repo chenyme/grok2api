@@ -12,6 +12,7 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -851,24 +852,30 @@ func NormalizeProxyURL(value string) (string, error) {
 	}
 	parseValue := strings.ReplaceAll(value, ProxyAccountPlaceholder, proxyAccountSentinel)
 	parsed, err := url.Parse(parseValue)
-	if err != nil || parsed.Host == "" || parsed.Hostname() == "" {
+	if err != nil {
 		return "", errors.New("代理地址格式无效")
 	}
-	switch strings.ToLower(parsed.Scheme) {
-	case "http", "https", "socks4", "socks4a", "socks5", "socks5h",
-		"trojan", "vless", "ss", "vmess", "hysteria", "hysteria2", "tuic", "tuicv5":
-	default:
-		return "", errors.New("代理地址协议需为 HTTP、HTTPS、SOCKS4、SOCKS5，或 Trojan、VLESS、SS、VMess、Hysteria 等主流隧道协议。")
-	}
-	tunnelSchemes := map[string]bool{
-		"trojan": true, "vless": true, "ss": true, "vmess": true,
-		"hysteria": true, "hysteria2": true, "tuic": true, "tuicv5": true,
-	}
 	scheme := strings.ToLower(parsed.Scheme)
-	if !tunnelSchemes[scheme] {
-		if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-			return "", errors.New("代理地址不能包含路径、查询参数或片段")
+	if tunnelproxy.IsSupportedScheme(scheme) {
+		if hasAccountPlaceholder {
+			return "", errors.New("隧道代理不支持 {account} 占位符")
 		}
+		normalized, normalizeErr := tunnelproxy.Normalize(value)
+		if normalizeErr != nil {
+			return "", normalizeErr
+		}
+		return normalized, nil
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return "", errors.New("代理地址格式无效")
+	}
+	switch scheme {
+	case "http", "https", "socks4", "socks4a", "socks5", "socks5h":
+	default:
+		return "", errors.New("代理地址协议必须是 HTTP、HTTPS、SOCKS4、SOCKS5、Trojan、VLESS、SS 或 VMess")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", errors.New("代理地址不能包含路径、查询参数或片段")
 	}
 	if hasAccountPlaceholder {
 		if parsed.User == nil || !strings.Contains(parsed.User.Username(), proxyAccountSentinel) {

@@ -60,6 +60,13 @@ func TestFlareSolverrSolveAcceptsNoChallengeWithoutCloudflareCookies(t *testing.
 	}
 }
 
+func TestFlareSolverrSolveRejectsTunnelProxy(t *testing.T) {
+	_, err := (flaresolverrSolver{}).Solve(context.Background(), ClearanceConfig{}, "trojan://secret@proxy.example:443")
+	if err == nil || !strings.Contains(err.Error(), "FlareSolverr") {
+		t.Fatalf("tunnel proxy error = %v", err)
+	}
+}
+
 func TestFlareSolverrEndpointAcceptsBaseAndV1Path(t *testing.T) {
 	for input, expected := range map[string]string{
 		"http://flaresolverr:8191":   "http://flaresolverr:8191/v1",
@@ -74,8 +81,8 @@ func TestFlareSolverrEndpointAcceptsBaseAndV1Path(t *testing.T) {
 }
 
 func TestSanitizeFlareSolverrMessageRedactsCredentials(t *testing.T) {
-	message := sanitizeFlareSolverrMessage("proxy socks5h://user:secret@resin:2260 failed; token=abc123 Authorization: Bearer.SECRET cookie=sso-value")
-	for _, secret := range []string{"user", "secret", "abc123", "Bearer.SECRET", "sso-value"} {
+	message := sanitizeFlareSolverrMessage("proxy socks5h://user:secret@resin:2260 and trojan://tunnel-secret@proxy.example:443 and vmess://base64-secret failed; token=abc123 Authorization: Bearer.SECRET cookie=sso-value")
+	for _, secret := range []string{"user", "secret", "tunnel-secret", "base64-secret", "abc123", "Bearer.SECRET", "sso-value"} {
 		if strings.Contains(message, secret) {
 			t.Fatalf("sanitized message leaked %q: %q", secret, message)
 		}

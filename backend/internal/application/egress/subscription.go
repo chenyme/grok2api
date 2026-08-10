@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	_ "github.com/bdandy/go-socks4"
+	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -163,8 +164,14 @@ func subscriptionTransport(viaProxy string) (*http.Transport, error) {
 			return nil, fmt.Errorf("创建订阅拉取 SOCKS 代理: %w", err)
 		}
 		transport.DialContext = subscriptionProxyDialContext(dialer)
+	case "trojan", "vless", "ss", "vmess":
+		dialer, err := tunnelproxy.NewDialer(viaProxy)
+		if err != nil {
+			return nil, fmt.Errorf("创建订阅拉取隧道代理: %w", err)
+		}
+		transport.DialContext = dialer.DialContext
 	default:
-		return nil, errors.New("订阅拉取代理协议必须是 HTTP、HTTPS、SOCKS4 或 SOCKS5")
+		return nil, errors.New("订阅拉取代理协议不受支持")
 	}
 	return transport, nil
 }

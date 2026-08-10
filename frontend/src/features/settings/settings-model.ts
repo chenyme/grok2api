@@ -351,21 +351,35 @@ function validHTTPURL(value: string): boolean {
   }
 }
 
-/** Validates HTTP and SOCKS proxy URLs. Empty is allowed for write-only form fields. */
+/** Performs fast client-side proxy validation; the backend remains authoritative. */
 function validProxyURL(value: string): boolean {
   const trimmed = value.trim();
   if (trimmed.length === 0) return true;
-  if (trimmed.length > 2048 || [...trimmed].some((char) => {
+  if (trimmed.length > 8192 || [...trimmed].some((char) => {
     const code = char.charCodeAt(0);
     return code <= 0x1f || code === 0x7f;
   })) return false;
   if ((trimmed.match(/\{account\}/g) ?? []).length > 1) return false;
+  const scheme = trimmed.slice(0, trimmed.indexOf(":")).toLowerCase();
+  if (["trojan", "vless", "ss", "vmess"].includes(scheme) && trimmed.includes("{account}")) return false;
+  if (scheme === "vmess") return validVMessURL(trimmed);
+  if (scheme === "ss") return /^ss:\/\/[^\s#]+(?:#[^\r\n]*)?$/.test(trimmed);
   try {
     const parseValue = trimmed.replaceAll("{account}", "grok2api_account_placeholder");
     const parsed = new URL(parseValue);
     if (!parsed.host || !parsed.hostname) return false;
-    const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
-    if (!["http", "https", "socks4", "socks4a", "socks5", "socks5h"].includes(scheme)) return false;
+    const parsedScheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+    if (["trojan", "vless"].includes(parsedScheme)) {
+      if (!parsed.username || parsed.password) return false;
+      const transport = (parsed.searchParams.get("type") ?? parsed.searchParams.get("network") ?? "tcp").toLowerCase();
+      if (!["tcp", "none", "ws", "websocket"].includes(transport)) return false;
+      const security = (parsed.searchParams.get("security") ?? "").toLowerCase();
+      if (!["", "none", "tls"].includes(security)) return false;
+      if (parsed.searchParams.get("flow")) return false;
+      if (parsedScheme === "vless" && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(parsed.username)) return false;
+      return parsed.pathname === "" || parsed.pathname === "/";
+    }
+    if (!["http", "https", "socks4", "socks4a", "socks5", "socks5h"].includes(parsedScheme)) return false;
     if (parsed.search || parsed.hash || (parsed.pathname !== "" && parsed.pathname !== "/")) return false;
     if (trimmed.includes("{account}")) {
       if (!parsed.username.includes("grok2api_account_placeholder")) return false;
@@ -376,7 +390,25 @@ function validProxyURL(value: string): boolean {
   }
 }
 
-/** Subscription fetch proxies are global and must never use per-account lease placeholders. */
+function validVMessURL(value: string): boolean {
+  try {
+    let payload = value.slice("vmess://".length).split("#", 1)[0].replaceAll("-", "+").replaceAll("_", "/");
+    payload += "=".repeat((4 - (payload.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(payload), (character) => character.charCodeAt(0));
+    const config = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+    const id = String(config.id ?? "");
+    const port = Number(config.port);
+    const network = String(config.net ?? "tcp").toLowerCase();
+    const tls = String(config.tls ?? "").toLowerCase();
+    return typeof config.add === "string" && config.add.trim() !== "" && Number.isInteger(port) && port > 0 && port <= 65535
+      && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)
+      && ["tcp", "ws", "websocket"].includes(network) && ["", "none", "tls"].includes(tls);
+  } catch {
+    return false;
+  }
+}
+
+/** Subscription fetch proxies must never use per-account lease placeholders. */
 export function validSubscriptionProxyURL(value: string): boolean {
   return !value.includes("{account}") && validProxyURL(value);
 }
