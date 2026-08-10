@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	"github.com/bogdanfinn/websocket"
@@ -435,6 +436,25 @@ func collectGatewayToolUsageCard(parsed *parsedChat, card map[string]any) {
 	if id == "" {
 		id = fmt.Sprintf("card:%d", parsed.ServerTools+1)
 	}
+	if web, _ := card["web_search"].(map[string]any); web != nil {
+		recordGatewaySearchTool(parsed, id, "web_search")
+		query := nestedSearchQuery(web)
+		upsertHostedSearchCall(parsed, id, "web_search", query, "in_progress")
+		return
+	}
+	if xSearch, _ := card["x_search"].(map[string]any); xSearch != nil {
+		recordGatewaySearchTool(parsed, id, "x_search")
+		query := nestedSearchQuery(xSearch)
+		upsertHostedSearchCall(parsed, id, "x_search", query, "in_progress")
+		return
+	}
+	recordGatewaySearchTool(parsed, id, "")
+}
+
+func recordGatewaySearchTool(parsed *parsedChat, id, kind string) {
+	if parsed == nil || id == "" {
+		return
+	}
 	if parsed.serverToolKeys == nil {
 		parsed.serverToolKeys = make(map[string]struct{})
 	}
@@ -445,26 +465,24 @@ func collectGatewayToolUsageCard(parsed *parsedChat, card map[string]any) {
 		parsed.serverToolKeys[id] = struct{}{}
 		parsed.ServerTools++
 	}
-	if web, _ := card["web_search"].(map[string]any); web != nil {
-		if parsed.webSearchKeys == nil {
-			parsed.webSearchKeys = make(map[string]struct{})
-		}
-		if _, exists := parsed.webSearchKeys[id]; !exists {
-			parsed.webSearchKeys[id] = struct{}{}
-			parsed.WebSearchTools++
-		}
-		query := nestedSearchQuery(web)
-		upsertHostedSearchCall(parsed, id, "web_search", query, "in_progress")
+	var keys *map[string]struct{}
+	var count *int64
+	switch kind {
+	case "web_search":
+		keys, count = &parsed.webSearchKeys, &parsed.WebSearchTools
+	case "x_search":
+		keys, count = &parsed.xSearchKeys, &parsed.XSearchTools
+	default:
 		return
 	}
-	if xSearch, _ := card["x_search"].(map[string]any); xSearch != nil {
-		query := nestedSearchQuery(xSearch)
-		_, existed := parsed.hostedSearchByID[id]
-		upsertHostedSearchCall(parsed, id, "x_search", query, "in_progress")
-		if !existed {
-			parsed.XSearchTools++
-		}
+	if *keys == nil {
+		*keys = make(map[string]struct{})
 	}
+	if _, exists := (*keys)[id]; exists || len(*keys) >= maxTrackedServerTools {
+		return
+	}
+	(*keys)[id] = struct{}{}
+	*count++
 }
 
 func nestedSearchQuery(tool map[string]any) string {
@@ -509,6 +527,7 @@ func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
 		appendHostedSearchSources(call, sources)
 		if call != nil {
 			call.Status = "completed"
+			recordGatewaySearchTool(parsed, call.ID, "web_search")
 		}
 	}
 	if xPost, _ := result["x_post"].(map[string]any); xPost != nil {
@@ -545,13 +564,14 @@ func collectGatewayToolResult(parsed *parsedChat, result map[string]any) {
 			if call.Kind == "" {
 				call.Kind = "x_search"
 			}
+			recordGatewaySearchTool(parsed, call.ID, "x_search")
 		}
 	}
 }
 
 // applyGatewayRenderCitation turns an mgw render_citation chunk into client citations.
 // When InlineCitations is enabled (default), embeds [[N]](url) and records positional
-// annotations. Annotation title is the page/source title (OpenAI-style); N stays in the marker.
+// annotations. N stays in the marker while structured metadata retains the source title.
 func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string, string, error) {
 	if parsed == nil || cite == nil {
 		return "", "", nil
@@ -566,6 +586,9 @@ func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string
 	}
 	index, exists := parsed.citationIndex[normalized]
 	if !exists {
+		if len(parsed.citationIndex) >= maxTrackedCitationSources {
+			return "", "", nil
+		}
 		index = len(parsed.citationIndex) + 1
 		parsed.citationIndex[normalized] = index
 	}
@@ -575,47 +598,25 @@ func applyGatewayRenderCitation(parsed *parsedChat, cite map[string]any) (string
 	}
 	parsed.lastCitation = index
 
-	title := citationPageTitle(parsed, normalized, index)
+	annotation := citationAnnotation(parsed, normalized, index)
 	if parsed.DisableInlineCitations {
 		// no_inline_citations: no markdown in text; positional fields omitted later at finalize.
-		parsed.Annotations = append(parsed.Annotations, map[string]any{
-			"type":  "url_citation",
-			"url":   normalized,
-			"title": title,
-		})
+		if len(parsed.Annotations) < maxTrackedAnnotations {
+			parsed.Annotations = append(parsed.Annotations, annotation)
+		}
 		return "", "", nil
 	}
-	// Inline marker keeps numeric label; structured title is page name (or N if unknown).
+	// Inline marker and xAI Responses annotation use the same numeric label.
 	replacement := fmt.Sprintf("[[%d]](%s)", index, normalized)
-	start := parsed.Text.Len()
+	start := parsed.textCharacterLen()
 	parsed.upstreamText.WriteString(replacement)
-	parsed.Text.WriteString(replacement)
-	parsed.Annotations = append(parsed.Annotations, map[string]any{
-		"type":        "url_citation",
-		"url":         normalized,
-		"title":       title,
-		"start_index": start,
-		"end_index":   start + len(replacement),
-	})
-	return "text", replacement, nil
-}
-
-func xHandleFromStatusURL(rawURL string) string {
-	// https://x.com/{handle}/status/{id}
-	const marker = "://x.com/"
-	idx := strings.Index(rawURL, marker)
-	if idx < 0 {
-		idx = strings.Index(rawURL, "://twitter.com/")
-		if idx < 0 {
-			return ""
-		}
-		rest := rawURL[idx+len("://twitter.com/"):]
-		handle, _, _ := strings.Cut(rest, "/")
-		return handle
+	parsed.appendText(replacement)
+	annotation["start_index"] = start
+	annotation["end_index"] = start + utf8.RuneCountInString(replacement)
+	if len(parsed.Annotations) < maxTrackedAnnotations {
+		parsed.Annotations = append(parsed.Annotations, annotation)
 	}
-	rest := rawURL[idx+len(marker):]
-	handle, _, _ := strings.Cut(rest, "/")
-	return handle
+	return "text", replacement, nil
 }
 
 func appendGatewayDelta(parsed *parsedChat, channel, delta string) (string, string, error) {
@@ -632,7 +633,7 @@ func appendGatewayDelta(parsed *parsedChat, channel, delta string) (string, stri
 	}
 	parsed.upstreamText.WriteString(delta)
 	cleaned := cleanChatToken(parsed, delta)
-	parsed.Text.WriteString(cleaned)
+	parsed.appendText(cleaned)
 	return "text", cleaned, nil
 }
 

@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -134,11 +135,8 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	if parsed.HostedSearchCalls[0].Kind != "web_search" || parsed.HostedSearchCalls[0].Status != "completed" {
 		t.Fatalf("web call = %#v", parsed.HostedSearchCalls[0])
 	}
-	if parsed.HostedSearchCalls[1].Kind != "x_search" || parsed.HostedSearchCalls[1].Query == "" && parsed.HostedSearchCalls[1].Status != "completed" {
-		// x call should be completed with sources
-		if parsed.HostedSearchCalls[1].Kind != "x_search" || parsed.HostedSearchCalls[1].Status != "completed" {
-			t.Fatalf("x call = %#v", parsed.HostedSearchCalls[1])
-		}
+	if parsed.HostedSearchCalls[1].Kind != "x_search" || parsed.HostedSearchCalls[1].Query == "" || parsed.HostedSearchCalls[1].Status != "completed" {
+		t.Fatalf("x call = %#v", parsed.HostedSearchCalls[1])
 	}
 	if len(parsed.Annotations) != 2 {
 		t.Fatalf("annotations = %#v", parsed.Annotations)
@@ -148,9 +146,10 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 		t.Fatalf("text = %q emitted = %q", text, emitted.String())
 	}
 	first := parsed.Annotations[0]
-	// Annotation title = page/source title; [[N]] still carries the number in text.
+	// xAI Responses title is the visible citation number; source_title is kept
+	// internally so Chat Completions can expose the page title.
 	wantTitle := "Elon Musk: And Grok 4.6 comes out in a week"
-	if first["type"] != "url_citation" || first["url"] != "https://x.com/elonmusk/status/2082707547203518569" || first["title"] != wantTitle {
+	if first["type"] != "url_citation" || first["url"] != "https://x.com/elonmusk/status/2082707547203518569" || first["title"] != "1" || first["source_title"] != wantTitle {
 		t.Fatalf("first annotation = %#v want title %q", first, wantTitle)
 	}
 	chatPayload := buildOpenAIResult("chat", "resp_1", "grok-chat-fast", *parsed, false)
@@ -219,8 +218,8 @@ func TestParseGatewayChunkCollectsToolResultsAndRenderCitations(t *testing.T) {
 	outMsg := out[len(out)-1].(map[string]any)
 	part := outMsg["content"].([]any)[0].(map[string]any)
 	flat := part["annotations"].([]any)[0].(map[string]any)
-	if flat["type"] != "url_citation" || flat["url"] == nil || flat["url_citation"] != nil || flat["title"] != wantTitle {
-		t.Fatalf("responses annotation must be flat url_citation with page title, got %#v", flat)
+	if flat["type"] != "url_citation" || flat["url"] == nil || flat["url_citation"] != nil || flat["title"] != "1" {
+		t.Fatalf("responses annotation must be flat url_citation with numeric label, got %#v", flat)
 	}
 }
 
@@ -244,6 +243,131 @@ func TestCitationTitleFallsBackToIndex(t *testing.T) {
 	}
 	if !strings.Contains(parsed.Text.String(), "[[1]](https://example.com/no-title)") {
 		t.Fatalf("text = %q", parsed.Text.String())
+	}
+}
+
+func TestGatewayCitationReusesNumberAfterInterveningText(t *testing.T) {
+	parsed := &parsedChat{}
+	frames := []string{
+		`{"event":{"type":"response.chunk","chunk":{"text":{"text":"甲","channel":"CHANNEL_ASSISTANT_RESPONSE"}}}}`,
+		`{"event":{"type":"response.chunk","chunk":{"render_citation":{"url":"https://example.com/a"}}}}`,
+		// A duplicate frame with no intervening text is transport noise and is collapsed.
+		`{"event":{"type":"response.chunk","chunk":{"render_citation":{"url":"https://example.com/a"}}}}`,
+		`{"event":{"type":"response.chunk","chunk":{"text":{"text":"，乙","channel":"CHANNEL_ASSISTANT_RESPONSE"}}}}`,
+		// A later citation of the same source remains visible and reuses [[1]].
+		`{"event":{"type":"response.chunk","chunk":{"render_citation":{"url":"https://example.com/a"}}}}`,
+	}
+	for _, frame := range frames {
+		if _, _, err := parseUpstreamFrame([]byte(frame), parsed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "甲[[1]](https://example.com/a)，乙[[1]](https://example.com/a)"
+	if got := parsed.Text.String(); got != want {
+		t.Fatalf("text = %q, want %q", got, want)
+	}
+	if len(parsed.Annotations) != 2 {
+		t.Fatalf("annotations = %#v", parsed.Annotations)
+	}
+	first, second := parsed.Annotations[0], parsed.Annotations[1]
+	if first["start_index"] != 1 || first["end_index"] != 29 {
+		t.Fatalf("first annotation uses character offsets: %#v", first)
+	}
+	if second["start_index"] != 31 || second["end_index"] != 59 {
+		t.Fatalf("second annotation uses character offsets: %#v", second)
+	}
+}
+
+func TestGatewayCitationStateIsBounded(t *testing.T) {
+	parsed := &parsedChat{citationIndex: make(map[string]int, maxTrackedCitationSources)}
+	for i := 0; i < maxTrackedCitationSources; i++ {
+		parsed.citationIndex[fmt.Sprintf("https://example.com/%d", i)] = i + 1
+	}
+	if kind, delta, err := applyGatewayRenderCitation(parsed, map[string]any{"url": "https://example.com/overflow"}); err != nil || kind != "" || delta != "" {
+		t.Fatalf("overflow citation kind=%q delta=%q err=%v", kind, delta, err)
+	}
+	if len(parsed.citationIndex) != maxTrackedCitationSources {
+		t.Fatalf("citation sources grew to %d", len(parsed.citationIndex))
+	}
+
+	parsed = &parsedChat{
+		citationIndex: map[string]int{"https://example.com/a": 1},
+		Annotations:   make([]map[string]any, maxTrackedAnnotations),
+	}
+	kind, delta, err := applyGatewayRenderCitation(parsed, map[string]any{"url": "https://example.com/a"})
+	if err != nil || kind != "text" || delta != "[[1]](https://example.com/a)" {
+		t.Fatalf("existing citation kind=%q delta=%q err=%v", kind, delta, err)
+	}
+	if len(parsed.Annotations) != maxTrackedAnnotations {
+		t.Fatalf("annotations grew to %d", len(parsed.Annotations))
+	}
+}
+
+func TestGatewayToolResultWithoutIDCompletesSingleMatchingCall(t *testing.T) {
+	parsed := &parsedChat{}
+	collectGatewayToolUsageCard(parsed, map[string]any{
+		"tool_usage_card_id": "tool-1",
+		"web_search":         map[string]any{"args": map[string]any{"query": "query"}},
+	})
+	collectGatewayToolResult(parsed, map[string]any{
+		"web_search": map[string]any{"webpages": []any{map[string]any{"url": "https://example.com"}}},
+	})
+	if len(parsed.HostedSearchCalls) != 1 {
+		t.Fatalf("hosted calls = %#v", parsed.HostedSearchCalls)
+	}
+	call := parsed.HostedSearchCalls[0]
+	if call.ID != "tool-1" || call.Status != "completed" || len(call.Sources) != 1 {
+		t.Fatalf("call = %#v", call)
+	}
+	if parsed.ServerTools != 1 || parsed.WebSearchTools != 1 {
+		t.Fatalf("tool counters server=%d web=%d", parsed.ServerTools, parsed.WebSearchTools)
+	}
+}
+
+func TestGatewayResultOnlyStillRecordsSuccessfulTool(t *testing.T) {
+	parsed := &parsedChat{}
+	collectGatewayToolResult(parsed, map[string]any{
+		"tool_call_id": "result-only",
+		"x_post": map[string]any{"posts": []any{map[string]any{
+			"userhandle": "xai", "post_id": "1", "text": "news",
+		}}},
+	})
+	if parsed.ServerTools != 1 || parsed.XSearchTools != 1 {
+		t.Fatalf("tool counters server=%d x=%d", parsed.ServerTools, parsed.XSearchTools)
+	}
+	usage := xaiServerSideToolUsage(*parsed)
+	if usage["SERVER_SIDE_TOOL_X_SEARCH"] != int64(1) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestXAIToolUsageCountsCompletedGatewayCallsOnly(t *testing.T) {
+	parsed := parsedChat{
+		WebSearchTools: 2,
+		XSearchTools:   1,
+		HostedSearchCalls: []hostedSearchCall{
+			{ID: "pending-web", Kind: "web_search", Status: "in_progress"},
+			{ID: "done-x", Kind: "x_search", Status: "completed"},
+		},
+	}
+	usage := xaiServerSideToolUsage(parsed)
+	if usage["SERVER_SIDE_TOOL_WEB_SEARCH"] != nil || usage["SERVER_SIDE_TOOL_X_SEARCH"] != int64(1) {
+		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestXAICitationsUnionSearchResultsAndRenderedSources(t *testing.T) {
+	parsed := parsedChat{
+		SearchSources: []map[string]any{{"url": "https://example.com/from-result"}},
+		Annotations: []map[string]any{
+			{"url": "https://example.com/from-result"},
+			{"url": "https://example.com/render-only"},
+		},
+	}
+	want := []string{"https://example.com/from-result", "https://example.com/render-only"}
+	got := xaiCitationURLs(parsed)
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("citations = %#v, want %#v", got, want)
 	}
 }
 
@@ -307,7 +431,8 @@ func TestWriteStreamAnnotationsShapes(t *testing.T) {
 		t.Fatalf("chat stream = %s", chatBuf.String())
 	}
 	var respBuf strings.Builder
-	if err := writeStreamAnnotations(&respBuf, conversation.OperationResponses, "resp_1", "m", ann, 3); err != nil {
+	responsesStream := newWebResponsesStream(&respBuf, "resp_1")
+	if err := responsesStream.Annotations(ann, 3); err != nil {
 		t.Fatal(err)
 	}
 	out := respBuf.String()
@@ -316,6 +441,118 @@ func TestWriteStreamAnnotationsShapes(t *testing.T) {
 	}
 	if strings.Contains(out, `"url_citation":{`) {
 		t.Fatalf("responses annotation must stay flat: %s", out)
+	}
+	if !strings.Contains(out, `"item_id":"msg_`) || strings.Contains(out, `"item_id":""`) {
+		t.Fatalf("responses annotation needs a stable message item id: %s", out)
+	}
+}
+
+func TestResponsesStreamUsesOneStableOutputSequence(t *testing.T) {
+	var buf strings.Builder
+	stream := newWebResponsesStream(&buf, "resp_1")
+	if err := stream.Delta("reasoning", "thinking"); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.HostedSearch(hostedSearchCall{ID: "search_1", Kind: "web_search", Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Delta("text", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	call := parsedToolCall{ID: "call_1", Name: "lookup", Arguments: `{}`}
+	if err := stream.ToolCalls([]parsedToolCall{call}); err != nil {
+		t.Fatal(err)
+	}
+	parsed := parsedChat{ToolCalls: []parsedToolCall{call}}
+	parsed.Reasoning.WriteString("thinking")
+	parsed.Text.WriteString("hello")
+	if err := stream.Finish(&parsed); err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := []string{"reasoning", "web_search_call", "message", "function_call"}
+	if len(parsed.ResponseOutput) != len(wantTypes) {
+		t.Fatalf("output = %#v", parsed.ResponseOutput)
+	}
+	seenIDs := make(map[string]struct{}, len(wantTypes))
+	for index, wantType := range wantTypes {
+		item := parsed.ResponseOutput[index].(map[string]any)
+		if item["type"] != wantType || item["status"] != "completed" {
+			t.Fatalf("output[%d] = %#v", index, item)
+		}
+		id, _ := item["id"].(string)
+		if id == "" {
+			t.Fatalf("output[%d] missing id: %#v", index, item)
+		}
+		if _, duplicate := seenIDs[id]; duplicate {
+			t.Fatalf("duplicate output id %q", id)
+		}
+		seenIDs[id] = struct{}{}
+	}
+	payload := buildOpenAIResult(conversation.OperationResponses, "resp_1", "m", parsed, false)
+	payloadOutput := payload["output"].([]any)
+	for index := range parsed.ResponseOutput {
+		wantID := parsed.ResponseOutput[index].(map[string]any)["id"]
+		if gotID := payloadOutput[index].(map[string]any)["id"]; gotID != wantID {
+			t.Fatalf("completed output[%d] id=%v, want %v", index, gotID, wantID)
+		}
+	}
+	out := buf.String()
+	addedIDs := make(map[int]string, len(wantTypes))
+	doneIDs := make(map[int]string, len(wantTypes))
+	for _, event := range decodeSSEPayloads(t, out) {
+		typeName, _ := event["type"].(string)
+		if typeName != "response.output_item.added" && typeName != "response.output_item.done" {
+			continue
+		}
+		index, ok := numberAsInt(event["output_index"])
+		if !ok {
+			t.Fatalf("event missing output_index: %#v", event)
+		}
+		item := event["item"].(map[string]any)
+		id, _ := item["id"].(string)
+		if typeName == "response.output_item.added" {
+			if item["status"] != "in_progress" {
+				t.Fatalf("added item[%d] = %#v", index, item)
+			}
+			addedIDs[index] = id
+		} else {
+			if item["status"] != "completed" {
+				t.Fatalf("done item[%d] = %#v", index, item)
+			}
+			doneIDs[index] = id
+		}
+	}
+	for index := range wantTypes {
+		if addedIDs[index] == "" || doneIDs[index] != addedIDs[index] {
+			t.Fatalf("item[%d] lifecycle added=%q done=%q\n%s", index, addedIDs[index], doneIDs[index], out)
+		}
+	}
+}
+
+func TestResponsesStreamLateReasoningDoesNotRenumberEarlierItems(t *testing.T) {
+	var buf strings.Builder
+	stream := newWebResponsesStream(&buf, "resp_1")
+	if err := stream.HostedSearch(hostedSearchCall{ID: "search_1", Kind: "web_search", Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Delta("text", "answer"); err != nil {
+		t.Fatal(err)
+	}
+	parsed := parsedChat{}
+	parsed.Text.WriteString("answer")
+	parsed.Reasoning.WriteString("late reasoning")
+	if err := stream.Finish(&parsed); err != nil {
+		t.Fatal(err)
+	}
+	wantTypes := []string{"web_search_call", "message", "reasoning"}
+	for index, wantType := range wantTypes {
+		item := parsed.ResponseOutput[index].(map[string]any)
+		if item["type"] != wantType {
+			t.Fatalf("output[%d] = %#v", index, item)
+		}
+	}
+	if !strings.Contains(buf.String(), `"output_index":0`) || !strings.Contains(buf.String(), `"output_index":1`) || !strings.Contains(buf.String(), `"output_index":2`) {
+		t.Fatalf("stream indices = %s", buf.String())
 	}
 }
 
@@ -348,4 +585,25 @@ func TestWriteStreamDoneChatIncludesServerSideToolUsage(t *testing.T) {
 	if !strings.Contains(out, "data: [DONE]") {
 		t.Fatalf("missing DONE: %s", out)
 	}
+	if strings.Contains(out, `"annotations"`) {
+		t.Fatalf("final chunk must not repeat progressive annotations: %s", out)
+	}
+}
+
+func decodeSSEPayloads(t *testing.T, stream string) []map[string]any {
+	t.Helper()
+	var payloads []map[string]any
+	for _, block := range strings.Split(stream, "\n\n") {
+		for _, line := range strings.Split(block, "\n") {
+			if !strings.HasPrefix(line, "data: ") || line == "data: [DONE]" {
+				continue
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &payload); err != nil {
+				t.Fatalf("decode SSE payload %q: %v", line, err)
+			}
+			payloads = append(payloads, payload)
+		}
+	}
+	return payloads
 }

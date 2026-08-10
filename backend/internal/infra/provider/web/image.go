@@ -510,9 +510,9 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 			return nil, err
 		}
 		if parsed.Text.Len() > 0 {
-			parsed.Text.WriteString("\n\n")
+			parsed.appendText("\n\n")
 		}
-		parsed.Text.WriteString(liteImageMarkdown(item))
+		parsed.appendText(liteImageMarkdown(item))
 	}
 	payload := buildOpenAIResult("chat", responseID, input.Model, parsed, false)
 	data, err := json.Marshal(payload)
@@ -540,7 +540,7 @@ func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWrite
 		if parsed.Text.Len() > 0 {
 			delta = "\n\n" + delta
 		}
-		parsed.Text.WriteString(delta)
+		parsed.appendText(delta)
 		if err := writeStreamDelta(writer, "chat", responseID, model, "text", delta); err != nil {
 			_ = writer.CloseWithError(err)
 			return
