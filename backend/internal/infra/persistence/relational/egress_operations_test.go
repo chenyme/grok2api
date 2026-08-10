@@ -790,16 +790,17 @@ func TestEgressOperationsStoresSubscriptionURLEncrypted(t *testing.T) {
 	cipher := egressOperationsCipher(t)
 	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
 	url := "https://subscription.example/proxies?token=subscription-token"
+	proxyURL := "socks5h://proxy-user:proxy-secret@proxy.example:1080"
 	interval := 900
 	capacity := 3
 	created, err := service.CreateSource(ctx, egressapp.SubscriptionSourceInput{
-		Name: "source", Scope: egress.ScopeBuild, Enabled: true, URL: &url,
+		Name: "source", Scope: egress.ScopeBuild, Enabled: true, URL: &url, ProxyURL: &proxyURL,
 		RefreshIntervalSeconds: &interval, DefaultAccountCapacity: &capacity,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !created.URLConfigured || created.DefaultAccountCapacity != capacity {
+	if !created.URLConfigured || !created.ProxyConfigured || created.DefaultAccountCapacity != capacity {
 		t.Fatalf("public source = %#v", created)
 	}
 	stored, err := nodes.GetEgressSource(ctx, created.ID)
@@ -808,6 +809,25 @@ func TestEgressOperationsStoresSubscriptionURLEncrypted(t *testing.T) {
 	}
 	if stored.EncryptedURL == url || strings.Contains(stored.EncryptedURL, "subscription-token") {
 		t.Fatalf("subscription URL stored in plaintext: %q", stored.EncryptedURL)
+	}
+	if stored.EncryptedProxyURL == proxyURL || strings.Contains(stored.EncryptedProxyURL, "proxy-secret") {
+		t.Fatalf("subscription proxy URL stored in plaintext: %q", stored.EncryptedProxyURL)
+	}
+	updated, err := service.UpdateSource(ctx, created.ID, egressapp.SubscriptionSourceInput{
+		Name: created.Name, Scope: created.Scope, Enabled: created.Enabled, ClearProxyURL: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ProxyConfigured {
+		t.Fatal("cleared subscription proxy remains publicly configured")
+	}
+	stored, err = nodes.GetEgressSource(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EncryptedProxyURL != "" {
+		t.Fatal("cleared subscription proxy remains encrypted at rest")
 	}
 }
 
