@@ -628,10 +628,66 @@ func (s *Service) selectConversationRoute(routes []modeldomain.Route, key client
 // rendezvous score. Provider priority remains stable, while a session seed keeps
 // Codex/Claude continuations on the same target without global mutable state.
 func orderConversationRouteTargets(routes []modeldomain.Route, seed string) []modeldomain.Route {
+	return orderConversationRouteTargetsForTools(routes, seed, conversationToolRequirements{})
+}
+
+type conversationToolRequirements struct {
+	xSearch           bool
+	requiredWebSearch bool
+}
+
+func parseConversationToolRequirements(body []byte) conversationToolRequirements {
+	var payload struct {
+		Tools      []map[string]any `json:"tools"`
+		ToolChoice any              `json:"tool_choice"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return conversationToolRequirements{}
+	}
+	var requirements conversationToolRequirements
+	hasWebSearch := false
+	for _, tool := range payload.Tools {
+		typeName, _ := tool["type"].(string)
+		switch strings.ToLower(strings.TrimSpace(typeName)) {
+		case "x_search":
+			requirements.xSearch = true
+		case "web_search", "web_search_preview", "web_search_preview_2025_03_11", "web_search_2025_08_26":
+			hasWebSearch = true
+		}
+	}
+	required := false
+	switch choice := payload.ToolChoice.(type) {
+	case string:
+		required = strings.EqualFold(strings.TrimSpace(choice), "required")
+	case map[string]any:
+		typeName, _ := choice["type"].(string)
+		switch strings.ToLower(strings.TrimSpace(typeName)) {
+		case "required", "web_search", "web_search_preview", "web_search_preview_2025_03_11", "web_search_2025_08_26":
+			required = true
+		}
+	}
+	requirements.requiredWebSearch = hasWebSearch && required
+	return requirements
+}
+
+func filterConversationRoutesForTools(routes []modeldomain.Route, requirements conversationToolRequirements) []modeldomain.Route {
+	if !requirements.xSearch {
+		return routes
+	}
+	filtered := make([]modeldomain.Route, 0, len(routes))
+	for _, route := range routes {
+		if route.Provider != accountdomain.ProviderWeb {
+			filtered = append(filtered, route)
+		}
+	}
+	return filtered
+}
+
+func orderConversationRouteTargetsForTools(routes []modeldomain.Route, seed string, requirements conversationToolRequirements) []modeldomain.Route {
 	ordered := append([]modeldomain.Route(nil), routes...)
 	sort.SliceStable(ordered, func(left, right int) bool {
-		leftPriority := routeProviderPriority(ordered[left].Provider)
-		rightPriority := routeProviderPriority(ordered[right].Provider)
+		leftPriority := routeProviderPriorityForTools(ordered[left], requirements)
+		rightPriority := routeProviderPriorityForTools(ordered[right], requirements)
 		if leftPriority != rightPriority {
 			return leftPriority < rightPriority
 		}
@@ -643,6 +699,42 @@ func orderConversationRouteTargets(routes []modeldomain.Route, seed string) []mo
 		return ordered[left].ID < ordered[right].ID
 	})
 	return ordered
+}
+
+func routeProviderPriorityForTools(route modeldomain.Route, requirements conversationToolRequirements) int {
+	providerValue := route.Provider
+	publicModel := modeldomain.ExternalPublicID(providerValue, route.PublicID)
+	if publicModel == "" {
+		publicModel = modeldomain.DisplayUpstreamModel(providerValue, route.UpstreamModel)
+		if separator := strings.IndexByte(publicModel, '/'); separator >= 0 {
+			publicModel = publicModel[separator+1:]
+		}
+	}
+	if (requirements.xSearch || requirements.requiredWebSearch) && strings.EqualFold(strings.TrimSpace(publicModel), "grok-4.5") {
+		switch providerValue {
+		case accountdomain.ProviderConsole:
+			return 0
+		case accountdomain.ProviderBuild:
+			return 1
+		case accountdomain.ProviderWeb:
+			return 2
+		default:
+			return 3
+		}
+	}
+	if requirements.requiredWebSearch {
+		switch providerValue {
+		case accountdomain.ProviderBuild:
+			return 0
+		case accountdomain.ProviderConsole:
+			return 1
+		case accountdomain.ProviderWeb:
+			return 2
+		default:
+			return 3
+		}
+	}
+	return routeProviderPriority(providerValue)
 }
 
 func routeTargetScore(seed string, routeID uint64) uint64 {
@@ -767,8 +859,14 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	route := fallbackRoute
 	orderedRoutes := eligibleRoutes
 	if routeErr == nil {
-		orderedRoutes = orderConversationRouteTargets(eligibleRoutes, routeTargetSeed(input))
-		route = orderedRoutes[0]
+		toolRequirements := parseConversationToolRequirements(input.Body)
+		orderedRoutes = filterConversationRoutesForTools(eligibleRoutes, toolRequirements)
+		if len(orderedRoutes) == 0 {
+			routeErr = ErrConversationUnsupported
+		} else {
+			orderedRoutes = orderConversationRouteTargetsForTools(orderedRoutes, routeTargetSeed(input), toolRequirements)
+			route = orderedRoutes[0]
+		}
 	}
 	accountScope := input.ClientKey.AccountScope()
 	var preselectedSession *selectionSession

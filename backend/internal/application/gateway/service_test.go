@@ -845,6 +845,38 @@ func TestOrderConversationRouteTargetsIsSessionStableAndProviderScoped(t *testin
 	}
 }
 
+func TestConversationToolRequirementsRouteByProviderCapability(t *testing.T) {
+	routes := []modeldomain.Route{
+		{ID: 10, Provider: account.ProviderBuild},
+		{ID: 20, Provider: account.ProviderWeb},
+		{ID: 30, Provider: account.ProviderConsole},
+	}
+	requirements := parseConversationToolRequirements([]byte(`{
+		"tools":[{"type":"web_search"},{"type":"x_search"}],
+		"tool_choice":"required"
+	}`))
+	if !requirements.xSearch || !requirements.requiredWebSearch {
+		t.Fatalf("requirements = %#v", requirements)
+	}
+	filtered := filterConversationRoutesForTools(routes, requirements)
+	if len(filtered) != 2 || filtered[0].Provider != account.ProviderBuild || filtered[1].Provider != account.ProviderConsole {
+		t.Fatalf("x_search routes = %#v", filtered)
+	}
+	ordered := orderConversationRouteTargetsForTools(routes, "session", conversationToolRequirements{requiredWebSearch: true})
+	if ordered[0].Provider != account.ProviderBuild || ordered[1].Provider != account.ProviderConsole || ordered[2].Provider != account.ProviderWeb {
+		t.Fatalf("required web_search order = %#v", ordered)
+	}
+	searchRoutes := []modeldomain.Route{
+		{ID: 10, PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5"},
+		{ID: 20, PublicID: "Web/grok-4.5", Provider: account.ProviderWeb, UpstreamModel: "grok-4.5"},
+		{ID: 30, PublicID: "Console/grok-4.5", Provider: account.ProviderConsole, UpstreamModel: "grok-4.5"},
+	}
+	ordered = orderConversationRouteTargetsForTools(searchRoutes, "session", conversationToolRequirements{xSearch: true})
+	if ordered[0].Provider != account.ProviderConsole || ordered[1].Provider != account.ProviderBuild || ordered[2].Provider != account.ProviderWeb {
+		t.Fatalf("grok-4.5 search order = %#v", ordered)
+	}
+}
+
 func TestRouteTargetSeedUsesSessionSignalsAndSoftMessageAnchor(t *testing.T) {
 	base := Input{
 		RequestID: "request-a", ClientKey: clientkey.Key{ID: 17},
