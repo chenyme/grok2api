@@ -185,6 +185,140 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
+	spec, ok := Resolve("grok-4.3")
+	if !ok {
+		t.Fatal("grok-4.3 missing")
+	}
+
+	t.Run("forwards enable_image_search on web_search", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"web_search","enable_image_search":true,"custom":true}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		tools, _ := payload["tools"].([]any)
+		if len(tools) != 1 {
+			t.Fatalf("tools = %#v", tools)
+		}
+		webSearch, _ := tools[0].(map[string]any)
+		if webSearch["type"] != "web_search" || webSearch["enable_image_understanding"] != true {
+			t.Fatalf("web_search defaults = %#v", webSearch)
+		}
+		if webSearch["enable_image_search"] != true {
+			t.Fatalf("enable_image_search not forwarded: %#v", webSearch)
+		}
+		if webSearch["custom"] != nil {
+			t.Fatalf("unknown field custom should be stripped: %#v", webSearch)
+		}
+	})
+
+	t.Run("omits enable_image_search when client does not set it", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"web_search"}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		webSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if _, exists := webSearch["enable_image_search"]; exists {
+			t.Fatalf("enable_image_search should be absent by default: %#v", webSearch)
+		}
+	})
+
+	t.Run("forwards valid x_search from_date and to_date", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","from_date":"2026-07-01","to_date":"2026-07-23","noise":1}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if xSearch["type"] != "x_search" || xSearch["enable_video_understanding"] != true {
+			t.Fatalf("x_search defaults = %#v", xSearch)
+		}
+		if xSearch["from_date"] != "2026-07-01" || xSearch["to_date"] != "2026-07-23" {
+			t.Fatalf("date bounds not forwarded: %#v", xSearch)
+		}
+		if xSearch["noise"] != nil {
+			t.Fatalf("unknown field noise should be stripped: %#v", xSearch)
+		}
+	})
+
+	t.Run("drops invalid date formats", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","from_date":"2026-7-01","to_date":"2026-02-30"}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if xSearch["from_date"] != nil || xSearch["to_date"] != nil {
+			t.Fatalf("invalid dates should be dropped: %#v", xSearch)
+		}
+		if xSearch["type"] != "x_search" || xSearch["enable_video_understanding"] != true {
+			t.Fatalf("x_search defaults should remain: %#v", xSearch)
+		}
+	})
+
+	t.Run("drops inverted date range", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","from_date":"2026-07-24","to_date":"2026-07-23"}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if xSearch["from_date"] != nil || xSearch["to_date"] != nil {
+			t.Fatalf("inverted range should drop both bounds: %#v", xSearch)
+		}
+	})
+
+	t.Run("keeps only from_date when to_date absent", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","from_date":"2026-08-01"}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if xSearch["from_date"] != "2026-08-01" || xSearch["to_date"] != nil {
+			t.Fatalf("single bound = %#v", xSearch)
+		}
+	})
+}
+
 func TestNormalizeRequestDoesNotInjectToolsForConsoleCatalog(t *testing.T) {
 	for _, spec := range catalog {
 		t.Run(spec.PublicID, func(t *testing.T) {
