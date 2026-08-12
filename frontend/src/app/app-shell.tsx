@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Box, ChevronDown, Eye, Image, KeyRound, Languages, LayoutDashboard, LogOut, Menu, MessageSquareText, Monitor, Moon, MoreHorizontal, Settings, ShieldCheck, Sparkles, Sun, Users, Video } from "lucide-react";
+import { AudioLines, Box, ChevronDown, Eye, Image, KeyRound, Languages, LayoutDashboard, LogOut, Menu, MessageSquareText, Monitor, Moon, MoreHorizontal, Settings, ShieldCheck, Sparkles, Sun, Users, Video } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useState, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
@@ -56,6 +56,18 @@ const documentation = [
     items: [
       { href: "/docs/video/generations", label: "Video Generations", method: "POST" },
       { href: "/docs/video/get", label: "Get Video", method: "GET" },
+    ],
+  },
+  {
+    label: "Voice",
+    icon: AudioLines,
+    items: [
+      { href: "/docs/voice/tts", label: "Text to Speech", method: "POST" },
+      { href: "/docs/voice/voices", label: "List Voices", method: "GET" },
+      { href: "/docs/voice/stt", label: "Speech to Text", method: "POST" },
+      { href: "/docs/voice/realtime-secrets", label: "Realtime Secrets", method: "POST" },
+      { href: "/docs/voice/realtime", label: "Realtime WebSocket", method: "GET" },
+      { href: "/docs/voice/custom-voices", label: "Custom Voices", method: "POST" },
     ],
   },
 ] as const;
