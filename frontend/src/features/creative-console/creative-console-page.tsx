@@ -22,6 +22,8 @@ import type { ModelRouteDTO } from "@/entities/model/types";
 import {
   createChatResponse,
   createVideo,
+  editVideo,
+  extendVideo,
   generateImage,
   getVideo,
   listVoices,
@@ -89,6 +91,8 @@ const videoAspectRatios = ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"] as
 const imageResolutions = ["1k", "2k"] as const;
 const videoResolutions = ["480p", "720p", "1080p"] as const;
 const videoDurations = ["6", "10", "15"] as const;
+const videoExtendDurations = ["2", "4", "6", "8", "10"] as const;
+type VideoAction = "generate" | "edit" | "extend";
 const chatHistoryStoragePrefix = "grok2api:creative-console:chat-history:";
 const chatHistoryMaxSessions = 50;
 const chatHistoryMaxBytes = 4 * 1024 * 1024;
@@ -922,25 +926,69 @@ function ImagePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
 
 function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePanelProps) {
   const { t } = useTranslation();
+  const [action, setAction] = useState<VideoAction>("generate");
   const [prompt, setPrompt] = useState("");
   const [imageURL, setImageURL] = useState("");
   const [imageFileID, setImageFileID] = useState("");
+  const [sourceVideoURL, setSourceVideoURL] = useState("");
   const [duration, setDuration] = useState("6");
+  const [extendDuration, setExtendDuration] = useState("6");
   const [aspectRatio, setAspectRatio] = useState("16:9");
   const [resolution, setResolution] = useState("720p");
   const [job, setJob] = useState<{ requestId: string; apiKey: string } | null>(null);
   const imageFileInputRef = useRef<HTMLInputElement | null>(null);
   const imageSelectionVersionRef = useRef(0);
 
+  const generateModels = useMemo(() => uniqueModelsByPublicID(modelOptions.filter((item) => item.capability === "video")), [modelOptions]);
+  const editModels = useMemo(
+    () => uniqueModelsByPublicID(generateModels.filter((item) => item.publicId === "grok-imagine-video" || item.publicId.endsWith("/grok-imagine-video"))),
+    [generateModels],
+  );
+  const activeModels = action === "generate" ? generateModels : editModels;
+  const activeModel = activeModels.some((item) => item.publicId === model)
+    ? model
+    : activeModels[0]?.publicId ?? "";
+
+  useEffect(() => {
+    if (activeModel && activeModel !== model) onModelChange(activeModel);
+  }, [activeModel, model, onModelChange]);
+
   const createMutation = useMutation({
-    mutationFn: async (request: Parameters<typeof createVideo>[0]) => {
-      if (!request.imageFileID && request.imageURL && /^https?:\/\//i.test(request.imageURL)) {
-        const staged = await importVideoInputFromURL(request.imageURL);
-        return createVideo({ ...request, imageURL: undefined, imageFileID: staged.fileId });
+    mutationFn: async () => {
+      if (!apiKey || !activeModel) throw new Error(t("creativeConsole.errors.noModels"));
+      if (action === "generate") {
+        let nextImageURL = imageURL.trim() || undefined;
+        let nextImageFileID = imageFileID || undefined;
+        if (!nextImageFileID && nextImageURL && /^https?:\/\//i.test(nextImageURL)) {
+          const staged = await importVideoInputFromURL(nextImageURL);
+          nextImageURL = undefined;
+          nextImageFileID = staged.fileId;
+        }
+        return createVideo({
+          apiKey,
+          model: activeModel,
+          prompt: prompt.trim(),
+          imageURL: nextImageURL,
+          imageFileID: nextImageFileID,
+          duration: Number(duration),
+          aspectRatio,
+          resolution,
+        });
       }
-      return createVideo(request);
+      const videoURL = sourceVideoURL.trim();
+      if (!videoURL) throw new Error(t("creativeConsole.errors.noSourceVideo"));
+      if (action === "edit") {
+        return editVideo({ apiKey, model: activeModel, prompt: prompt.trim(), videoURL });
+      }
+      return extendVideo({
+        apiKey,
+        model: activeModel,
+        prompt: prompt.trim(),
+        videoURL,
+        duration: Number(extendDuration),
+      });
     },
-    onSuccess: (requestId, request) => setJob({ requestId, apiKey: request.apiKey }),
+    onSuccess: (requestId) => setJob({ requestId, apiKey }),
   });
 
   // 本地图片进入有 TTL 的隐藏临时区；视频任务只持久化短 file_id，不写入图库或公开 URL。
@@ -963,26 +1011,46 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
 
   function submit(event: FormEvent): void {
     event.preventDefault();
-    if (!apiKey || !model || (!prompt.trim() && !imageURL.trim() && !imageFileID) || !validDuration(duration) || createMutation.isPending || uploadMutation.isPending) return;
+    if (!apiKey || !activeModel || createMutation.isPending || uploadMutation.isPending) return;
+    if (!prompt.trim()) return;
+    if (action === "generate") {
+      if ((!prompt.trim() && !imageURL.trim() && !imageFileID) || !validDuration(duration)) return;
+    } else if (!sourceVideoURL.trim()) {
+      return;
+    } else if (action === "extend") {
+      const value = Number(extendDuration);
+      if (!Number.isFinite(value) || value < 2 || value > 10) return;
+    }
     setJob(null);
     createMutation.reset();
-    createMutation.mutate({
-      apiKey,
-      model,
-      prompt: prompt.trim(),
-      imageURL: imageURL.trim() || undefined,
-      imageFileID: imageFileID || undefined,
-      duration: Number(duration),
-      aspectRatio,
-      resolution,
-    });
+    createMutation.mutate();
   }
+
+  const placeholder = action === "generate"
+    ? t("creativeConsole.videoPlaceholder")
+    : action === "edit"
+      ? t("creativeConsole.videoEditPlaceholder")
+      : t("creativeConsole.videoExtendPlaceholder");
+  const welcome = action === "generate"
+    ? t("creativeConsole.welcomeVideo")
+    : action === "edit"
+      ? t("creativeConsole.welcomeVideoEdit")
+      : t("creativeConsole.welcomeVideoExtend");
+  const submitLabel = action === "generate"
+    ? t("creativeConsole.generateVideo")
+    : action === "edit"
+      ? t("creativeConsole.editVideo")
+      : t("creativeConsole.extendVideo");
+  const canSubmit = Boolean(apiKey && activeModel && prompt.trim() && !createMutation.isPending && !uploadMutation.isPending
+    && (action === "generate"
+      ? (prompt.trim() || imageURL.trim() || imageFileID) && validDuration(duration)
+      : sourceVideoURL.trim() && (action !== "extend" || (Number(extendDuration) >= 2 && Number(extendDuration) <= 10))));
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="min-h-0 flex-1 overflow-y-auto py-6">
         <div className="flex min-h-full w-full flex-col justify-center px-3 sm:px-6">
-          {!job && !createMutation.isPending ? <WelcomeState title={t("creativeConsole.welcomeVideo")} /> : null}
+          {!job && !createMutation.isPending ? <WelcomeState title={welcome} /> : null}
           {createMutation.isPending ? <LoadingResult text={t("creativeConsole.submittingVideo")} /> : null}
           {job ? (
             <VideoResult
@@ -998,52 +1066,98 @@ function VideoPanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
 
       <form className="w-full shrink-0 px-3 pb-2 sm:px-6 sm:pb-3" onSubmit={submit}>
         <div className={composerClassName}>
-          <Textarea id="video-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t("creativeConsole.videoPlaceholder")} className="min-h-24 resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0" />
+          <div className="flex flex-wrap items-center gap-1 px-3 pt-3">
+            {([
+              ["generate", t("creativeConsole.videoActions.generate")],
+              ["edit", t("creativeConsole.videoActions.edit")],
+              ["extend", t("creativeConsole.videoActions.extend")],
+            ] as const).map(([value, label]) => (
+              <Button
+                key={value}
+                type="button"
+                variant="ghost"
+                size="sm"
+                className={cn("h-7 rounded-full px-3 text-xs font-normal", action === value && "bg-secondary/70 text-foreground")}
+                onClick={() => {
+                  setAction(value);
+                  setJob(null);
+                  createMutation.reset();
+                }}
+              >
+                {label}
+              </Button>
+            ))}
+          </div>
+          <Textarea id="video-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={placeholder} className="min-h-24 resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0" />
           <div className="flex items-center justify-between gap-3 px-3 pb-3">
             <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
-              <CompactModelSelect value={model} models={modelOptions} onChange={onModelChange} />
-              <Popover>
-                <PopoverTrigger asChild>
-                  <Button type="button" variant="ghost" size="sm" className={cn("h-8 gap-1.5 px-2 font-normal", (imageURL || imageFileID) && "bg-secondary/70 text-foreground")} aria-label={t("creativeConsole.referenceImage")}>
-                    <ImagePlus />{imageURL || imageFileID ? t("creativeConsole.referenceImageAdded") : t("creativeConsole.referenceImageShort")}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="start" className="w-80 p-3">
-                  <div className="mb-2 text-xs font-medium">{t("creativeConsole.referenceImage")}</div>
-                  <div className="flex items-center gap-2">
-                    <Input id="video-image" type="url" value={imageURL} onChange={(event) => { imageSelectionVersionRef.current += 1; setImageURL(event.target.value); setImageFileID(""); }} placeholder={imageFileID ? t("creativeConsole.referenceImageAdded") : "https://..."} aria-label={t("creativeConsole.referenceImage")} />
-                    {imageURL || imageFileID ? <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.clearReferenceImage")} onClick={() => { imageSelectionVersionRef.current += 1; setImageURL(""); setImageFileID(""); }}><X /></Button> : null}
-                  </div>
-                  <input
-                    ref={imageFileInputRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp,image/gif"
-                    className="hidden"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) {
-                        const selectionVersion = imageSelectionVersionRef.current + 1;
-                        imageSelectionVersionRef.current = selectionVersion;
-                        setImageURL("");
-                        setImageFileID("");
-                        uploadMutation.reset();
-                        uploadMutation.mutate({ file, selectionVersion });
-                      }
-                      event.target.value = "";
-                    }}
-                  />
-                  <Button type="button" variant="secondary" size="sm" className="mt-2 w-full" disabled={uploadMutation.isPending} onClick={() => imageFileInputRef.current?.click()}>
-                    {uploadMutation.isPending ? <Loader2 className="animate-spin" /> : <Upload />}
-                    {t("creativeConsole.uploadImage")}
-                  </Button>
-                  {uploadMutation.isError ? <p className="mt-1 text-[11px] text-destructive">{uploadMutation.error.message}</p> : null}
-                </PopoverContent>
-              </Popover>
-              <CompactSelect value={duration} options={videoDurations} onChange={setDuration} ariaLabel={t("creativeConsole.duration")} suffix="s" icon={<Clock3 />} />
-              <CompactSelect value={aspectRatio} options={videoAspectRatios} onChange={setAspectRatio} ariaLabel={t("creativeConsole.aspectRatio")} icon={<TvMinimal />} />
-              <CompactSelect value={resolution} options={videoResolutions} onChange={setResolution} ariaLabel={t("creativeConsole.resolution")} icon={<ImageUpscale />} />
+              <CompactModelSelect value={activeModel} models={activeModels} onChange={onModelChange} />
+              {action === "generate" ? (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button type="button" variant="ghost" size="sm" className={cn("h-8 gap-1.5 px-2 font-normal", (imageURL || imageFileID) && "bg-secondary/70 text-foreground")} aria-label={t("creativeConsole.referenceImage")}>
+                      <ImagePlus />{imageURL || imageFileID ? t("creativeConsole.referenceImageAdded") : t("creativeConsole.referenceImageShort")}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-80 p-3">
+                    <div className="mb-2 text-xs font-medium">{t("creativeConsole.referenceImage")}</div>
+                    <div className="flex items-center gap-2">
+                      <Input id="video-image" type="url" value={imageURL} onChange={(event) => { imageSelectionVersionRef.current += 1; setImageURL(event.target.value); setImageFileID(""); }} placeholder={imageFileID ? t("creativeConsole.referenceImageAdded") : "https://..."} aria-label={t("creativeConsole.referenceImage")} />
+                      {imageURL || imageFileID ? <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.clearReferenceImage")} onClick={() => { imageSelectionVersionRef.current += 1; setImageURL(""); setImageFileID(""); }}><X /></Button> : null}
+                    </div>
+                    <input
+                      ref={imageFileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (file) {
+                          const selectionVersion = imageSelectionVersionRef.current + 1;
+                          imageSelectionVersionRef.current = selectionVersion;
+                          setImageURL("");
+                          setImageFileID("");
+                          uploadMutation.reset();
+                          uploadMutation.mutate({ file, selectionVersion });
+                        }
+                        event.target.value = "";
+                      }}
+                    />
+                    <Button type="button" variant="secondary" size="sm" className="mt-2 w-full" disabled={uploadMutation.isPending} onClick={() => imageFileInputRef.current?.click()}>
+                      {uploadMutation.isPending ? <Loader2 className="animate-spin" /> : <Upload />}
+                      {t("creativeConsole.uploadImage")}
+                    </Button>
+                    {uploadMutation.isError ? <p className="mt-1 text-[11px] text-destructive">{uploadMutation.error.message}</p> : null}
+                  </PopoverContent>
+                </Popover>
+              ) : (
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button type="button" variant="ghost" size="sm" className={cn("h-8 gap-1.5 px-2 font-normal", sourceVideoURL && "bg-secondary/70 text-foreground")} aria-label={t("creativeConsole.sourceVideo")}>
+                      <Video />{sourceVideoURL ? t("creativeConsole.sourceVideoAdded") : t("creativeConsole.sourceVideoShort")}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-80 p-3">
+                    <div className="mb-2 text-xs font-medium">{t("creativeConsole.sourceVideo")}</div>
+                    <div className="flex items-center gap-2">
+                      <Input id="video-source" type="url" value={sourceVideoURL} onChange={(event) => setSourceVideoURL(event.target.value)} placeholder="https://..." aria-label={t("creativeConsole.sourceVideo")} />
+                      {sourceVideoURL ? <Button type="button" variant="ghost" size="icon" className="shrink-0" aria-label={t("creativeConsole.clearSourceVideo")} onClick={() => setSourceVideoURL("")}><X /></Button> : null}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+              )}
+              {action === "generate" ? (
+                <>
+                  <CompactSelect value={duration} options={videoDurations} onChange={setDuration} ariaLabel={t("creativeConsole.duration")} suffix="s" icon={<Clock3 />} />
+                  <CompactSelect value={aspectRatio} options={videoAspectRatios} onChange={setAspectRatio} ariaLabel={t("creativeConsole.aspectRatio")} icon={<TvMinimal />} />
+                  <CompactSelect value={resolution} options={videoResolutions} onChange={setResolution} ariaLabel={t("creativeConsole.resolution")} icon={<ImageUpscale />} />
+                </>
+              ) : null}
+              {action === "extend" ? (
+                <CompactSelect value={extendDuration} options={videoExtendDurations} onChange={setExtendDuration} ariaLabel={t("creativeConsole.extendDuration")} suffix="s" icon={<Clock3 />} />
+              ) : null}
             </div>
-            <Button type="submit" size="icon" aria-label={t("creativeConsole.generateVideo")} disabled={!apiKey || !model || (!prompt.trim() && !imageURL.trim() && !imageFileID) || !validDuration(duration) || createMutation.isPending || uploadMutation.isPending}>
+            <Button type="submit" size="icon" aria-label={submitLabel} disabled={!canSubmit}>
               {createMutation.isPending ? <Loader2 className="animate-spin" /> : <ArrowUp />}
             </Button>
           </div>

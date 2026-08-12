@@ -143,6 +143,59 @@ export async function createVideo(input: {
   return requestId;
 }
 
+export async function editVideo(input: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  videoURL: string;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const payload = await publicApiRequest(
+    input.apiKey,
+    "/videos/edits",
+    {
+      method: "POST",
+      body: {
+        model: input.model,
+        prompt: input.prompt,
+        video: { url: input.videoURL },
+      },
+      signal: input.signal,
+    },
+  );
+  const requestId = readVideoRequestID(payload);
+  if (!requestId) {
+    throw new CreativeApiError(200, "The video response did not contain a request ID", "invalid_response");
+  }
+  return requestId;
+}
+
+export async function extendVideo(input: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  videoURL: string;
+  duration?: number;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const body: Record<string, unknown> = {
+    model: input.model,
+    prompt: input.prompt,
+    video: { url: input.videoURL },
+  };
+  if (typeof input.duration === "number") body.duration = input.duration;
+  const payload = await publicApiRequest(
+    input.apiKey,
+    "/videos/extensions",
+    { method: "POST", body, signal: input.signal },
+  );
+  const requestId = readVideoRequestID(payload);
+  if (!requestId) {
+    throw new CreativeApiError(200, "The video response did not contain a request ID", "invalid_response");
+  }
+  return requestId;
+}
+
 export async function getVideo(input: {
   apiKey: string;
   requestId: string;
