@@ -411,10 +411,21 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		return
 	}
 	lastProgress := job.Progress
+	// media_jobs keeps non-empty seconds/size/quality placeholders for edit/extend,
+	// but upstream edit/extension APIs must not receive those generation-only fields.
+	duration := job.Seconds
+	aspectRatio := job.Size
+	resolution := job.Quality
+	switch operation {
+	case provider.VideoOperationEdit:
+		duration, aspectRatio, resolution = 0, "", ""
+	case provider.VideoOperationExtend:
+		aspectRatio, resolution = "", ""
+	}
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
 		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Model: route.UpstreamModel,
 		Operation: operation,
-		Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
+		Prompt: job.Prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
 		ImageURL: imageURL, ReferenceURLs: referenceURLs, VideoURL: videoURL,
 		Progress: func(value int) {
 			value = min(99, max(1, value))
