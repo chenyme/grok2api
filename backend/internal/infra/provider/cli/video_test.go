@@ -38,7 +38,7 @@ func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 
 	withImage, err := videoCreatePayload(provider.VideoRequest{
 		Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
-		ReferenceURLs: []string{"https://cdn.example.com/r2/first.png"},
+		ImageURL: "https://cdn.example.com/r2/first.png",
 	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
@@ -47,8 +47,26 @@ func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 	if !ok || image["image_url"] != "https://cdn.example.com/r2/first.png" {
 		t.Fatalf("image payload = %#v", withImage)
 	}
+	if _, exists := withImage["reference_images"]; exists {
+		t.Fatalf("first-frame payload must not include reference_images: %#v", withImage)
+	}
 	if withImage["model"] != buildVideoModel || withImage["resolution"] != "720p" || withImage["aspect_ratio"] != "16:9" {
 		t.Fatalf("single-image payload = %#v", withImage)
+	}
+
+	withSingleReference, err := videoCreatePayload(provider.VideoRequest{
+		Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
+		ReferenceURLs: []string{"https://cdn.example.com/r2/ref-only.png"},
+	}, "", buildVideoRequestProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := withSingleReference["image"]; exists {
+		t.Fatalf("single reference must not coerce to image: %#v", withSingleReference)
+	}
+	singleRefs, ok := withSingleReference["reference_images"].([]map[string]any)
+	if !ok || len(singleRefs) != 1 || singleRefs[0]["image_url"] != "https://cdn.example.com/r2/ref-only.png" {
+		t.Fatalf("single reference payload = %#v", withSingleReference)
 	}
 
 	withUpload, err := videoCreatePayload(provider.VideoRequest{Prompt: "x", Duration: 6}, "https://api.example/v1/media/uploads/tok", buildVideoRequestProfile)
@@ -63,11 +81,11 @@ func TestBuildVideoCreatePayloadNoImageAndSingleR2URL(t *testing.T) {
 
 func TestBuildVideoCreatePayloadImageOnlyEmptyPrompt(t *testing.T) {
 	payload, err := videoCreatePayload(provider.VideoRequest{
-		Prompt:        "   ",
-		Duration:      6,
-		AspectRatio:   "16:9",
-		Resolution:    "720p",
-		ReferenceURLs: []string{"https://r2.example.com/first.png"},
+		Prompt:      "   ",
+		Duration:    6,
+		AspectRatio: "16:9",
+		Resolution:  "720p",
+		ImageURL:    "https://r2.example.com/first.png",
 	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
@@ -83,11 +101,11 @@ func TestBuildVideoCreatePayloadImageOnlyEmptyPrompt(t *testing.T) {
 
 func TestXAIVideoCreatePayloadMatchesOfficialSchema(t *testing.T) {
 	payload, err := videoCreatePayload(provider.VideoRequest{
-		Prompt:        "animate",
-		Duration:      6,
-		AspectRatio:   "16:9",
-		Resolution:    "720p",
-		ReferenceURLs: []string{"https://cdn.example.com/r2/first.png"},
+		Prompt:      "animate",
+		Duration:    6,
+		AspectRatio: "16:9",
+		Resolution:  "720p",
+		ImageURL:    "https://cdn.example.com/r2/first.png",
 	}, "https://api.example/v1/media/uploads/tok", xaiVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
@@ -150,6 +168,28 @@ func TestBuildVideoCreatePayloadMapsMultipleReferences(t *testing.T) {
 	}
 	if _, exists := xaiPayload["image"]; exists {
 		t.Fatalf("xai multi-reference payload must not include image: %#v", xaiPayload)
+	}
+}
+
+func TestBuildVideoCreatePayloadKeepsImageAndReferences(t *testing.T) {
+	payload, err := videoCreatePayload(provider.VideoRequest{
+		Prompt:        "animate",
+		Duration:      6,
+		AspectRatio:   "16:9",
+		Resolution:    "720p",
+		ImageURL:      "https://cdn.example.com/first-frame.png",
+		ReferenceURLs: []string{"https://cdn.example.com/ref.png"},
+	}, "", buildVideoRequestProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, ok := payload["image"].(map[string]any)
+	if !ok || image["image_url"] != "https://cdn.example.com/first-frame.png" {
+		t.Fatalf("image = %#v", payload["image"])
+	}
+	references, ok := payload["reference_images"].([]map[string]any)
+	if !ok || len(references) != 1 || references[0]["image_url"] != "https://cdn.example.com/ref.png" {
+		t.Fatalf("reference_images = %#v", payload["reference_images"])
 	}
 }
 
@@ -275,12 +315,12 @@ func TestGenerateVideoPostsSingleImageAndPollsUntilReady(t *testing.T) {
 
 	var progressValues []int
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential:    account.Credential{ID: 9, UserID: "user-1", EncryptedAccessToken: encrypted},
-		Prompt:        "animate knife",
-		Duration:      6,
-		AspectRatio:   "16:9",
-		Resolution:    "720p",
-		ReferenceURLs: []string{"https://r2.example.com/first.png"},
+		Credential:  account.Credential{ID: 9, UserID: "user-1", EncryptedAccessToken: encrypted},
+		Prompt:      "animate knife",
+		Duration:    6,
+		AspectRatio: "16:9",
+		Resolution:  "720p",
+		ImageURL:    "https://r2.example.com/first.png",
 		Progress: func(value int) {
 			progressValues = append(progressValues, value)
 		},

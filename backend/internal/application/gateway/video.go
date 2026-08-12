@@ -40,13 +40,16 @@ func VideoInputFileReference(fileID string) string {
 }
 
 type VideoInput struct {
-	RequestID     string
-	ClientKey     clientkey.Key
-	PublicModel   string
-	Prompt        string
-	Duration      int
-	AspectRatio   string
-	Resolution    string
+	RequestID   string
+	ClientKey   clientkey.Key
+	PublicModel string
+	Prompt      string
+	Duration    int
+	AspectRatio string
+	Resolution  string
+	// ImageURL is the optional first-frame image (official "image").
+	ImageURL string
+	// ReferenceURLs are style/content references (official "reference_images").
 	ReferenceURLs []string
 }
 
@@ -54,13 +57,14 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if s.mediaJobs == nil || s.mediaQueue == nil {
 		return media.Job{}, fmt.Errorf("视频任务服务未配置")
 	}
-	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && len(input.ReferenceURLs) == 0) {
+	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && strings.TrimSpace(input.ImageURL) == "" && len(input.ReferenceURLs) == 0) {
 		return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 	}
-	if err := s.validateVideoInputReferences(ctx, input.ReferenceURLs); err != nil {
+	allRefs := videoInputReferences(input.ImageURL, input.ReferenceURLs)
+	if err := s.validateVideoInputReferences(ctx, allRefs); err != nil {
 		return media.Job{}, err
 	}
-	inputJSON, err := encodeVideoInput(input.ReferenceURLs)
+	inputJSON, err := encodeVideoInput(input.ImageURL, input.ReferenceURLs)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -97,7 +101,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		AccountID: accountID, AccountName: lease.Credential.Name,
 		Provider: string(route.Provider), Model: externalModel, ModelRouteID: route.ID, UpstreamModel: model.DisplayUpstreamModel(route.Provider, route.UpstreamModel), Prompt: input.Prompt,
 		Seconds: input.Duration, Size: input.AspectRatio, Quality: input.Resolution,
-		Status: media.StatusQueued, Progress: 0, InputJSON: inputJSON, InputImageCount: len(input.ReferenceURLs), CreatedAt: now, UpdatedAt: now,
+		Status: media.StatusQueued, Progress: 0, InputJSON: inputJSON, InputImageCount: len(allRefs), CreatedAt: now, UpdatedAt: now,
 	}
 	reserved := false
 	if pricing, ok := audit.EstimateOfficialVideoCost(externalModel, input.Resolution, input.Duration); ok {
@@ -333,7 +337,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		s.failVideoJob(parent, job, "provider_unavailable", ErrNoAvailableAccount)
 		return
 	}
-	referenceURLs, err := s.resolveVideoInputReferences(ctx, inputReferences)
+	imageURL, referenceURLs, err := s.resolveVideoInputParts(ctx, job.InputJSON)
 	if err != nil {
 		s.failVideoJob(parent, job, "input_unavailable", err)
 		return
@@ -342,7 +346,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
 		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Model: route.UpstreamModel,
 		Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
-		ReferenceURLs: referenceURLs,
+		ImageURL: imageURL, ReferenceURLs: referenceURLs,
 		Progress: func(value int) {
 			value = min(99, max(1, value))
 			if value-lastProgress < 5 {
@@ -497,6 +501,37 @@ func (s *Service) validateVideoInputReferences(ctx context.Context, references [
 		}
 	}
 	return nil
+}
+
+func (s *Service) resolveVideoInputParts(ctx context.Context, inputJSON string) (string, []string, error) {
+	imageURL, referenceURLs := decodeVideoInputParts(inputJSON)
+	all := videoInputReferences(imageURL, referenceURLs)
+	resolved, err := s.resolveVideoInputReferences(ctx, all)
+	if err != nil {
+		return "", nil, err
+	}
+	// Map resolved URLs back while preserving empty/non-empty slots by original order.
+	next := 0
+	take := func(original string) string {
+		original = strings.TrimSpace(original)
+		if original == "" {
+			return ""
+		}
+		if next >= len(resolved) {
+			return original
+		}
+		value := resolved[next]
+		next++
+		return value
+	}
+	outImage := take(imageURL)
+	outRefs := make([]string, 0, len(referenceURLs))
+	for _, raw := range referenceURLs {
+		if value := take(raw); value != "" {
+			outRefs = append(outRefs, value)
+		}
+	}
+	return outImage, outRefs, nil
 }
 
 func (s *Service) resolveVideoInputReferences(ctx context.Context, references []string) ([]string, error) {
@@ -672,8 +707,27 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 	return s.mediaJobs.MarkMediaJobUsageRecorded(markCtx, job.ID, time.Now().UTC())
 }
 
-func encodeVideoInput(referenceURLs []string) (string, error) {
-	data, err := json.Marshal(map[string][]string{"image_urls": referenceURLs})
+func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
+	payload := map[string]any{}
+	if value := strings.TrimSpace(imageURL); value != "" {
+		payload["image_url"] = value
+	}
+	refs := make([]string, 0, len(referenceURLs))
+	for _, raw := range referenceURLs {
+		if value := strings.TrimSpace(raw); value != "" {
+			refs = append(refs, value)
+		}
+	}
+	if len(refs) > 0 {
+		payload["reference_urls"] = refs
+	}
+	// Keep a combined image_urls field for older readers/tools that only
+	// understand the pre-split shape. New workers prefer image_url/reference_urls.
+	combined := videoInputReferences(imageURL, referenceURLs)
+	if len(combined) > 0 {
+		payload["image_urls"] = combined
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("编码视频输入: %w", err)
 	}
@@ -684,9 +738,55 @@ func encodeVideoInput(referenceURLs []string) (string, error) {
 }
 
 func decodeVideoInput(value string) []string {
-	var input map[string][]string
+	imageURL, refs := decodeVideoInputParts(value)
+	return videoInputReferences(imageURL, refs)
+}
+
+func decodeVideoInputParts(value string) (string, []string) {
+	var input struct {
+		ImageURL      string   `json:"image_url"`
+		ReferenceURLs []string `json:"reference_urls"`
+		ImageURLs     []string `json:"image_urls"`
+	}
 	_ = json.Unmarshal([]byte(value), &input)
-	return input["image_urls"]
+	if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 {
+		refs := make([]string, 0, len(input.ReferenceURLs))
+		for _, raw := range input.ReferenceURLs {
+			if v := strings.TrimSpace(raw); v != "" {
+				refs = append(refs, v)
+			}
+		}
+		return strings.TrimSpace(input.ImageURL), refs
+	}
+	// Legacy jobs stored a flat image_urls list. Preserve historical mapping:
+	// one URL was treated as the first-frame image; multiple URLs were references.
+	legacy := make([]string, 0, len(input.ImageURLs))
+	for _, raw := range input.ImageURLs {
+		if v := strings.TrimSpace(raw); v != "" {
+			legacy = append(legacy, v)
+		}
+	}
+	switch len(legacy) {
+	case 0:
+		return "", nil
+	case 1:
+		return legacy[0], nil
+	default:
+		return "", legacy
+	}
+}
+
+func videoInputReferences(imageURL string, referenceURLs []string) []string {
+	values := make([]string, 0, 1+len(referenceURLs))
+	if v := strings.TrimSpace(imageURL); v != "" {
+		values = append(values, v)
+	}
+	for _, raw := range referenceURLs {
+		if v := strings.TrimSpace(raw); v != "" {
+			values = append(values, v)
+		}
+	}
+	return values
 }
 
 func (s *Service) failVideoJob(ctx context.Context, job media.Job, code string, err error) {

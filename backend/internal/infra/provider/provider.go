@@ -280,11 +280,15 @@ type VideoRequest struct {
 	// JobID binds the local video job to XAI ZDR upload tickets and result assets.
 	JobID string
 	// Model is the selected upstream video model when the Provider supports more than one.
-	Model         string
+	Model string
 	Prompt        string
 	Duration      int
 	AspectRatio   string
 	Resolution    string
+	// ImageURL is the optional first-frame image (official "image" field).
+	ImageURL string
+	// ReferenceURLs are style/content references (official "reference_images").
+	// A single reference must stay in reference_images and must not be coerced to image.
 	ReferenceURLs []string
 	Progress      func(int)
 }

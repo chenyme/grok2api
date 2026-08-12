@@ -30,7 +30,7 @@ const (
 	consoleVideoPollEvery       = 2 * time.Second
 	consoleMaxEditImages        = 3
 	// Align with the gateway ceiling and official xAI video inputs:
-	// one start frame via image, or multiple references via reference_images.
+	// image = first frame; reference_images = style/content references (may be length 1).
 	consoleMaxVideoImages = mediadomain.MaxInputImages
 )
 
@@ -403,8 +403,9 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if !ResolveMedia(modelName, modeldomain.CapabilityVideo) {
 		return provider.VideoResult{}, fmt.Errorf("Console 视频模型未注册: %s", modelName)
 	}
-	if len(request.ReferenceURLs) > consoleMaxVideoImages {
-		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张参考图，当前为 %d 张", modelName, consoleMaxVideoImages, len(request.ReferenceURLs))
+	totalImages := consoleVideoImageCount(request)
+	if totalImages > consoleMaxVideoImages {
+		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张输入图，当前为 %d 张", modelName, consoleMaxVideoImages, totalImages)
 	}
 	if request.Duration < 1 || request.Duration > 15 {
 		return provider.VideoResult{}, errors.New("duration 必须在 1 到 15 秒之间")
@@ -424,16 +425,13 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if resolution := strings.TrimSpace(request.Resolution); resolution != "" {
 		payload["resolution"] = resolution
 	}
-	switch len(request.ReferenceURLs) {
-	case 0:
-		// text-to-video
-	case 1:
-		value := strings.TrimSpace(request.ReferenceURLs[0])
-		if !validConsoleMediaInputURL(value, "image") {
+	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
+		if !validConsoleMediaInputURL(imageURL, "image") {
 			return provider.VideoResult{}, errors.New("视频首图必须是 HTTPS URL 或 image data URL")
 		}
-		payload["image"] = map[string]any{"url": value}
-	default:
+		payload["image"] = map[string]any{"url": imageURL}
+	}
+	if len(request.ReferenceURLs) > 0 {
 		references := make([]map[string]any, 0, len(request.ReferenceURLs))
 		for _, rawURL := range request.ReferenceURLs {
 			value := strings.TrimSpace(rawURL)
@@ -442,6 +440,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 			}
 			references = append(references, map[string]any{"url": value})
 		}
+		// A single reference must stay in reference_images; do not coerce to image.
 		payload["reference_images"] = references
 	}
 	if _, hasPrompt := payload["prompt"]; !hasPrompt {
@@ -751,4 +750,17 @@ func safeConsoleMediaText(value string) string {
 func trustedConsoleVideoHost(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	return host == "vidgen.x.ai" || strings.HasSuffix(host, ".vidgen.x.ai")
+}
+
+func consoleVideoImageCount(request provider.VideoRequest) int {
+	count := 0
+	if strings.TrimSpace(request.ImageURL) != "" {
+		count++
+	}
+	for _, raw := range request.ReferenceURLs {
+		if strings.TrimSpace(raw) != "" {
+			count++
+		}
+	}
+	return count
 }

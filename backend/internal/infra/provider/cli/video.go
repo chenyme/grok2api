@@ -23,7 +23,7 @@ const (
 	buildVideoModel             = "grok-imagine-video-1.5"
 	xaiVideoModel               = "grok-imagine-video-1.5-preview"
 	// Align with the gateway ceiling and official xAI video inputs:
-	// one start frame via image, or multiple references via reference_images.
+	// image = first frame; reference_images = style/content references (may be length 1).
 	buildVideoMaxImages = mediadomain.MaxInputImages
 	buildVideoPollEvery         = 2 * time.Second
 	buildVideoMaxBodySize       = 2 << 20
@@ -152,12 +152,12 @@ func boundDiagnosticText(value string, limit int) string {
 
 // GenerateVideo 通过 Build OAuth 创建并轮询视频任务；对外仍使用 grok-imagine-video-1.5，
 // 发往 XAI 时仅在出站协议层转换为官方 preview 模型与 image/reference_images 结构。
-// 1 张图映射为 image；多张图映射为 reference_images。超过网关上限时失败，不静默截断。
+// image = 首帧；reference_images = 参考图（即使只有 1 张也不升格为 image）。超过网关上限时失败，不静默截断。
 // 显式模式优先；auto 下仅已确认 Super 且 bot_flag_source/bfs 为 1 或 2 默认使用 XAI。
 // 其他 auto Super 账号仅在当次 Build 创建返回 403 后探测 XAI。
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
-	if len(request.ReferenceURLs) > buildVideoMaxImages {
-		return provider.VideoResult{}, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 %d 张参考图，当前为 %d 张", buildVideoMaxImages, len(request.ReferenceURLs))
+	if total := buildVideoImageCount(request); total > buildVideoMaxImages {
+		return provider.VideoResult{}, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 %d 张输入图，当前为 %d 张", buildVideoMaxImages, total)
 	}
 	accessToken, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
@@ -294,24 +294,19 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 	if resolution := strings.TrimSpace(request.Resolution); resolution != "" {
 		payload["resolution"] = resolution
 	}
-	switch len(request.ReferenceURLs) {
-	case 0:
-		// text-to-video
-	case 1:
-		imageURL := strings.TrimSpace(request.ReferenceURLs[0])
-		if imageURL == "" {
-			return nil, fmt.Errorf("视频首图 URL 不能为空")
-		}
+	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
 		payload["image"] = map[string]any{profile.imageURLField: imageURL}
-	default:
+	}
+	if len(request.ReferenceURLs) > 0 {
 		references := make([]map[string]any, 0, len(request.ReferenceURLs))
 		for _, rawURL := range request.ReferenceURLs {
-			imageURL := strings.TrimSpace(rawURL)
-			if imageURL == "" {
+			refURL := strings.TrimSpace(rawURL)
+			if refURL == "" {
 				return nil, fmt.Errorf("视频参考图 URL 不能为空")
 			}
-			references = append(references, map[string]any{profile.imageURLField: imageURL})
+			references = append(references, map[string]any{profile.imageURLField: refURL})
 		}
+		// A single reference must stay in reference_images; do not coerce to image.
 		payload["reference_images"] = references
 	}
 	if _, hasPrompt := payload["prompt"]; !hasPrompt {
@@ -572,4 +567,17 @@ func numberAsInt(value any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func buildVideoImageCount(request provider.VideoRequest) int {
+	count := 0
+	if strings.TrimSpace(request.ImageURL) != "" {
+		count++
+	}
+	for _, raw := range request.ReferenceURLs {
+		if strings.TrimSpace(raw) != "" {
+			count++
+		}
+	}
+	return count
 }

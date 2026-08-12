@@ -48,14 +48,49 @@ func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
 }
 
 func TestEncodeVideoInputEnforcesPersistedLimit(t *testing.T) {
-	overhead := len(`{"image_urls":[""]}`)
-	atLimit := strings.Repeat("A", media.MaxInputJSONBytes-overhead)
-	encoded, err := encodeVideoInput([]string{atLimit})
-	if err != nil || len(encoded) != media.MaxInputJSONBytes {
-		t.Fatalf("encoded len=%d err=%v", len(encoded), err)
+	// image_url and combined image_urls both store the same value, so the URL is counted twice.
+	base := `{"image_url":"","image_urls":[""]}`
+	overhead := len(base)
+	urlLen := (media.MaxInputJSONBytes - overhead) / 2
+	atLimit := strings.Repeat("A", urlLen)
+	encoded, err := encodeVideoInput(atLimit, nil)
+	if err != nil {
+		t.Fatalf("encode at limit: %v", err)
 	}
-	if _, err := encodeVideoInput([]string{atLimit + "A"}); !errors.Is(err, ErrVideoInputTooLarge) {
+	if len(encoded) > media.MaxInputJSONBytes {
+		t.Fatalf("encoded len=%d exceeds limit", len(encoded))
+	}
+	if _, err := encodeVideoInput(atLimit+"AA", nil); !errors.Is(err, ErrVideoInputTooLarge) {
 		t.Fatalf("oversized input error = %v", err)
+	}
+}
+
+func TestEncodeDecodeVideoInputPreservesImageAndReferences(t *testing.T) {
+	encoded, err := encodeVideoInput("https://example.com/first.png", []string{"https://example.com/ref.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageURL, refs := decodeVideoInputParts(encoded)
+	if imageURL != "https://example.com/first.png" || len(refs) != 1 || refs[0] != "https://example.com/ref.png" {
+		t.Fatalf("decoded split = %q %#v from %s", imageURL, refs, encoded)
+	}
+
+	encoded, err = encodeVideoInput("", []string{"https://example.com/ref-only.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageURL, refs = decodeVideoInputParts(encoded)
+	if imageURL != "" || len(refs) != 1 || refs[0] != "https://example.com/ref-only.png" {
+		t.Fatalf("single reference decoded = %q %#v from %s", imageURL, refs, encoded)
+	}
+
+	imageURL, refs = decodeVideoInputParts(`{"image_urls":["https://legacy/one.png"]}`)
+	if imageURL != "https://legacy/one.png" || len(refs) != 0 {
+		t.Fatalf("legacy single = %q %#v", imageURL, refs)
+	}
+	imageURL, refs = decodeVideoInputParts(`{"image_urls":["https://legacy/a.png","https://legacy/b.png"]}`)
+	if imageURL != "" || len(refs) != 2 || refs[0] != "https://legacy/a.png" || refs[1] != "https://legacy/b.png" {
+		t.Fatalf("legacy multi = %q %#v", imageURL, refs)
 	}
 }
 
