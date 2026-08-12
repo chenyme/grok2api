@@ -143,7 +143,7 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "video", required: true, descriptionKey: "docs.reference.fieldVideoInput" },
     ],
     noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoEditModel", "docs.reference.noteVideoStrict"],
-    request: (model) => ({ model: "grok-imagine-video", prompt: "Give the woman a silver necklace", video: { url: "https://example.com/source.mp4" } }),
+    request: (_model) => ({ model: "grok-imagine-video", prompt: "Give the woman a silver necklace", video: { url: "https://example.com/source.mp4" } }),
     response: { request_id: "video_edit_example" },
   },
   "video/extensions": {
@@ -156,7 +156,7 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "duration", descriptionKey: "docs.reference.fieldVideoExtendDuration" },
     ],
     noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoEditModel", "docs.reference.noteVideoStrict"],
-    request: (model) => ({ model: "grok-imagine-video", prompt: "The shot pans to an over the shoulder perspective.", duration: 6, video: { url: "https://example.com/source.mp4" } }),
+    request: (_model) => ({ model: "grok-imagine-video", prompt: "The shot pans to an over the shoulder perspective.", duration: 6, video: { url: "https://example.com/source.mp4" } }),
     response: { request_id: "video_extend_example" },
   },
   "video/get": {
