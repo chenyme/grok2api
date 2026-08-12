@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { QualityGuardAIGuide } from "@/features/quality-guard/quality-guard-ai-guide";
 import { getQualityGuardStatus, runQualityTest, updateQualityGuardPolicy, type QualityGuardEvent, type QualityGuardNodeState, type QualityGuardPolicy, type QualityGuardStatistics, type QualityGuardStatus, type QualityTestResult } from "@/features/quality-guard/quality-guard-api";
 import { createEgressNode, deleteEgressNodes, listAllEgressNodes, updateEgressNode, updateEgressNodesEnabled, type EgressNodeDTO, type EgressNodeInput } from "@/features/settings/settings-api";
 import { ErrorState } from "@/shared/components/data-state";
@@ -152,10 +153,13 @@ export function QualityGuardPage() {
         title={t("qualityGuard.title")}
         description={t("qualityGuard.description")}
         actions={(
-          <Button variant="secondary" size="sm" onClick={refresh} disabled={statusQuery.isFetching || nodesQuery.isFetching}>
-            <RefreshCw className={cn((statusQuery.isFetching || nodesQuery.isFetching) && "animate-spin")} />
-            {t("common.refresh")}
-          </Button>
+          <>
+            <QualityGuardAIGuide />
+            <Button variant="secondary" size="sm" onClick={refresh} disabled={statusQuery.isFetching || nodesQuery.isFetching}>
+              <RefreshCw className={cn((statusQuery.isFetching || nodesQuery.isFetching) && "animate-spin")} />
+              {t("common.refresh")}
+            </Button>
+          </>
         )}
       />
 

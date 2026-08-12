@@ -431,6 +431,46 @@ const resources = {
         batchCompleted: "本批已导出 {{count}} 个账号",
         completed: "导出完成，共 {{count}} 个账号",
       },
+      qualityGuardGuide: {
+        action: "AI 使用指南", title: "让 AI 协助配置质量守护", description: "复制下面的提示词，让 AI 先检查你的实际部署，再安全地启用、验证和解释 Quality Guard。", beforeCopy: "复制前准备", safety: "请让 AI 读取你的项目源码或部署目录，但不要提供密码、Token、代理凭据、数据库、状态卷或未脱敏的生产日志。", footer: "提示词使用官方配置结构，不包含环境专属地址或凭据。", copy: "复制给 AI",
+        prompt: `你是一名谨慎的 Grok2API 运维工程师。请按下面的阶段协议，协助我在现有部署中启用、配置、验证或排查官方 Quality Guard（出口质量守护）。不要跳过阶段，也不要把其他项目或旧补丁的做法直接套到当前版本。
+
+安全边界（始终生效）：
+- 不得输出、提交或复制管理员密码、访问 Token、Client Key、代理 URL/凭据、账号凭据、数据库、状态卷、完整容器环境、探测 Prompt、模型响应正文或未脱敏生产日志；报告中统一替换为 [REDACTED]。
+- 未得到我的明确授权前，只允许只读检查；不要修改文件、安装依赖、重启或重建容器、启停节点、迁移账号、轮换 IP、清理数据或直接编辑 Quality Guard 状态文件。
+- 不要猜测目录、端口、容器名、Compose 服务名或配置字段。以当前检出的源码、config.example.yaml、Compose 文件和 tools/egress-quality-guard 文档为准；版本不一致时做语义迁移，不整文件覆盖新版实现。
+
+阶段 1：只读盘点
+1. 确认 Grok2API 版本/提交、部署方式（Compose、二进制或其他）、实际配置入口、主服务与 sidecar 状态、Quality Guard 页面/API 是否存在。
+2. 读取当前版本的 qualityGuard 配置定义、示例配置、Compose profile、Quality Guard README/SECURITY 和测试入口，列出当前版本真实支持的字段及默认值。
+3. 盘点 grok_build 出口节点：总数、启用数、固定回退受保护节点、是否有可调度 Build 账号和探测模型；代理地址仅判断“已配置/未配置”，不得显示值。
+4. 判断当前属于哪种状态：尚未启用、sidecar 未启动、bootstrap/共享卷异常、页面状态滞后、无可调度探测账号、节点探测失败、节点被隔离，或仅需策略调优。
+5. 先向我输出“现状、风险等级、准备修改的文件/服务、预计主动探测成本、回滚点和实施计划”，然后停止，等待我明确授权。
+
+阶段 2：获授权后实施
+1. 先备份所有将修改的配置，并记录原镜像/提交和原策略；不要备份或展示 secret 内容。
+2. 解释边界：Quality Guard 是旁路控制面，通过成功流式请求的被动审计和固定模型请求的主动探测来隔离异常 grok_build 出口；它不在用户请求链中，也不能证明模型被“降智”。通用 IP/Cloudflare 连通探针只用于诊断，真实模型质量探测才是恢复依据。
+3. 首次启用采用保守策略：优先 hybrid 或按实际需求选择模式，failClosed 保持关闭，自动 IP 轮换保持关闭；softTPS/hardTPS、连续命中、错误次数、隔离时长和主动间隔必须依据当前链路基线说明理由，不得照抄其他部署。
+4. 校验 minimumHealthyNodes 与可隔离节点数。节点不足时先调整方案，不得让普通模式把可用出口全部摘除。固定回退节点保持受保护，不得覆盖现有代理、账号绑定或无关 Compose 服务。
+5. 仅使用当前仓库提供的集成方式启动或更新必要组件。基础 config.yaml 变化需要主服务重新生成 bootstrap 时才做针对性重启；管理页保存的运行策略应验证为热加载。
+6. 只有在已存在受信任、仅内部可达且按节点白名单限制的轮换端点时，才讨论 rotationURL/rotatableNodeIDs；不得自行创建公网轮换端点。若使用粘性会话，必须确认只修改目标节点并验证出口确实变化。
+
+阶段 3：验收（逐项给出 PASS/FAIL 和脱敏证据）
+- 配置/Compose 解析通过；主服务和 sidecar 健康，且没有重启无关服务。
+- bootstrap 与运行策略加载成功；管理页状态连续刷新，不是只短暂显示；策略修改按预期热加载。
+- 至少对一个安全测试节点完成手动真实质量检测；确认探测走 grok_build 和指定出口，且主动探测产生的少量真实 Token 成本可见。
+- 运行当前仓库提供的 Quality Guard 与 session rotator 测试；若项目有前端/后端相关测试也一并运行。
+- 验证内部凭据不出现在公开/管理 API 和日志；代理 URL 保持只写；状态和日志不包含探测 Prompt 或模型正文；状态文件权限符合文档。
+- 验证隔离不会删除节点、修改账号绑定或恢复管理员手动禁用的节点；轮换只命中显式白名单。
+
+排障判定：
+- “状态滞后/不可用”先查 sidecar、bootstrap、共享卷、内部 API 和时间戳，不要先改阈值。
+- “probe_no_account/无可调度账号”属于账号调度问题，应退避重试，不累计代理错误、不换 IP、也不恢复未经真实模型验证的节点。
+- 短生成窗口、流式缓冲、缓存内容、长常量或已有文件可能造成瞬时高 TPS；先看生成窗口与固定 Prompt 复测，不把单次高 TPS 直接解释为模型异常。
+- 部分住宅出口无法访问通用探针但可以访问 Grok；不得只凭 IP 探针失败恢复或永久隔离节点。
+
+最终报告必须包含：修改前盘点；风险与授权点；实际修改的文件/字段/服务（敏感值为 [REDACTED]）；每项验证命令及结果；当前有效策略的通俗解释；仍存在的告警；最小化回滚命令和回滚后的验证方法。`,
+      },
       qualityGuard: {
         title: "质量守护", description: "监测 Grok 出口质量并在异常时自动隔离节点。", overview: "质量守护概览",
         serviceStatus: "守护服务", running: "运行正常", stale: "状态滞后", mode: "检测模式", availableNodes: "已启用节点", quarantinedNodes: "已隔离节点",
@@ -1335,6 +1375,46 @@ const resources = {
       media: { images: { title: "Gallery", description: "Browse generated image assets", search: "Search ID, type, or hash", empty: "No images", noMatches: "No matching images", totalImages: "Total images", totalBytes: "Storage", pageSummary: "Showing {{count}} / {{total}}", openImage: "Open image {{id}}", deleteTitle: "Delete {{count}} selected images?", deleteDescription: "The image files and gallery records will be permanently removed, and existing image links will stop working. This cannot be undone.", deleted: "Deleted {{count}} images" }, videos: { title: "Video Gallery", description: "View video generation job records", search: "Search prompt or ID", empty: "No video jobs", statusFilter: "Status filter", totalJobs: "Total jobs", queued: "Queued", inProgress: "In progress", completed: "Completed", failed: "Failed", prompt: "Prompt", model: "Model", status: "Status", progress: "Progress", statusProgress: "Status / progress", spec: "Spec", owner: "Owner", createdAt: "Created", completedAt: "Completed", time: "Time", createdShort: "Created", completedShort: "Done", preview: "Preview video", previewTitle: "Video preview", previewUnavailable: "Local video unavailable", deleteTitle: "Delete {{count}} video records?", deleteDescription: "The task records and their local videos will be permanently removed, and existing video links will stop working. This cannot be undone.", deleted: "Deleted {{count}} video records", seconds: "{{count}} sec", pageSummary: "Showing {{count}} / {{total}}" }, videoStatus: { queued: "Queued", in_progress: "In progress", completed: "Completed", failed: "Failed" } },
       auth: { title: "Admin sign in", productTitle: "Lightweight API gateway", subtitle: "Manage upstream accounts, model routes, and client access.", username: "Username", password: "Password", usernameRequired: "Enter your username", passwordRequired: "Enter your password", signIn: "Sign in", signingIn: "Signing in", signOut: "Sign out", changePassword: "Change password", currentPassword: "Current password", newPassword: "New password", passwordUpdated: "Password updated. Sign in again.", sessionUnavailable: "Unable to restore the session", sessionUnavailableDescription: "The service may be temporarily unavailable. Your session was not cleared; please retry shortly.", retrySession: "Retry" },
       shell: { appearance: "Appearance", dark: "Dark", light: "Light", system: "System", language: "Language", navigation: "Navigation", openNavigation: "Open navigation" },
+      qualityGuardGuide: {
+        action: "AI setup guide", title: "Configure Quality Guard with AI", description: "Copy this prompt so an AI agent inspects your deployment before it safely enables, verifies, and explains Quality Guard.", beforeCopy: "Before you copy", safety: "Let the agent read your project source or deployment directory, but never provide passwords, tokens, proxy credentials, databases, state volumes, or unredacted production logs.", footer: "This prompt follows the official configuration model and contains no environment-specific addresses or credentials.", copy: "Copy for AI",
+        prompt: `You are a cautious Grok2API operations engineer. Follow this staged protocol to enable, configure, verify, or troubleshoot the official Quality Guard in my existing deployment. Do not skip stages or apply another project's or an older patch's assumptions to this version.
+
+Safety boundary (always applies):
+- Never print, commit, or copy administrator passwords, access tokens, Client Keys, proxy URLs or credentials, account credentials, databases, state volumes, complete container environments, probe prompts, model response bodies, or unredacted production logs. Replace sensitive values with [REDACTED] in every report.
+- Until I explicitly authorize changes, perform read-only inspection only. Do not edit files, install dependencies, restart or recreate containers, enable or disable nodes, move accounts, rotate IPs, delete data, or edit Quality Guard state directly.
+- Do not guess paths, ports, container/service names, or configuration fields. Use the checked-out source, config.example.yaml, Compose files, and tools/egress-quality-guard documentation. If versions differ, port behavior semantically instead of overwriting newer files.
+
+Stage 1 - read-only inventory:
+1. Identify the Grok2API version/commit, deployment method, effective configuration entry point, main service and sidecar status, and whether the Quality Guard page/API exists.
+2. Read this version's qualityGuard schema, example config, Compose profile, Quality Guard README/SECURITY, and test entry points. List the fields and defaults actually supported by this checkout.
+3. Inventory grok_build egress nodes: total, enabled, fixed-fallback protected nodes, schedulable Build accounts, and probe model availability. Report proxy settings only as configured/not configured; never reveal values.
+4. Classify the current state: not enabled, sidecar absent, bootstrap/shared-volume failure, stale UI state, no schedulable probe account, probe failure, quarantined node, or policy tuning only.
+5. Report current state, risk level, files/services that would change, estimated active-probe cost, rollback point, and implementation plan. Then stop and wait for my explicit approval.
+
+Stage 2 - implementation after approval:
+1. Back up every configuration file that will change and record the original image/commit and policy, without copying secret contents.
+2. Explain the boundary: Quality Guard is an out-of-path control plane. It uses passive audits of successful streaming requests and active fixed-model probes to quarantine anomalous grok_build egress. It is not in the client request path and cannot prove model intelligence was reduced. Generic IP/Cloudflare probes are diagnostic only; a real model-quality probe is the recovery criterion.
+3. Start conservatively: prefer hybrid unless the deployment requires another mode, keep failClosed and automatic IP rotation off, and justify softTPS/hardTPS, strike counts, error count, quarantine duration, and active interval from this deployment's baseline rather than copying another installation.
+4. Validate minimumHealthyNodes against isolatable nodes. If capacity is insufficient, revise the plan before enabling enforcement. Preserve fixed-fallback protection, existing proxies, account bindings, and unrelated Compose services.
+5. Use only the integration supplied by this checkout and recreate the minimum required components. Restart the main service only when a base config change must regenerate bootstrap; verify that policy saved in the admin UI hot-reloads.
+6. Discuss rotationURL/rotatableNodeIDs only when a trusted internal-only, node-allowlisted rotation endpoint already exists. Never create a public rotation endpoint. For sticky sessions, prove that only the target node changes and that its egress IP actually rotates.
+
+Stage 3 - acceptance (give PASS/FAIL and redacted evidence for each item):
+- Config and Compose validation pass; main service and sidecar are healthy; no unrelated service was restarted.
+- Bootstrap and runtime policy load; admin-page timestamps continue updating instead of appearing briefly; policy changes hot-reload.
+- Run one manual real quality test on a safe node; confirm grok_build plus the selected egress is used and that the small real-token cost of active probing is visible.
+- Run the checkout's Quality Guard and session rotator tests, plus relevant frontend/backend tests when available.
+- Internal credentials never appear in public/admin APIs or logs; proxy URLs remain write-only; state/logs omit probe prompts and model bodies; state-file permissions match the security documentation.
+- Quarantine does not delete nodes, change account bindings, or restore manually disabled nodes; rotation affects explicit allowlisted nodes only.
+
+Troubleshooting rules:
+- For stale/unavailable status, inspect the sidecar, bootstrap, shared volume, internal API, and timestamps before changing thresholds.
+- probe_no_account means account scheduling is unavailable: back off without adding proxy strikes, rotating IPs, or restoring a node that has not passed a real model probe.
+- Short generation windows, stream buffering, cached content, long constants, or existing files can create transient high TPS. Inspect the generation window and fixed-prompt retest before calling one high-TPS sample anomalous.
+- Some residential egresses cannot reach a generic probe endpoint while Grok still works. Do not restore or permanently quarantine a node based only on the generic IP probe.
+
+The final report must include: pre-change inventory; risks and approval gates; changed files, fields, and services with [REDACTED] values; every validation command and result; a plain-language explanation of the effective policy; remaining warnings; and the minimum rollback commands plus post-rollback verification.`,
+      },
       qualityGuard: { title: "Quality guard", description: "Monitor Grok egress quality and quarantine anomalous nodes automatically.", overview: "Quality guard overview", serviceStatus: "Guard service", running: "Running", stale: "Status stale", mode: "Detection mode", availableNodes: "Enabled nodes", quarantinedNodes: "Quarantined", modes: { active: "Active probes", passive: "Passive audits", hybrid: "Hybrid" }, nodes: "Node quality", nodesHelp: "Speed matches the grok2api panel: output tokens include reasoning tokens. Passive anomalies only trigger an active confirmation. Strike counts are passive / active / errors.", updatedAt: "Updated {{time}}", node: "Node", state: "State", outputTPS: "Panel output speed", firstToken: "First token", source: "Source", strikes: "Strikes", lastObserved: "Last observed", test: "Test", sources: { active: "Active probe", passive: "Request audit" }, quarantined: "Quarantined", fixedFallback: "Fixed fallback (protected)", suspect: "Suspect", healthy: "Healthy", pending: "Pending", probeFailed: "Probe failed", events: "Recent events", noEvents: "No anomaly or recovery events", eventTypes: { node_quarantined: "Node quarantined", node_restored: "Node restored", node_rotated: "Node IP rotated", passive_audit_anomaly: "Anomalous request detected" }, statistics: "Automatic detection statistics", statisticsSince: "Accumulated since {{time}}. Manual tests are excluded.", statisticsChecks: "Valid checks", statisticsChecksHelp: "Active probes and valid passive audits", statisticsActive: "Active probes", statisticsActiveDetail: "Healthy {{healthy}}, errors {{errors}}", statisticsPassive: "Passive audits", statisticsPassiveDetail: "Healthy {{healthy}}, from real requests", statisticsTokens: "Active output tokens", statisticsTokensHelp: "Includes reasoning tokens; not proxy traffic", statisticsAnomalies: "Anomaly hits", statisticsAnomalyDetail: "Soft {{soft}}, hard {{hard}}", statisticsQuarantines: "Quarantines applied", statisticsActionDetail: "Restored {{restored}}, protected {{suppressed}}", reasons: { unknown: "No reason recorded", hard_tps: "Hard threshold exceeded", soft_tps: "Soft threshold exceeded", buffered_burst: "Short-window output burst; retesting the same IP", passive_hard_tps: "Request exceeded hard threshold", passive_soft_tps: "Requests repeatedly exceeded soft threshold", quality_probe_healthy: "Model quality probe recovered", expected_marker_missing: "Expected marker missing", insufficient_output_tokens: "Too few output tokens", insufficient_visible_tokens: "Too few visible tokens", insufficient_generation_window: "Generation window too short", probe_errors: "Repeated probe errors", probe_no_account: "No schedulable probe account; retry deferred", recovery_probe_error: "Recovery probe failed", rotation_error: "IP rotation failed" }, policy: "Current policy", editPolicy: "Edit policy", editPolicyTitle: "Edit quality guard policy", editPolicyDescription: "The guard hot-reloads saved changes without a service restart.", restoreDefaults: "Restore defaults", policySaved: "Policy saved and queued for hot reload", invalidPolicyValue: "Value is outside the allowed range", softThresholdMustBeLower: "The soft threshold must be lower than the hard threshold", activeIntervalSeconds: "Active interval (seconds)", passiveIntervalSeconds: "Passive interval (seconds)", consecutiveSoft: "Consecutive soft strikes", consecutiveErrors: "Consecutive probe errors", quarantineSeconds: "Quarantine (seconds)", softThreshold: "Soft threshold", hardThreshold: "Hard threshold", activeInterval: "Active interval", passiveInterval: "Audit interval", quarantineDuration: "Quarantine", minimumNodes: "Minimum nodes", unavailable: "Quality guard is not connected", unavailableHelp: "Enable qualityGuard in config.yaml and start the quality-guard Compose profile to display live status here.", testing: "Testing node quality", testComplete: "Test complete: {{speed}}", testFailed: "Quality test is temporarily unavailable. Try again shortly.", refreshNodes: "Refresh nodes", nodeEnabled: "Node enabled", nodeDisabled: "Node disabled", nodesEnabled: "Selected nodes enabled", nodesDisabled: "Selected nodes disabled", enableNode: "Enable node {{name}}", disableNode: "Disable node {{name}}", nodeEditorDescription: "Manage Grok Build egress used by the quality guard. Proxy URLs are write-only; leave the field blank while editing to keep the current value.", nodeCapacityHelp: "Maximum number of bound accounts; 0 means unlimited.", deleteNodeTitle: "Delete proxy node?", deleteNodeDescription: "Node “{{name}}” will be permanently deleted. This action cannot be undone.", deleteNodesTitle: "Delete {{count}} selected nodes?", deleteNodesDescription: "The selected proxy nodes will be permanently deleted. This action cannot be undone." },
       accountQuotaReset: { action: "Reset quota", description: "This clears only local waiting-reset and model quota blocks. It does not change upstream Billing or audit history. Accounts that remain exhausted will be marked again by real traffic.", completed: "Reset local quota state for {{reset}} accounts" },
       accountQuotaTask: { title: "Process quota for {{count}} selected accounts", description: "Choose the quota task to run for the selected Grok Build accounts.", allTitle: "Process quota for all accounts", allDescription: "Choose the quota task to run for all enabled Grok Build accounts.", syncDescription: "Request upstream Billing and update local quota snapshots, account tiers, and recovery state.", resetAllDescription: "Clear local waiting-reset and exhausted-quota blocks for all enabled Grok Build accounts without changing upstream Billing or audit history.", execute: "Run task" },
