@@ -317,6 +317,13 @@ func EstimateOfficialVideoCost(model, resolution string, seconds int) (PricingRe
 		ticksPerSecond = 800_000_000
 	case "720p":
 		ticksPerSecond = 1_400_000_000
+	case "1080p":
+		// 仅 grok-imagine-video-1.5 起原生支持 1080p:x.ai 官方 $0.25/s(1e10 ticks=$1)。
+		// 基础 grok-imagine-video(v1)无 1080p 档(media.go 亦按模型拦截),此处返回 false 保持一致。
+		if baseModel == "grok-imagine-video" {
+			return PricingResult{}, false
+		}
+		ticksPerSecond = 2_500_000_000
 	default:
 		return PricingResult{}, false
 	}
@@ -356,6 +363,8 @@ func ReconstructOfficialCost(model string, inputTokens, cachedInputTokens, outpu
 		return reconstructVideoCost("grok-imagine-video-1.5", "480p", outputSeconds)
 	case "grok-imagine-video-1.5-720p":
 		return reconstructVideoCost("grok-imagine-video-1.5", "720p", outputSeconds)
+	case "grok-imagine-video-1.5-1080p":
+		return reconstructVideoCost("grok-imagine-video-1.5", "1080p", outputSeconds)
 	default:
 		return reconstructTextCost(normalized, inputTokens, cachedInputTokens, outputTokens, contextInputTokens)
 	}

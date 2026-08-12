@@ -153,6 +153,13 @@ func TestEstimateOfficialVideoCost(t *testing.T) {
 	if !ok || result.Model != "grok-imagine-video-1.5-720p" || result.CostInUSDTicks != 8_400_000_000 {
 		t.Fatalf("1.5 720p video result = %#v, ok = %v", result, ok)
 	}
+	result, ok = EstimateOfficialVideoCost("grok-imagine-video-1.5", "1080p", 4)
+	if !ok || result.Model != "grok-imagine-video-1.5-1080p" || result.CostInUSDTicks != 10_000_000_000 {
+		t.Fatalf("1.5 1080p video result = %#v, ok = %v", result, ok)
+	}
+	if result, ok = EstimateOfficialVideoCost("grok-imagine-video", "1080p", 6); ok || result.CostInUSDTicks != 0 {
+		t.Fatalf("base v1 must not price 1080p = %#v, ok = %v", result, ok)
+	}
 	result, ok = EstimateOfficialVideoCost("Build/grok-imagine-video-1.5", "480p", 1)
 	if !ok || result.Model != "grok-imagine-video-1.5-480p" || result.CostInUSDTicks != 800_000_000 {
 		t.Fatalf("prefixed 1.5 video result = %#v, ok = %v", result, ok)
@@ -181,5 +188,9 @@ func TestReconstructOfficialCostReturnsExactStoredFormulaInputs(t *testing.T) {
 	videoResult, ok := ReconstructOfficialCost("grok-imagine-video-1.5-720p", 0, 0, 0, 0, 1, 0, 6)
 	if !ok || videoResult.CostInUSDTicks != 8_400_000_000 || videoResult.Components[0].Unit != PricingUnitSecond {
 		t.Fatalf("video reconstruction = %#v, %v", videoResult, ok)
+	}
+	video1080, ok := ReconstructOfficialCost("grok-imagine-video-1.5-1080p", 0, 0, 0, 0, 1, 0, 4)
+	if !ok || video1080.CostInUSDTicks != 10_000_000_000 || video1080.Components[0].Unit != PricingUnitSecond {
+		t.Fatalf("1080p video reconstruction = %#v, %v", video1080, ok)
 	}
 }

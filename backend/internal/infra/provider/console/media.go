@@ -394,20 +394,32 @@ func trustedConsoleImageHost(host string) bool {
 }
 
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
-	if !ResolveMedia("grok-imagine-video", modeldomain.CapabilityVideo) {
+	videoModel := strings.TrimSpace(request.UpstreamModel)
+	if videoModel == "" {
+		videoModel = "grok-imagine-video"
+	}
+	if !ResolveMedia(videoModel, modeldomain.CapabilityVideo) {
 		return provider.VideoResult{}, errors.New("Console 视频模型未注册")
 	}
 	if len(request.ReferenceURLs) > consoleMaxVideoImages {
-		return provider.VideoResult{}, fmt.Errorf("Console grok-imagine-video 最多支持 1 张首图，当前为 %d 张", len(request.ReferenceURLs))
+		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张首图，当前为 %d 张", videoModel, consoleMaxVideoImages, len(request.ReferenceURLs))
 	}
 	if request.Duration < 1 || request.Duration > 15 {
 		return provider.VideoResult{}, errors.New("duration 必须在 1 到 15 秒之间")
 	}
-	if request.Resolution != "" && request.Resolution != "480p" && request.Resolution != "720p" {
+	// 分辨率：基础 grok-imagine-video（v1）仅支持 480p/720p；grok-imagine-video-1.5 起原生支持 1080p。
+	switch res := strings.TrimSpace(request.Resolution); {
+	case res == "" || res == "480p" || res == "720p":
+		// 两个模型都支持
+	case res == "1080p" && videoModel != "grok-imagine-video":
+		// grok-imagine-video-1.5 起放行 1080p
+	case videoModel == "grok-imagine-video":
 		return provider.VideoResult{}, errors.New("grok-imagine-video 仅支持 480p 或 720p")
+	default:
+		return provider.VideoResult{}, fmt.Errorf("%s 仅支持 480p、720p 或 1080p", videoModel)
 	}
 	payload := map[string]any{
-		"model": "grok-imagine-video", "duration": request.Duration,
+		"model": videoModel, "duration": request.Duration,
 	}
 	if prompt := strings.TrimSpace(request.Prompt); prompt != "" {
 		payload["prompt"] = prompt

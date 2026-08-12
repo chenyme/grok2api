@@ -38,6 +38,7 @@ var mediaCatalog = []struct {
 	{PublicID: "grok-imagine-image-quality", UpstreamModel: "grok-imagine-image-quality", Capabilities: []modeldomain.Capability{modeldomain.CapabilityImage, modeldomain.CapabilityImageEdit}},
 	{PublicID: "grok-imagine-image", UpstreamModel: "grok-imagine-image", Capabilities: []modeldomain.Capability{modeldomain.CapabilityImage, modeldomain.CapabilityImageEdit}},
 	{PublicID: "grok-imagine-video", UpstreamModel: "grok-imagine-video", Capabilities: []modeldomain.Capability{modeldomain.CapabilityVideo}},
+	{PublicID: "grok-imagine-video-1.5", UpstreamModel: "grok-imagine-video-1.5", Capabilities: []modeldomain.Capability{modeldomain.CapabilityVideo}},
 }
 
 // Effort-suffixed aliases only include levels each Provider/model combination

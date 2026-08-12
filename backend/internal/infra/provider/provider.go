@@ -279,6 +279,7 @@ type VideoRequest struct {
 	Billing *account.Billing
 	// JobID binds the local video job to XAI ZDR upload tickets and result assets.
 	JobID         string
+	UpstreamModel string
 	Prompt        string
 	Duration      int
 	AspectRatio   string
