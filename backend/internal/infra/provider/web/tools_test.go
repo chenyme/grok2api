@@ -676,12 +676,50 @@ func TestGrokRenderCitationBecomesMarkdownAndAnnotation(t *testing.T) {
 	}
 	tokenData, _ := json.Marshal(tokenFrame)
 	kind, delta, err := parseUpstreamFrame(tokenData, parsed)
-	if err != nil || kind != "text" || delta != "Answer [[1]](https://example.com)" || len(parsed.Annotations) != 1 {
+	wantDelta := `Answer[[1]](https://example.com)`
+	if err != nil || kind != "text" || delta != wantDelta || len(parsed.Annotations) != 1 {
 		t.Fatalf("kind=%q delta=%q annotations=%#v err=%v", kind, delta, parsed.Annotations, err)
 	}
 	annotation := parsed.Annotations[0]
-	if annotation["title"] != "Example" || annotation["start_index"] != 6 || annotation["end_index"] != len(delta) {
+	// Responses title is the visible citation number; source title remains
+	// available for the Chat Completions nested annotation.
+	if annotation["title"] != "1" || annotation["source_title"] != "Example" || annotation["start_index"] != 6 || annotation["end_index"] != len(wantDelta) {
 		t.Fatalf("annotation = %#v", annotation)
+	}
+}
+
+func TestGrokRenderCitationUsesCharacterOffsets(t *testing.T) {
+	parsed := &parsedChat{cardCache: map[string]map[string]any{
+		"cite_1": {"url": "https://example.com"},
+	}}
+	token := `中文<grok:render card_id="cite_1" card_type="citation" type="render_inline_citation"></grok:render>`
+	cleaned := cleanChatToken(parsed, token)
+	parsed.Text.WriteString(cleaned)
+	if len(parsed.Annotations) != 1 {
+		t.Fatalf("annotations = %#v", parsed.Annotations)
+	}
+	annotation := parsed.Annotations[0]
+	if annotation["start_index"] != 2 || annotation["end_index"] != 28 {
+		t.Fatalf("annotation uses byte offsets: %#v", annotation)
+	}
+}
+
+func TestParsedChatTextCharacterCountTracksAllWrites(t *testing.T) {
+	parsed := &parsedChat{}
+	parsed.appendText("中文")
+	if got := parsed.textCharacterLen(); got != 2 {
+		t.Fatalf("appendText character length = %d, want 2", got)
+	}
+
+	// Direct builder writes must use the same counter as production helpers.
+	parsed.Text.WriteString("🙂")
+	if got := parsed.textCharacterLen(); got != 3 {
+		t.Fatalf("direct write character length = %d, want 3", got)
+	}
+
+	parsed.resetText("a界")
+	if got := parsed.textCharacterLen(); got != 2 {
+		t.Fatalf("resetText character length = %d, want 2", got)
 	}
 }
 

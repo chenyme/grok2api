@@ -13,7 +13,30 @@ type ResponseOptions struct {
 	AnthropicWebSearchRequired bool
 	AnthropicWebSearchQuery    string
 	StopSequences              []string
+	// Include mirrors xAI Responses `include` (e.g. "no_inline_citations", "inline_citations").
+	Include []string
+	// InlineCitations overrides Include when non-nil.
+	InlineCitations *bool
 }
+
+// InlineCitationsEnabled reports whether [[N]](url) markers should be embedded.
+// Default is true (xAI Responses API default for HTTP clients).
+func (o ResponseOptions) InlineCitationsEnabled() bool {
+	if o.InlineCitations != nil {
+		return *o.InlineCitations
+	}
+	enabled := true
+	for _, item := range o.Include {
+		switch item {
+		case "no_inline_citations":
+			enabled = false
+		case "inline_citations":
+			enabled = true
+		}
+	}
+	return enabled
+}
+
 
 type responseEnvelope struct {
 	ID        string         `json:"id"`
