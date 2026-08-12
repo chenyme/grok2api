@@ -183,6 +183,49 @@ const endpoints: Record<string, EndpointDefinition> = {
     request: (model) => ({ model, text: "Hello from Grok voice.", voice_id: "eve", language: "en", output_format: { codec: "mp3" } }),
     response: { content_type: "audio/mpeg", note: "Default responses return raw audio bytes. with_timestamps=true returns a JSON envelope." },
   },
+  "voice/audio-speech": {
+    key: "voice/audio-speech", category: "Voice", title: "OpenAI speech", method: "POST", path: "/audio/speech",
+    descriptionKey: "docs.endpointAudioSpeech", capabilities: ["tts"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldVoiceModel" },
+      { name: "input", required: true, descriptionKey: "docs.reference.fieldAudioInput" },
+      { name: "voice", descriptionKey: "docs.reference.fieldAudioVoice" },
+      { name: "response_format", descriptionKey: "docs.reference.fieldAudioResponseFormat" },
+      { name: "speed", descriptionKey: "docs.reference.fieldTTSSpeed" },
+      { name: "language", descriptionKey: "docs.reference.fieldVoiceLanguageOptional" },
+    ],
+    noteKeys: ["docs.reference.noteAudioSpeechCompat", "docs.reference.noteTTSModels", "docs.reference.noteTTSBinary"],
+    request: (model) => ({ model, input: "Hello from Grok voice.", voice: "alloy", response_format: "mp3", speed: 1.0, language: "en" }),
+    response: { content_type: "audio/mpeg", note: "Returns raw audio bytes compatible with OpenAI speech clients." },
+  },
+  "voice/audio-tasks": {
+    key: "voice/audio-tasks", category: "Voice", title: "OpenAI audio tasks", method: "POST", path: "/audio/tasks",
+    descriptionKey: "docs.endpointAudioTasks", capabilities: ["tts"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldVoiceModel" },
+      { name: "input", required: true, descriptionKey: "docs.reference.fieldAudioInput" },
+      { name: "voice", descriptionKey: "docs.reference.fieldAudioVoice" },
+      { name: "response_format", descriptionKey: "docs.reference.fieldAudioResponseFormat" },
+      { name: "speed", descriptionKey: "docs.reference.fieldTTSSpeed" },
+      { name: "language", descriptionKey: "docs.reference.fieldVoiceLanguageOptional" },
+    ],
+    noteKeys: ["docs.reference.noteAudioTasksCompat", "docs.reference.noteTTSModels"],
+    request: (model) => ({ model, input: "Hello from Grok voice.", voice: "alloy", response_format: "mp3", language: "en" }),
+    response: { audio: "<base64>", content_type: "audio/mpeg", note: "Compatibility path that returns a JSON envelope by default." },
+  },
+  "voice/audio-transcriptions": {
+    key: "voice/audio-transcriptions", category: "Voice", title: "OpenAI transcriptions", method: "POST", path: "/audio/transcriptions",
+    descriptionKey: "docs.endpointAudioTranscriptions", capabilities: ["stt"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldSTTModel" },
+      { name: "file", descriptionKey: "docs.reference.fieldSTTFile" },
+      { name: "url", descriptionKey: "docs.reference.fieldSTTUrl" },
+      { name: "language", descriptionKey: "docs.reference.fieldVoiceLanguage" },
+    ],
+    noteKeys: ["docs.reference.noteAudioTranscriptionsCompat", "docs.reference.noteSTTInput", "docs.reference.noteSTTModels"],
+    request: (model) => ({ model, url: "https://example.com/sample.wav", language: "en" }),
+    response: { text: "Hello from Grok voice.", language: "en", duration: 1.84 },
+  },
   "voice/voices": {
     key: "voice/voices", category: "Voice", title: "List voices", method: "GET", path: "/tts/voices",
     descriptionKey: "docs.endpointTTSVoices", capabilities: ["tts"],
@@ -342,7 +385,7 @@ function fallbackModel(key: string): string {
   if (key.startsWith("image/")) return key === "image/edits" ? "grok-imagine-image-edit" : "grok-imagine-image-2.0";
   if (key.startsWith("video/")) return "grok-imagine-video";
   if (key.startsWith("voice/")) {
-    if (key === "voice/stt") return "grok-stt";
+    if (key === "voice/stt" || key === "voice/audio-transcriptions") return "grok-stt";
     return "grok-voice-latest";
   }
   return "your-enabled-model";

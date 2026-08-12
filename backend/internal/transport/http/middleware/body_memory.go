@@ -98,6 +98,10 @@ func inferenceBodyOperation(path string) string {
 		return "tts"
 	case "/v1/stt":
 		return "stt"
+	case "/v1/audio/speech", "/v1/audio/tasks":
+		return "tts"
+	case "/v1/audio/transcriptions", "/v1/audio/translations":
+		return "stt"
 	case "/v1/realtime/client_secrets":
 		return "realtime_client_secret"
 	case "/v1/realtime":

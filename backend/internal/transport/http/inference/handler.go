@@ -99,6 +99,11 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/tts/voices/:voiceId", h.getTTSVoice)
 	router.POST("/stt", h.transcribeSpeech)
 	router.GET("/stt", h.proxySTTWebSocket)
+	// OpenAI-compatible audio aliases for common client SDKs.
+	router.POST("/audio/speech", h.synthesizeOpenAISpeech)
+	router.POST("/audio/tasks", h.synthesizeOpenAIAudioTask)
+	router.POST("/audio/transcriptions", h.transcribeOpenAIAudio)
+	router.POST("/audio/translations", h.transcribeOpenAIAudio)
 	router.POST("/realtime/client_secrets", h.createRealtimeClientSecret)
 	router.GET("/realtime", h.proxyRealtimeWebSocket)
 	router.POST("/custom-voices", h.createCustomVoice)

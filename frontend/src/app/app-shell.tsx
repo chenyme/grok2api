@@ -65,6 +65,9 @@ const documentation = [
     icon: AudioLines,
     items: [
       { href: "/docs/voice/tts", label: "Text to Speech", method: "POST" },
+      { href: "/docs/voice/audio-speech", label: "OpenAI Speech", method: "POST" },
+      { href: "/docs/voice/audio-tasks", label: "OpenAI Audio Tasks", method: "POST" },
+      { href: "/docs/voice/audio-transcriptions", label: "OpenAI Transcriptions", method: "POST" },
       { href: "/docs/voice/voices", label: "List Voices", method: "GET" },
       { href: "/docs/voice/stt", label: "Speech to Text", method: "POST" },
       { href: "/docs/voice/realtime-secrets", label: "Realtime Secrets", method: "POST" },
