@@ -1118,16 +1118,13 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
     enabled: Boolean(apiKey) && subMode === "tts",
     staleTime: 60_000,
   });
-  const voices = voicesQuery.data ?? [];
-  useEffect(() => {
-    if (voices.length === 0) return;
-    if (!voices.some((voice) => voice.voiceId === voiceId)) {
-      setVoiceId(voices[0].voiceId);
-    }
-  }, [voiceId, voices]);
+  const voices = useMemo(() => voicesQuery.data ?? [], [voicesQuery.data]);
+  const activeVoiceId = voices.some((voice) => voice.voiceId === voiceId)
+    ? voiceId
+    : voices[0]?.voiceId ?? voiceId;
 
   const ttsMutation = useMutation({
-    mutationFn: () => synthesizeSpeech({ apiKey, model: activeModel || "grok-voice-latest", text: prompt.trim(), voiceId, language, speed: Number(speed) }),
+    mutationFn: () => synthesizeSpeech({ apiKey, model: activeModel || "grok-voice-latest", text: prompt.trim(), voiceId: activeVoiceId, language, speed: Number(speed) }),
     onSuccess: (result) => {
       setTtsResult(result);
       setSttResult(null);
@@ -1209,7 +1206,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
               <CompactSelect value={speed} options={speedOptions} onChange={setSpeed} ariaLabel={t("creativeConsole.voiceSpeed")} suffix="x" icon={<Clock3 />} />
             ) : null}
             {subMode === "tts" ? (
-              <Select value={voiceId} onValueChange={setVoiceId} disabled={voices.length === 0 && voicesQuery.isPending}>
+              <Select value={activeVoiceId} onValueChange={setVoiceId} disabled={voices.length === 0 && voicesQuery.isPending}>
                 <SelectTrigger className="h-8 w-auto max-w-40 gap-1 border-0 bg-transparent px-2 shadow-none hover:bg-secondary/70 focus:ring-0" aria-label={t("creativeConsole.voiceId")}>
                   <SelectValue placeholder={t("creativeConsole.voiceId")} />
                 </SelectTrigger>

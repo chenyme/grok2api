@@ -23,7 +23,7 @@ var catalog = []ModelSpec{
 	// Generation and edit share the same upstream so admin grouping shows both capability badges,
 	// matching Console image models. The dedicated edit model below keeps the Super-only path.
 	{PublicID: "grok-imagine-image-2.0", UpstreamModel: "grok-imagine-image", ProtocolModel: "imagine-lite", Capability: modeldomain.CapabilityImage, Mode: "fast", MinimumTier: account.WebTierBasic},
-	{PublicID: "grok-imagine-image-2.0", UpstreamModel: "grok-imagine-image", ProtocolModel: "imagine-lite", Capability: modeldomain.CapabilityImageEdit, MinimumTier: account.WebTierBasic},
+	{PublicID: "grok-imagine-image-2.0", UpstreamModel: "grok-imagine-image", ProtocolModel: "imagine-lite", Capability: modeldomain.CapabilityImageEdit, Mode: "fast", MinimumTier: account.WebTierBasic},
 	// Quality Mode (enable_pro=true) is Grok Web Image 2.0. Free/basic accounts now
 	// receive a separate imagePro quota and can call generation directly.
 	{PublicID: "grok-imagine-image-quality-2.0", UpstreamModel: "grok-imagine-image-quality", ProtocolModel: "imagine", Capability: modeldomain.CapabilityImage, MinimumTier: account.WebTierBasic},
