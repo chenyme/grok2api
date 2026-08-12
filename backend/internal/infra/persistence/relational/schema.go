@@ -167,6 +167,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if err := d.ensureAuditOperationConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移请求审计操作约束: %w", err)
 	}
+	if err := d.ensureModelRouteCapabilityConstraints(ctx); err != nil {
+		return fmt.Errorf("迁移模型路由能力约束: %w", err)
+	}
 	if err := d.ensureMediaJobConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 数据库约束: %w", err)
 	}
@@ -386,11 +389,19 @@ func (d *Database) ensureEgressAssetScopeConstraints(ctx context.Context) error 
 }
 
 // ensureAuditOperationConstraints upgrades existing databases so Codex remote
-// compaction can be recorded separately from ordinary Responses requests.
+// compaction and Console voice operations can be recorded separately.
 func (d *Database) ensureAuditOperationConstraints(ctx context.Context) error {
 	return d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &requestAuditModel{}, table: "request_audits", name: "chk_request_audits_operation"},
-	}, "compaction")
+	}, "tts")
+}
+
+// ensureModelRouteCapabilityConstraints upgrades existing databases so Console
+// TTS/STT/Realtime routes can be managed alongside image and video.
+func (d *Database) ensureModelRouteCapabilityConstraints(ctx context.Context) error {
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &modelRouteModel{}, table: "model_routes", name: "chk_model_routes_capability"},
+	}, "tts")
 }
 
 // ensureMediaJobConstraints 将历史仅允许 grok_web 的 media job CHECK 升级到支持 Build 与 Console 视频。
