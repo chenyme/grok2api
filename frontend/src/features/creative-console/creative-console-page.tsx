@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowUp, BrainCircuit, Check, CheckCircle2, Clock3, ExternalLink, Globe, History, ImageIcon, ImagePlus, ImageUpscale, Images, Loader2, MessageSquareText, Pencil, RefreshCw, Sparkle, Square, SquarePen, Trash2, TriangleAlert, TvMinimal, Upload, Video, Wrench, X } from "lucide-react";
+import { ArrowUp, AudioLines, BrainCircuit, Check, CheckCircle2, Clock3, ExternalLink, Globe, History, ImageIcon, ImagePlus, ImageUpscale, Images, Loader2, MessageSquareText, Mic, Pencil, RefreshCw, Sparkle, Square, SquarePen, Trash2, TriangleAlert, TvMinimal, Upload, Video, Wrench, X } from "lucide-react";
 import { marked } from "marked";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -24,19 +24,25 @@ import {
   createVideo,
   generateImage,
   getVideo,
+  listVoices,
+  synthesizeSpeech,
+  transcribeSpeech,
   type ChatMessage,
   type ChatStreamSnapshot,
   type ChatToolActivity,
   type ImageResult,
   type ReasoningEffort,
+  type STTResult,
+  type TTSResult,
   type VideoStatus,
+  type VoiceInfo,
 } from "@/features/creative-console/creative-console-api";
 import { getClientKeySecret, listClientKeys, type ClientKeyDTO } from "@/features/client-keys/client-keys-api";
 import { importVideoInputFromURL, uploadVideoInput } from "@/features/media/media-api";
 import { PageHeader } from "@/shared/components/page-header";
 import { cn } from "@/shared/lib/cn";
 
-type CreativeMode = "chat" | "image" | "video";
+type CreativeMode = "chat" | "image" | "video" | "voice";
 type ConversationMessage = ChatMessage & {
   id: string;
   reasoning?: string;
@@ -94,7 +100,7 @@ export function CreativeConsolePage() {
   const [selectedKeyId, setSelectedKeyId] = useState("");
   const [secretState, setSecretState] = useState<SecretState | null>(null);
   const [keyError, setKeyError] = useState("");
-  const [selectedModels, setSelectedModels] = useState<Record<CreativeMode, string>>({ chat: "", image: "", video: "" });
+  const [selectedModels, setSelectedModels] = useState<Record<CreativeMode, string>>({ chat: "", image: "", video: "", voice: "" });
   const [chatToolbarElement, setChatToolbarElement] = useState<HTMLDivElement | null>(null);
   const requestedSecretKeyRef = useRef("");
 
@@ -124,11 +130,13 @@ export function CreativeConsolePage() {
     chat: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "chat" || model.capability === "responses")),
     image: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "image")),
     video: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "video")),
+    voice: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "tts" || model.capability === "stt" || model.capability === "realtime")),
   }), [permittedModels]);
   const effectiveModels = useMemo<Record<CreativeMode, string>>(() => ({
     chat: modelGroups.chat.some((model) => model.publicId === selectedModels.chat) ? selectedModels.chat : modelGroups.chat[0]?.publicId ?? "",
     image: modelGroups.image.some((model) => model.publicId === selectedModels.image) ? selectedModels.image : modelGroups.image[0]?.publicId ?? "",
     video: modelGroups.video.some((model) => model.publicId === selectedModels.video) ? selectedModels.video : modelGroups.video[0]?.publicId ?? "",
+    voice: modelGroups.voice.some((model) => model.publicId === selectedModels.voice) ? selectedModels.voice : modelGroups.voice[0]?.publicId ?? "",
   }), [modelGroups, selectedModels]);
 
   const secretMutation = useMutation({
@@ -193,6 +201,7 @@ export function CreativeConsolePage() {
               <TabsTrigger className="flex-1 gap-1.5 rounded-full px-3 lg:min-w-20 [&_svg]:size-3.5" value="chat"><MessageSquareText />{t("creativeConsole.modes.chat")}</TabsTrigger>
               <TabsTrigger className="flex-1 gap-1.5 rounded-full px-3 lg:min-w-20 [&_svg]:size-3.5" value="image"><ImageIcon />{t("creativeConsole.modes.image")}</TabsTrigger>
               <TabsTrigger className="flex-1 gap-1.5 rounded-full px-3 lg:min-w-20 [&_svg]:size-3.5" value="video"><Video />{t("creativeConsole.modes.video")}</TabsTrigger>
+              <TabsTrigger className="flex-1 gap-1.5 rounded-full px-3 lg:min-w-20 [&_svg]:size-3.5" value="voice"><AudioLines />{t("creativeConsole.modes.voice")}</TabsTrigger>
             </TabsList>
           </Tabs>
 
@@ -220,6 +229,7 @@ export function CreativeConsolePage() {
           <div className="h-full" hidden={mode !== "chat"}><ChatPanel key={effectiveKeyId || "default"} storageScope={effectiveKeyId || "default"} toolbarElement={chatToolbarElement} {...panelProps("chat")} /></div>
           <div className="h-full" hidden={mode !== "image"}><ImagePanel {...panelProps("image")} /></div>
           <div className="h-full" hidden={mode !== "video"}><VideoPanel {...panelProps("video")} /></div>
+          <div className="h-full" hidden={mode !== "voice"}><VoicePanel {...panelProps("voice")} /></div>
         </div>
       </section>
     </div>
@@ -1067,6 +1077,132 @@ function VideoResult({ requestId, status, loading, error, onRetry }: { requestId
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+
+function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePanelProps) {
+  const { t } = useTranslation();
+  const [subMode, setSubMode] = useState<"tts" | "stt">("tts");
+  const [prompt, setPrompt] = useState("");
+  const [language, setLanguage] = useState("zh");
+  const [voiceId, setVoiceId] = useState("eve");
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [ttsResult, setTtsResult] = useState<TTSResult | null>(null);
+  const [sttResult, setSttResult] = useState<STTResult | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const voicesQuery = useQuery({
+    queryKey: ["creative-console", "voices", apiKey, model],
+    queryFn: ({ signal }) => listVoices({ apiKey, model: model || "grok-voice-latest", signal }),
+    enabled: Boolean(apiKey),
+    staleTime: 60_000,
+  });
+  const voices = voicesQuery.data ?? [];
+  useEffect(() => {
+    if (voices.length === 0) return;
+    if (!voices.some((voice) => voice.voiceId === voiceId)) {
+      setVoiceId(voices[0].voiceId);
+    }
+  }, [voiceId, voices]);
+
+  const ttsMutation = useMutation({
+    mutationFn: () => synthesizeSpeech({ apiKey, model: model || "grok-voice-latest", text: prompt.trim(), voiceId, language }),
+    onSuccess: (result) => {
+      setTtsResult(result);
+      setSttResult(null);
+    },
+  });
+  const sttMutation = useMutation({
+    mutationFn: async () => {
+      if (!audioFile) throw new Error(t("creativeConsole.errors.noAudio"));
+      return transcribeSpeech({ apiKey, model: model || "grok-transcribe", file: audioFile, language });
+    },
+    onSuccess: (result) => {
+      setSttResult(result);
+      setTtsResult(null);
+    },
+  });
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!apiKey || !model) return;
+    if (subMode === "tts") {
+      if (!prompt.trim() || ttsMutation.isPending) return;
+      ttsMutation.reset();
+      ttsMutation.mutate();
+      return;
+    }
+    if (!audioFile || sttMutation.isPending) return;
+    sttMutation.reset();
+    sttMutation.mutate();
+  }
+
+  const busy = ttsMutation.isPending || sttMutation.isPending;
+  const languageOptions = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es"] as const;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto px-1 py-4">
+        {!ttsResult && !sttResult && !busy ? <WelcomeState title={t("creativeConsole.welcomeVoice")} /> : null}
+        {busy ? <LoadingResult text={subMode === "tts" ? t("creativeConsole.synthesizing") : t("creativeConsole.transcribing")} /> : null}
+        {ttsResult ? (
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 rounded-2xl bg-secondary/40 p-4">
+            <audio controls src={ttsResult.url} className="w-full" />
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+              <span>{ttsResult.contentType}{typeof ttsResult.duration === "number" ? ` · ${ttsResult.duration.toFixed(2)}s` : ""}</span>
+              <Button variant="secondary" size="sm" asChild><a href={ttsResult.url} download="speech.mp3"><ExternalLink />{t("creativeConsole.open")}</a></Button>
+            </div>
+          </div>
+        ) : null}
+        {sttResult ? (
+          <div className="mx-auto w-full max-w-3xl space-y-3 rounded-2xl bg-secondary/40 p-4">
+            <p className="whitespace-pre-wrap text-sm leading-6">{sttResult.text}</p>
+            <div className="text-xs text-muted-foreground">
+              {[sttResult.language, typeof sttResult.duration === "number" ? `${sttResult.duration.toFixed(2)}s` : ""].filter(Boolean).join(" · ")}
+            </div>
+          </div>
+        ) : null}
+        {ttsMutation.isError ? <div className="px-2 text-[11px] text-destructive">{ttsMutation.error.message}</div> : null}
+        {sttMutation.isError ? <div className="px-2 text-[11px] text-destructive">{sttMutation.error.message}</div> : null}
+      </div>
+      <form onSubmit={submit} className={composerClassName}>
+        <div className="flex items-center gap-2 px-3 pt-3">
+          <Button type="button" size="sm" variant={subMode === "tts" ? "secondary" : "ghost"} className="h-8 gap-1.5" onClick={() => setSubMode("tts")}><AudioLines />{t("creativeConsole.synthesize")}</Button>
+          <Button type="button" size="sm" variant={subMode === "stt" ? "secondary" : "ghost"} className="h-8 gap-1.5" onClick={() => setSubMode("stt")}><Mic />{t("creativeConsole.transcribe")}</Button>
+        </div>
+        {subMode === "tts" ? (
+          <Textarea id="voice-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={t("creativeConsole.voicePlaceholder")} className="min-h-24 resize-none border-0 bg-transparent px-4 py-3 text-sm focus-visible:ring-0" />
+        ) : (
+          <div className="flex items-center gap-2 px-4 py-3">
+            <input ref={fileInputRef} type="file" accept="audio/*,.mp3,.wav,.m4a,.ogg,.flac" className="hidden" onChange={(event) => setAudioFile(event.target.files?.[0] ?? null)} />
+            <Button type="button" variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()}><Upload />{audioFile ? audioFile.name : t("creativeConsole.uploadAudio")}</Button>
+            {audioFile ? <Button type="button" variant="ghost" size="icon" aria-label={t("creativeConsole.clearAudio")} onClick={() => setAudioFile(null)}><X /></Button> : null}
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2 px-3 pb-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            <CompactModelSelect value={model} models={modelOptions} onChange={onModelChange} />
+            <CompactSelect value={language} options={languageOptions} onChange={setLanguage} ariaLabel={t("creativeConsole.voiceLanguage")} />
+            {subMode === "tts" ? (
+              <Select value={voiceId} onValueChange={setVoiceId} disabled={voices.length === 0 && voicesQuery.isPending}>
+                <SelectTrigger className="h-8 w-auto max-w-40 gap-1 border-0 bg-transparent px-2 shadow-none hover:bg-secondary/70 focus:ring-0" aria-label={t("creativeConsole.voiceId")}>
+                  <SelectValue placeholder={t("creativeConsole.voiceId")} />
+                </SelectTrigger>
+                <SelectContent>
+                  {(voices.length > 0 ? voices : [{ voiceId: "eve", name: "eve" } as VoiceInfo]).map((voice) => (
+                    <SelectItem key={voice.voiceId} value={voice.voiceId}>{voice.name || voice.voiceId}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : null}
+          </div>
+          <Button type="submit" size="icon" aria-label={subMode === "tts" ? t("creativeConsole.synthesize") : t("creativeConsole.transcribe")} disabled={!apiKey || !model || busy || (subMode === "tts" ? !prompt.trim() : !audioFile)}>
+            {busy ? <Loader2 className="animate-spin" /> : <ArrowUp />}
+          </Button>
+        </div>
+      </form>
     </div>
   );
 }

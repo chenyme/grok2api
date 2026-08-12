@@ -747,13 +747,19 @@ func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (s
 		return upstreamModel, model.CapabilityResponses
 	case account.ProviderConsole:
 		switch upstreamModel {
-		case "grok-imagine-image", "grok-imagine-image-quality":
+		case "grok-imagine-image":
 			// The catalog also registers image_edit for the same public model.
 			// Discovery only needs one existing managed capability to remain
 			// idempotent and must never synthesize a Responses route.
-			return upstreamModel, model.CapabilityImage
+			return "grok-imagine-image-2.0", model.CapabilityImage
+		case "grok-imagine-image-quality":
+			return "grok-imagine-image-quality-2.0", model.CapabilityImage
 		case "grok-imagine-video", "grok-imagine-video-1.5":
 			return upstreamModel, model.CapabilityVideo
+		case "grok-voice-latest", "grok-voice-think-fast-2.0", "grok-voice-think-fast-1.0":
+			return upstreamModel, model.CapabilityRealtime
+		case "grok-transcribe":
+			return upstreamModel, model.CapabilitySTT
 		default:
 			return upstreamModel, model.CapabilityResponses
 		}

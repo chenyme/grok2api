@@ -47,12 +47,19 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 		{publicID: "Console/grok-4.20-multi-agent-0309", capability: modeldomain.CapabilityResponses}:   "grok-4.20-multi-agent-0309",
 		{publicID: "Console/grok-4.5", capability: modeldomain.CapabilityResponses}:                     "grok-4.5",
 		{publicID: "Console/grok-build-0.1", capability: modeldomain.CapabilityResponses}:               "grok-build-0.1",
-		{publicID: "Console/grok-imagine-image-quality", capability: modeldomain.CapabilityImage}:       "grok-imagine-image-quality",
-		{publicID: "Console/grok-imagine-image-quality", capability: modeldomain.CapabilityImageEdit}:   "grok-imagine-image-quality",
-		{publicID: "Console/grok-imagine-image", capability: modeldomain.CapabilityImage}:               "grok-imagine-image",
-		{publicID: "Console/grok-imagine-image", capability: modeldomain.CapabilityImageEdit}:           "grok-imagine-image",
-		{publicID: "Console/grok-imagine-video", capability: modeldomain.CapabilityVideo}:               "grok-imagine-video",
-		{publicID: "Console/grok-imagine-video-1.5", capability: modeldomain.CapabilityVideo}:           "grok-imagine-video-1.5",
+		{publicID: "Console/grok-imagine-image-quality-2.0", capability: modeldomain.CapabilityImage}:     "grok-imagine-image-quality",
+		{publicID: "Console/grok-imagine-image-quality-2.0", capability: modeldomain.CapabilityImageEdit}: "grok-imagine-image-quality",
+		{publicID: "Console/grok-imagine-image-2.0", capability: modeldomain.CapabilityImage}:             "grok-imagine-image",
+		{publicID: "Console/grok-imagine-image-2.0", capability: modeldomain.CapabilityImageEdit}:         "grok-imagine-image",
+		{publicID: "Console/grok-imagine-video", capability: modeldomain.CapabilityVideo}:                 "grok-imagine-video",
+		{publicID: "Console/grok-imagine-video-1.5", capability: modeldomain.CapabilityVideo}:             "grok-imagine-video-1.5",
+		{publicID: "Console/grok-voice-latest", capability: modeldomain.CapabilityRealtime}:               "grok-voice-latest",
+		{publicID: "Console/grok-voice-latest", capability: modeldomain.CapabilityTTS}:                    "grok-voice-latest",
+		{publicID: "Console/grok-voice-think-fast-2.0", capability: modeldomain.CapabilityRealtime}:       "grok-voice-think-fast-2.0",
+		{publicID: "Console/grok-voice-think-fast-2.0", capability: modeldomain.CapabilityTTS}:            "grok-voice-think-fast-2.0",
+		{publicID: "Console/grok-voice-think-fast-1.0", capability: modeldomain.CapabilityRealtime}:       "grok-voice-think-fast-1.0",
+		{publicID: "Console/grok-voice-think-fast-1.0", capability: modeldomain.CapabilityTTS}:            "grok-voice-think-fast-1.0",
+		{publicID: "Console/grok-transcribe", capability: modeldomain.CapabilitySTT}:                      "grok-transcribe",
 	}
 	routes := Routes()
 	if len(routes) != len(expected) {
@@ -93,6 +100,7 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	for model, want := range map[string]string{
 		"grok-4.5": QuotaMode, "grok-imagine-image-quality": QuotaModeImage,
 		"grok-imagine-image": QuotaModeImage, "grok-imagine-video": QuotaModeVideo, "grok-imagine-video-1.5": QuotaModeVideo,
+		"grok-voice-latest": QuotaMode, "grok-voice-think-fast-2.0": QuotaMode, "grok-voice-think-fast-1.0": QuotaMode, "grok-transcribe": QuotaMode,
 	} {
 		if got := adapter.QuotaMode(model); got != want {
 			t.Fatalf("QuotaMode(%q) = %q, want %q", model, got, want)

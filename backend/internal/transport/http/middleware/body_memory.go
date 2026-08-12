@@ -94,6 +94,14 @@ func inferenceBodyOperation(path string) string {
 		return "image_generation"
 	case "/v1/images/edits":
 		return "image_edit"
+	case "/v1/tts":
+		return "tts"
+	case "/v1/stt":
+		return "stt"
+	case "/v1/realtime/client_secrets":
+		return "realtime_client_secret"
+	case "/v1/custom-voices":
+		return "custom_voices"
 	case "/v1/videos/generations":
 		return "video_generation"
 	default:

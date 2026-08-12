@@ -296,6 +296,148 @@ type VideoResult struct {
 	AssetID string
 }
 
+type TTSOutputFormat struct {
+	Codec      string
+	SampleRate int
+	BitRate    int
+}
+
+type TTSRequest struct {
+	Credential                account.Credential
+	Model                     string
+	Text                      string
+	VoiceID                   string
+	Language                  string
+	OutputFormat              TTSOutputFormat
+	Speed                     float64
+	OptimizeStreamingLatency  int
+	TextNormalization         bool
+	WithTimestamps            bool
+}
+
+type TTSTimestampSpan struct {
+	Start float64
+	End   float64
+}
+
+type TTSTimestamps struct {
+	GraphChars []string
+	GraphTimes []TTSTimestampSpan
+}
+
+type TTSResult struct {
+	Audio        []byte
+	ContentType  string
+	Duration     float64
+	Base64Audio  string
+	Timestamps   *TTSTimestamps
+	JSONEnvelope bool
+}
+
+type STTRequest struct {
+	Credential   account.Credential
+	Model        string
+	FileName     string
+	FileMIME     string
+	FileData     []byte
+	URL          string
+	AudioFormat  string
+	SampleRate   string
+	Language     string
+	Format       bool
+	Multichannel bool
+	Channels     int
+	Diarize      bool
+	KeyTerms     []string
+	FillerWords  bool
+	VADThreshold *float64
+}
+
+type STTWord struct {
+	Text    string
+	Start   float64
+	End     float64
+	Speaker *int
+}
+
+type STTChannel struct {
+	Index int
+	Text  string
+	Words []STTWord
+}
+
+type STTResult struct {
+	Text     string
+	Language string
+	Duration float64
+	Words    []STTWord
+	Channels []STTChannel
+	RawJSON  []byte
+}
+
+type VoiceInfo struct {
+	VoiceID  string
+	Name     string
+	Language string
+}
+
+type CustomVoice struct {
+	VoiceID   string
+	Name      string
+	Language  string
+	Gender    string
+	Tone      string
+	UseCase   string
+	CreatedAt string
+	UpdatedAt string
+	RawJSON   []byte
+}
+
+type CustomVoiceCreateRequest struct {
+	Credential account.Credential
+	Name       string
+	Language   string
+	Gender     string
+	Tone       string
+	UseCase    string
+	FileName   string
+	FileMIME   string
+	FileData   []byte
+}
+
+type CustomVoiceUpdateRequest struct {
+	Credential account.Credential
+	VoiceID    string
+	Name       *string
+	Language   *string
+	Gender     *string
+	Tone       *string
+	UseCase    *string
+}
+
+type RealtimeClientSecretRequest struct {
+	Credential    account.Credential
+	Model         string
+	ExpiresAfter  int
+	SessionJSON   []byte
+}
+
+type RealtimeClientSecretResult struct {
+	Value     string
+	ExpiresAt int64
+	RawJSON   []byte
+}
+
+type VoiceProxyRequest struct {
+	Credential  account.Credential
+	Method      string
+	Path        string
+	Query       string
+	Body        []byte
+	ContentType string
+	Accept      string
+}
+
 // RefreshedCredential represents rotated credentials returned by an OAuth refresh.
 type RefreshedCredential struct {
 	EncryptedAccessToken  string
@@ -426,6 +568,44 @@ type VideoAdapter interface {
 type VideoContentDownloader interface {
 	VideoAdapter
 	DownloadVideo(ctx context.Context, credential account.Credential, rawURL string) (io.ReadCloser, string, int64, error)
+}
+
+// TTSAdapter synthesizes speech audio for text prompts.
+type TTSAdapter interface {
+	Adapter
+	SynthesizeSpeech(ctx context.Context, request TTSRequest) (TTSResult, error)
+	ListTTSVoices(ctx context.Context, credential account.Credential) ([]VoiceInfo, error)
+	GetTTSVoice(ctx context.Context, credential account.Credential, voiceID string) (VoiceInfo, error)
+}
+
+// STTAdapter transcribes audio into text.
+type STTAdapter interface {
+	Adapter
+	TranscribeSpeech(ctx context.Context, request STTRequest) (STTResult, error)
+}
+
+// RealtimeVoiceAdapter issues ephemeral secrets and can proxy websocket sessions.
+type RealtimeVoiceAdapter interface {
+	Adapter
+	CreateRealtimeClientSecret(ctx context.Context, request RealtimeClientSecretRequest) (RealtimeClientSecretResult, error)
+	RealtimeWebSocketURL(model string, query string) (string, error)
+}
+
+// CustomVoiceAdapter manages team-scoped cloned voices.
+type CustomVoiceAdapter interface {
+	Adapter
+	CreateCustomVoice(ctx context.Context, request CustomVoiceCreateRequest) (CustomVoice, error)
+	ListCustomVoices(ctx context.Context, credential account.Credential, limit int, paginationToken string) ([]CustomVoice, string, error)
+	GetCustomVoice(ctx context.Context, credential account.Credential, voiceID string) (CustomVoice, error)
+	UpdateCustomVoice(ctx context.Context, request CustomVoiceUpdateRequest) (CustomVoice, error)
+	DeleteCustomVoice(ctx context.Context, credential account.Credential, voiceID string) error
+	GetCustomVoiceAudio(ctx context.Context, credential account.Credential, voiceID string) ([]byte, string, error)
+}
+
+// VoiceProxyAdapter forwards arbitrary official voice REST resources with account auth.
+type VoiceProxyAdapter interface {
+	Adapter
+	ProxyVoice(ctx context.Context, request VoiceProxyRequest) (*Response, error)
 }
 
 type RoutingMetadataAdapter interface {
@@ -607,6 +787,26 @@ func (r *Registry) Validate() error {
 		if definition.Media.VideoGeneration {
 			if _, ok := adapter.(VideoAdapter); !ok {
 				return fmt.Errorf("Provider %s 声明视频能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.TTS {
+			if _, ok := adapter.(TTSAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明语音合成能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.STT {
+			if _, ok := adapter.(STTAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明语音识别能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.Realtime {
+			if _, ok := adapter.(RealtimeVoiceAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明实时语音能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.CustomVoices {
+			if _, ok := adapter.(CustomVoiceAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明自定义音色能力但未实现适配器", value)
 			}
 		}
 	}
@@ -826,6 +1026,51 @@ func (r *Registry) Videos(value account.Provider) (VideoAdapter, bool) {
 		return nil, false
 	}
 	result, ok := adapter.(VideoAdapter)
+	return result, ok
+}
+
+func (r *Registry) TTS(value account.Provider) (TTSAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(TTSAdapter)
+	return result, ok
+}
+
+func (r *Registry) STT(value account.Provider) (STTAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(STTAdapter)
+	return result, ok
+}
+
+func (r *Registry) RealtimeVoice(value account.Provider) (RealtimeVoiceAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(RealtimeVoiceAdapter)
+	return result, ok
+}
+
+func (r *Registry) CustomVoices(value account.Provider) (CustomVoiceAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(CustomVoiceAdapter)
+	return result, ok
+}
+
+func (r *Registry) VoiceProxy(value account.Provider) (VoiceProxyAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(VoiceProxyAdapter)
 	return result, ok
 }
 
