@@ -1697,3 +1697,100 @@ func (r *recordingConsoleEgressRepository) UpdateCount() int {
 	defer r.mu.Unlock()
 	return r.updates
 }
+
+
+func TestConsoleVideoEditPostsVideoAndPolls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		verifyTestDPoPProof(t, request)
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/videos/edits":
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload["model"] != "grok-imagine-video" || payload["prompt"] != "add necklace" {
+				t.Errorf("edit payload = %#v", payload)
+			}
+			if _, exists := payload["duration"]; exists {
+				t.Errorf("edit payload must not include duration: %#v", payload)
+			}
+			video, ok := payload["video"].(map[string]any)
+			if !ok || video["url"] != "https://example.com/source.mp4" {
+				t.Errorf("edit video = %#v", payload["video"])
+			}
+			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-edit-1"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/upstream-video-edit-1":
+			_, _ = writer.Write([]byte(`{"status":"done","progress":100,"video":{"url":"https://vidgen.x.ai/result-edit.mp4"}}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Model: "grok-imagine-video", Operation: provider.VideoOperationEdit,
+		Prompt: "add necklace", VideoURL: "https://example.com/source.mp4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://vidgen.x.ai/result-edit.mp4" {
+		t.Fatalf("edit result = %#v", result)
+	}
+}
+
+func TestConsoleVideoExtendPostsVideoAndPolls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		verifyTestDPoPProof(t, request)
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/videos/extensions":
+			var payload map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload["model"] != "grok-imagine-video" || payload["duration"] != float64(4) || payload["prompt"] != "pan left" {
+				t.Errorf("extend payload = %#v", payload)
+			}
+			video, ok := payload["video"].(map[string]any)
+			if !ok || video["url"] != "https://example.com/source.mp4" {
+				t.Errorf("extend video = %#v", payload["video"])
+			}
+			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-extend-1"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/upstream-video-extend-1":
+			_, _ = writer.Write([]byte(`{"status":"done","progress":100,"video":{"url":"https://vidgen.x.ai/result-extend.mp4"}}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Model: "grok-imagine-video", Operation: provider.VideoOperationExtend,
+		Prompt: "pan left", Duration: 4, VideoURL: "https://example.com/source.mp4",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://vidgen.x.ai/result-extend.mp4" {
+		t.Fatalf("extend result = %#v", result)
+	}
+}
+
+func TestConsoleVideoEditRejectsNonImagineVideoModel(t *testing.T) {
+	adapter, credential := newConsoleTestAdapter(t, "http://127.0.0.1")
+	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Model: "grok-imagine-video-1.5", Operation: provider.VideoOperationEdit,
+		Prompt: "x", VideoURL: "https://example.com/source.mp4",
+	})
+	if err == nil || !strings.Contains(err.Error(), "grok-imagine-video") {
+		t.Fatalf("err = %v", err)
+	}
+}

@@ -1027,3 +1027,39 @@ func TestSelectionErrorResponseDistinguishesCoolingAndSaturation(t *testing.T) {
 		})
 	}
 }
+
+
+func TestEditAndExtendVideoRequestValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := &Handler{maxBodyBytes: 1 << 20}
+	router := gin.New()
+	group := router.Group("/v1")
+	handler.Register(group)
+
+	// unsupported model on edit
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos/edits", strings.NewReader(`{"model":"grok-imagine-video-1.5","prompt":"x","video":{"url":"https://example.com/a.mp4"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("edit unsupported model status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	// missing video on extend
+	req = httptest.NewRequest(http.MethodPost, "/v1/videos/extensions", strings.NewReader(`{"model":"grok-imagine-video","prompt":"x","duration":4}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("extend missing video status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	// invalid extend duration
+	req = httptest.NewRequest(http.MethodPost, "/v1/videos/extensions", strings.NewReader(`{"model":"grok-imagine-video","prompt":"x","duration":15,"video":{"url":"https://example.com/a.mp4"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("extend bad duration status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}

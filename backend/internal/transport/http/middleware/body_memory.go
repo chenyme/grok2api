@@ -106,6 +106,10 @@ func inferenceBodyOperation(path string) string {
 		return "custom_voices"
 	case "/v1/videos/generations":
 		return "video_generation"
+	case "/v1/videos/edits":
+		return "video_edit"
+	case "/v1/videos/extensions":
+		return "video_extension"
 	default:
 		return "other"
 	}

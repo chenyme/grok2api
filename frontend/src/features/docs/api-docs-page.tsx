@@ -134,6 +134,31 @@ const endpoints: Record<string, EndpointDefinition> = {
     request: (model) => ({ model, prompt: "A paper airplane flying over a city", duration: 8, aspect_ratio: "16:9", resolution: "720p" }),
     response: { request_id: "video_example" },
   },
+  "video/edits": {
+    key: "video/edits", category: "Video", title: "Video edits", method: "POST", path: "/videos/edits",
+    descriptionKey: "docs.endpointVideoEdit", capabilities: ["video"],
+    fields: [
+      { name: "model", required: true, descriptionKey: "docs.reference.fieldModel" },
+      { name: "prompt", required: true, descriptionKey: "docs.reference.fieldVideoEditPrompt" },
+      { name: "video", required: true, descriptionKey: "docs.reference.fieldVideoInput" },
+    ],
+    noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoEditModel", "docs.reference.noteVideoStrict"],
+    request: (model) => ({ model: "grok-imagine-video", prompt: "Give the woman a silver necklace", video: { url: "https://example.com/source.mp4" } }),
+    response: { request_id: "video_edit_example" },
+  },
+  "video/extensions": {
+    key: "video/extensions", category: "Video", title: "Video extensions", method: "POST", path: "/videos/extensions",
+    descriptionKey: "docs.endpointVideoExtend", capabilities: ["video"],
+    fields: [
+      { name: "model", required: true, descriptionKey: "docs.reference.fieldModel" },
+      { name: "prompt", required: true, descriptionKey: "docs.reference.fieldVideoExtendPrompt" },
+      { name: "video", required: true, descriptionKey: "docs.reference.fieldVideoInput" },
+      { name: "duration", descriptionKey: "docs.reference.fieldVideoExtendDuration" },
+    ],
+    noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoEditModel", "docs.reference.noteVideoStrict"],
+    request: (model) => ({ model: "grok-imagine-video", prompt: "The shot pans to an over the shoulder perspective.", duration: 6, video: { url: "https://example.com/source.mp4" } }),
+    response: { request_id: "video_extend_example" },
+  },
   "video/get": {
     key: "video/get", category: "Video", title: "Get video", method: "GET", path: "/videos/{request_id}",
     descriptionKey: "docs.endpointVideoGet", capabilities: ["video"],

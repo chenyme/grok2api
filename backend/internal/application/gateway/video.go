@@ -43,6 +43,8 @@ type VideoInput struct {
 	RequestID   string
 	ClientKey   clientkey.Key
 	PublicModel string
+	// Operation defaults to generate when empty.
+	Operation   provider.VideoOperation
 	Prompt      string
 	Duration    int
 	AspectRatio string
@@ -51,20 +53,68 @@ type VideoInput struct {
 	ImageURL string
 	// ReferenceURLs are style/content references (official "reference_images").
 	ReferenceURLs []string
+	// VideoURL is required for edit/extend (official "video").
+	VideoURL string
 }
 
 func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job, error) {
 	if s.mediaJobs == nil || s.mediaQueue == nil {
 		return media.Job{}, fmt.Errorf("视频任务服务未配置")
 	}
-	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && strings.TrimSpace(input.ImageURL) == "" && len(input.ReferenceURLs) == 0) {
-		return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
+	operation := input.Operation
+	if operation == "" {
+		operation = provider.VideoOperationGenerate
+	}
+	switch operation {
+	case provider.VideoOperationGenerate, provider.VideoOperationEdit, provider.VideoOperationExtend:
+	default:
+		return media.Job{}, fmt.Errorf("不支持的视频操作")
+	}
+	if len(input.Prompt) > 100000 {
+		return media.Job{}, fmt.Errorf("prompt 过长")
+	}
+	if operation == provider.VideoOperationGenerate {
+		if len(input.Prompt) == 0 && strings.TrimSpace(input.ImageURL) == "" && len(input.ReferenceURLs) == 0 {
+			return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
+		}
+		if strings.TrimSpace(input.VideoURL) != "" {
+			return media.Job{}, fmt.Errorf("视频生成不支持 video 输入")
+		}
+	} else {
+		if strings.TrimSpace(input.Prompt) == "" {
+			return media.Job{}, fmt.Errorf("视频编辑/延长必须提供 prompt")
+		}
+		if strings.TrimSpace(input.VideoURL) == "" {
+			return media.Job{}, fmt.Errorf("视频编辑/延长必须提供 video")
+		}
+		if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 {
+			return media.Job{}, fmt.Errorf("视频编辑/延长不支持 image 或 reference_images")
+		}
+		if operation == provider.VideoOperationEdit && input.Duration != 0 {
+			return media.Job{}, fmt.Errorf("视频编辑不支持 duration")
+		}
+		if operation == provider.VideoOperationExtend {
+			if input.Duration == 0 {
+				input.Duration = 6
+			}
+			if input.Duration < 2 || input.Duration > 10 {
+				return media.Job{}, fmt.Errorf("视频延长 duration 必须在 2 到 10 秒之间")
+			}
+		}
+		// Edit/extend keep source geometry; ignore generation-only knobs.
+		input.AspectRatio = ""
+		input.Resolution = ""
 	}
 	allRefs := videoInputReferences(input.ImageURL, input.ReferenceURLs)
 	if err := s.validateVideoInputReferences(ctx, allRefs); err != nil {
 		return media.Job{}, err
 	}
-	inputJSON, err := encodeVideoInput(input.ImageURL, input.ReferenceURLs)
+	if videoURL := strings.TrimSpace(input.VideoURL); videoURL != "" {
+		if err := s.validateVideoInputReferences(ctx, []string{videoURL}); err != nil {
+			return media.Job{}, err
+		}
+	}
+	inputJSON, err := encodeVideoInputFull(operation, input.ImageURL, input.ReferenceURLs, input.VideoURL)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -78,6 +128,12 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	})
 	if err != nil {
 		return media.Job{}, err
+	}
+	if operation != provider.VideoOperationGenerate {
+		// Personal-only: official edit/extension currently target grok-imagine-video.
+		if route.Provider != account.ProviderConsole || strings.TrimSpace(route.UpstreamModel) != "grok-imagine-video" {
+			return media.Job{}, fmt.Errorf("视频编辑/延长仅支持 Console/grok-imagine-video")
+		}
 	}
 	if err := s.checkLedgerReady(); err != nil {
 		return media.Job{}, err
@@ -337,7 +393,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		s.failVideoJob(parent, job, "provider_unavailable", ErrNoAvailableAccount)
 		return
 	}
-	imageURL, referenceURLs, err := s.resolveVideoInputParts(ctx, job.InputJSON)
+	operation, imageURL, referenceURLs, videoURL, err := s.resolveVideoJobInputs(ctx, job.InputJSON)
 	if err != nil {
 		s.failVideoJob(parent, job, "input_unavailable", err)
 		return
@@ -345,8 +401,9 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	lastProgress := job.Progress
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
 		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Model: route.UpstreamModel,
+		Operation: operation,
 		Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
-		ImageURL: imageURL, ReferenceURLs: referenceURLs,
+		ImageURL: imageURL, ReferenceURLs: referenceURLs, VideoURL: videoURL,
 		Progress: func(value int) {
 			value = min(99, max(1, value))
 			if value-lastProgress < 5 {
@@ -708,7 +765,17 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 }
 
 func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
+	return encodeVideoInputFull(provider.VideoOperationGenerate, imageURL, referenceURLs, "")
+}
+
+func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, referenceURLs []string, videoURL string) (string, error) {
 	payload := map[string]any{}
+	if operation == "" {
+		operation = provider.VideoOperationGenerate
+	}
+	if operation != provider.VideoOperationGenerate {
+		payload["operation"] = string(operation)
+	}
 	if value := strings.TrimSpace(imageURL); value != "" {
 		payload["image_url"] = value
 	}
@@ -720,6 +787,9 @@ func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
 	}
 	if len(refs) > 0 {
 		payload["reference_urls"] = refs
+	}
+	if value := strings.TrimSpace(videoURL); value != "" {
+		payload["video_url"] = value
 	}
 	// Keep a combined image_urls field for older readers/tools that only
 	// understand the pre-split shape. New workers prefer image_url/reference_urls.
@@ -738,25 +808,37 @@ func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
 }
 
 func decodeVideoInput(value string) []string {
-	imageURL, refs := decodeVideoInputParts(value)
-	return videoInputReferences(imageURL, refs)
+	imageURL, refs, videoURL := decodeVideoInputFull(value)
+	values := videoInputReferences(imageURL, refs)
+	if v := strings.TrimSpace(videoURL); v != "" {
+		values = append(values, v)
+	}
+	return values
 }
 
 func decodeVideoInputParts(value string) (string, []string) {
+	imageURL, refs, _ := decodeVideoInputFull(value)
+	return imageURL, refs
+}
+
+func decodeVideoInputFull(value string) (string, []string, string) {
 	var input struct {
+		Operation     string   `json:"operation"`
 		ImageURL      string   `json:"image_url"`
 		ReferenceURLs []string `json:"reference_urls"`
 		ImageURLs     []string `json:"image_urls"`
+		VideoURL      string   `json:"video_url"`
 	}
 	_ = json.Unmarshal([]byte(value), &input)
-	if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 {
+	videoURL := strings.TrimSpace(input.VideoURL)
+	if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 || videoURL != "" || strings.TrimSpace(input.Operation) != "" {
 		refs := make([]string, 0, len(input.ReferenceURLs))
 		for _, raw := range input.ReferenceURLs {
 			if v := strings.TrimSpace(raw); v != "" {
 				refs = append(refs, v)
 			}
 		}
-		return strings.TrimSpace(input.ImageURL), refs
+		return strings.TrimSpace(input.ImageURL), refs, videoURL
 	}
 	// Legacy jobs stored a flat image_urls list. Preserve historical mapping:
 	// one URL was treated as the first-frame image; multiple URLs were references.
@@ -768,12 +850,47 @@ func decodeVideoInputParts(value string) (string, []string) {
 	}
 	switch len(legacy) {
 	case 0:
-		return "", nil
+		return "", nil, ""
 	case 1:
-		return legacy[0], nil
+		return legacy[0], nil, ""
 	default:
-		return "", legacy
+		return "", legacy, ""
 	}
+}
+
+func decodeVideoOperation(value string) provider.VideoOperation {
+	var input struct {
+		Operation string `json:"operation"`
+	}
+	_ = json.Unmarshal([]byte(value), &input)
+	switch provider.VideoOperation(strings.TrimSpace(input.Operation)) {
+	case provider.VideoOperationEdit:
+		return provider.VideoOperationEdit
+	case provider.VideoOperationExtend:
+		return provider.VideoOperationExtend
+	default:
+		return provider.VideoOperationGenerate
+	}
+}
+
+func (s *Service) resolveVideoJobInputs(ctx context.Context, inputJSON string) (provider.VideoOperation, string, []string, string, error) {
+	operation := decodeVideoOperation(inputJSON)
+	_, _, videoURL := decodeVideoInputFull(inputJSON)
+	resolvedImage, resolvedRefs, err := s.resolveVideoInputParts(ctx, inputJSON)
+	if err != nil {
+		return "", "", nil, "", err
+	}
+	if strings.TrimSpace(videoURL) == "" {
+		return operation, resolvedImage, resolvedRefs, "", nil
+	}
+	resolvedVideos, err := s.resolveVideoInputReferences(ctx, []string{videoURL})
+	if err != nil {
+		return "", "", nil, "", err
+	}
+	if len(resolvedVideos) == 0 {
+		return "", "", nil, "", ErrVideoInputUnavailable
+	}
+	return operation, resolvedImage, resolvedRefs, resolvedVideos[0], nil
 }
 
 func videoInputReferences(imageURL string, referenceURLs []string) []string {

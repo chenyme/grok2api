@@ -273,6 +273,15 @@ type ImageEditRequest struct {
 	PartialImages  int
 }
 
+// VideoOperation selects the official xAI video endpoint family.
+type VideoOperation string
+
+const (
+	VideoOperationGenerate VideoOperation = "generate"
+	VideoOperationEdit     VideoOperation = "edit"
+	VideoOperationExtend   VideoOperation = "extend"
+)
+
 type VideoRequest struct {
 	Credential account.Credential
 	// Billing is used only to determine XAI eligibility in Build auto mode; nil means the account tier is unknown.
@@ -281,6 +290,8 @@ type VideoRequest struct {
 	JobID string
 	// Model is the selected upstream video model when the Provider supports more than one.
 	Model string
+	// Operation defaults to generate when empty.
+	Operation VideoOperation
 	Prompt        string
 	Duration      int
 	AspectRatio   string
@@ -290,6 +301,8 @@ type VideoRequest struct {
 	// ReferenceURLs are style/content references (official "reference_images").
 	// A single reference must stay in reference_images and must not be coerced to image.
 	ReferenceURLs []string
+	// VideoURL is required for edit/extend (official "video" field).
+	VideoURL string
 	Progress      func(int)
 }
 

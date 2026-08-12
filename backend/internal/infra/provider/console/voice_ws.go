@@ -65,7 +65,7 @@ func (a *Adapter) DialVoiceWebSocket(ctx context.Context, request provider.Voice
 		cleanup()
 		return nil, nil, err
 	}
-	applyBrowserHeaders(httpReq, token, lease)
+	applyBrowserHeaders(httpReq, token, lease, request.Credential)
 	httpReq.Header.Set("Accept", "*/*")
 	httpReq.Header.Set("Sec-Fetch-Mode", "websocket")
 	httpReq.Header.Set("Sec-Fetch-Dest", "empty")

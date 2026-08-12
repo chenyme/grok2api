@@ -55,6 +55,8 @@ const documentation = [
     icon: Video,
     items: [
       { href: "/docs/video/generations", label: "Video Generations", method: "POST" },
+      { href: "/docs/video/edits", label: "Video Edits", method: "POST" },
+      { href: "/docs/video/extensions", label: "Video Extensions", method: "POST" },
       { href: "/docs/video/get", label: "Get Video", method: "GET" },
     ],
   },

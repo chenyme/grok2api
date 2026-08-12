@@ -217,6 +217,30 @@ func swaggerGetImage() {}
 // @Router /v1/videos/generations [post]
 func swaggerGenerateVideo() {}
 
+// swaggerEditVideo godoc
+// @Summary 创建异步视频编辑任务
+// @Tags Videos
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param request body SwaggerVideoGenerationRequest true "请求"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} map[string]any
+// @Router /v1/videos/edits [post]
+func swaggerEditVideo() {}
+
+// swaggerExtendVideo godoc
+// @Summary 创建异步视频延长任务
+// @Tags Videos
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param request body SwaggerVideoGenerationRequest true "请求"
+// @Success 200 {object} map[string]string
+// @Failure 400 {object} map[string]any
+// @Router /v1/videos/extensions [post]
+func swaggerExtendVideo() {}
+
 // swaggerGetVideo godoc
 // @Summary 查询异步视频任务
 // @Tags Videos

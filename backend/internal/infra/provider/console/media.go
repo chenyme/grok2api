@@ -403,51 +403,97 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if !ResolveMedia(modelName, modeldomain.CapabilityVideo) {
 		return provider.VideoResult{}, fmt.Errorf("Console 视频模型未注册: %s", modelName)
 	}
+	operation := request.Operation
+	if operation == "" {
+		operation = provider.VideoOperationGenerate
+	}
+	switch operation {
+	case provider.VideoOperationGenerate, provider.VideoOperationEdit, provider.VideoOperationExtend:
+	default:
+		return provider.VideoResult{}, fmt.Errorf("不支持的视频操作: %s", operation)
+	}
+	// Official video edit/extension docs and model catalog only expose VIDEO input on
+	// grok-imagine-video. 1.5 is generation-oriented (TEXT/IMAGE/AUDIO) and is rejected here.
+	if operation != provider.VideoOperationGenerate && modelName != "grok-imagine-video" {
+		return provider.VideoResult{}, fmt.Errorf("%s 仅支持 grok-imagine-video", operation)
+	}
 	totalImages := consoleVideoImageCount(request)
 	if totalImages > consoleMaxVideoImages {
 		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张输入图，当前为 %d 张", modelName, consoleMaxVideoImages, totalImages)
 	}
-	if request.Duration < 1 || request.Duration > 15 {
-		return provider.VideoResult{}, errors.New("duration 必须在 1 到 15 秒之间")
+	if operation == provider.VideoOperationGenerate {
+		if request.Duration < 1 || request.Duration > 15 {
+			return provider.VideoResult{}, errors.New("duration 必须在 1 到 15 秒之间")
+		}
+	} else if operation == provider.VideoOperationExtend {
+		// Official /v1/videos/extensions defaults to 6s and accepts 2-10s.
+		if request.Duration == 0 {
+			request.Duration = 6
+		}
+		if request.Duration < 2 || request.Duration > 10 {
+			return provider.VideoResult{}, errors.New("视频延长 duration 必须在 2 到 10 秒之间")
+		}
+	} else if request.Duration != 0 {
+		return provider.VideoResult{}, errors.New("视频编辑不支持 duration")
 	}
 	if request.Resolution != "" && request.Resolution != "480p" && request.Resolution != "720p" {
 		return provider.VideoResult{}, fmt.Errorf("%s 仅支持 480p 或 720p", modelName)
 	}
-	payload := map[string]any{
-		"model": modelName, "duration": request.Duration,
+	payload := map[string]any{"model": modelName}
+	if operation == provider.VideoOperationGenerate || operation == provider.VideoOperationExtend {
+		payload["duration"] = request.Duration
 	}
 	if prompt := strings.TrimSpace(request.Prompt); prompt != "" {
 		payload["prompt"] = prompt
 	}
-	if ratio := strings.TrimSpace(request.AspectRatio); ratio != "" {
-		payload["aspect_ratio"] = ratio
-	}
-	if resolution := strings.TrimSpace(request.Resolution); resolution != "" {
-		payload["resolution"] = resolution
-	}
-	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
-		if !validConsoleMediaInputURL(imageURL, "image") {
-			return provider.VideoResult{}, errors.New("视频首图必须是 HTTPS URL 或 image data URL")
+	if operation == provider.VideoOperationGenerate {
+		if ratio := strings.TrimSpace(request.AspectRatio); ratio != "" {
+			payload["aspect_ratio"] = ratio
 		}
-		payload["image"] = map[string]any{"url": imageURL}
-	}
-	if len(request.ReferenceURLs) > 0 {
-		references := make([]map[string]any, 0, len(request.ReferenceURLs))
-		for _, rawURL := range request.ReferenceURLs {
-			value := strings.TrimSpace(rawURL)
-			if !validConsoleMediaInputURL(value, "image") {
-				return provider.VideoResult{}, errors.New("每张视频参考图都必须是 HTTPS URL 或 image data URL")
-			}
-			references = append(references, map[string]any{"url": value})
+		if resolution := strings.TrimSpace(request.Resolution); resolution != "" {
+			payload["resolution"] = resolution
 		}
-		// A single reference must stay in reference_images; do not coerce to image.
-		payload["reference_images"] = references
-	}
-	if _, hasPrompt := payload["prompt"]; !hasPrompt {
-		if _, hasImage := payload["image"]; !hasImage {
-			if _, hasReferences := payload["reference_images"]; !hasReferences {
-				return provider.VideoResult{}, errors.New("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
+		if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
+			if !validConsoleMediaInputURL(imageURL, "image") {
+				return provider.VideoResult{}, errors.New("视频首图必须是 HTTPS URL 或 image data URL")
 			}
+			payload["image"] = map[string]any{"url": imageURL}
+		}
+		if len(request.ReferenceURLs) > 0 {
+			references := make([]map[string]any, 0, len(request.ReferenceURLs))
+			for _, rawURL := range request.ReferenceURLs {
+				value := strings.TrimSpace(rawURL)
+				if !validConsoleMediaInputURL(value, "image") {
+					return provider.VideoResult{}, errors.New("每张视频参考图都必须是 HTTPS URL 或 image data URL")
+				}
+				references = append(references, map[string]any{"url": value})
+			}
+			// A single reference must stay in reference_images; do not coerce to image.
+			payload["reference_images"] = references
+		}
+		if _, hasPrompt := payload["prompt"]; !hasPrompt {
+			if _, hasImage := payload["image"]; !hasImage {
+				if _, hasReferences := payload["reference_images"]; !hasReferences {
+					return provider.VideoResult{}, errors.New("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
+				}
+			}
+		}
+	} else {
+		prompt := strings.TrimSpace(request.Prompt)
+		if prompt == "" {
+			return provider.VideoResult{}, errors.New("视频编辑/延长必须提供 prompt")
+		}
+		videoURL := strings.TrimSpace(request.VideoURL)
+		if !validConsoleMediaInputURL(videoURL, "video") {
+			return provider.VideoResult{}, errors.New("输入视频必须是 HTTPS URL 或 video data URL")
+		}
+		payload["prompt"] = prompt
+		payload["video"] = map[string]any{"url": videoURL}
+		if strings.TrimSpace(request.ImageURL) != "" || len(request.ReferenceURLs) > 0 {
+			return provider.VideoResult{}, errors.New("视频编辑/延长不支持 image 或 reference_images")
+		}
+		if strings.TrimSpace(request.AspectRatio) != "" || strings.TrimSpace(request.Resolution) != "" {
+			return provider.VideoResult{}, errors.New("视频编辑/延长不支持 aspect_ratio 或 resolution")
 		}
 	}
 
@@ -465,7 +511,14 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, err
 	}
 	baseURL := a.config().BaseURL
-	created, err := a.doConsoleVideoJSON(ctx, request.Credential, token, lease, http.MethodPost, consoleV1Endpoint(baseURL, "/videos/generations"), body)
+	createPath := "/videos/generations"
+	switch operation {
+	case provider.VideoOperationEdit:
+		createPath = "/videos/edits"
+	case provider.VideoOperationExtend:
+		createPath = "/videos/extensions"
+	}
+	created, err := a.doConsoleVideoJSON(ctx, request.Credential, token, lease, http.MethodPost, consoleV1Endpoint(baseURL, createPath), body)
 	if err != nil {
 		return provider.VideoResult{}, err
 	}
