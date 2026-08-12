@@ -444,16 +444,18 @@ const resources = {
 1. 确认 Grok2API 版本/提交、部署方式（Compose、二进制或其他）、实际配置入口、主服务与 sidecar 状态、Quality Guard 页面/API 是否存在。
 2. 读取当前版本的 qualityGuard 配置定义、示例配置、Compose profile、Quality Guard README/SECURITY 和测试入口，列出当前版本真实支持的字段及默认值。
 3. 盘点 grok_build 出口节点：总数、启用数、固定回退受保护节点、是否有可调度 Build 账号和探测模型；代理地址仅判断“已配置/未配置”，不得显示值。
-4. 判断当前属于哪种状态：尚未启用、sidecar 未启动、bootstrap/共享卷异常、页面状态滞后、无可调度探测账号、节点探测失败、节点被隔离，或仅需策略调优。
-5. 先向我输出“现状、风险等级、准备修改的文件/服务、预计主动探测成本、回滚点和实施计划”，然后停止，等待我明确授权。
+4. 识别实际出口链路：上游是固定家宽 sticky 还是 Resin 动态池，是否经过中转，是否使用 Mihomo；记录每个 sticky session 到 listener 到应用节点的映射、动态池的独立 listener，以及最终出口 IP 与中转节点的区别。不得把多个 sticky session 合并成一个共享节点，也不得把动态池误当固定出口。
+5. 判断当前属于哪种状态：尚未启用、sidecar 未启动、bootstrap/共享卷异常、页面状态滞后、无可调度探测账号、节点探测失败、节点被隔离，或仅需策略调优。
+6. 先向我输出“现状、出口拓扑、风险等级、准备修改的文件/服务、预计主动探测成本、回滚点和实施计划”，然后停止，等待我明确授权。
 
 阶段 2：获授权后实施
 1. 先备份所有将修改的配置，并记录原镜像/提交和原策略；不要备份或展示 secret 内容。
 2. 解释边界：Quality Guard 是旁路控制面，通过成功流式请求的被动审计和固定模型请求的主动探测来隔离异常 grok_build 出口；它不在用户请求链中，也不能证明模型被“降智”。通用 IP/Cloudflare 连通探针只用于诊断，真实模型质量探测才是恢复依据。
-3. 首次启用采用保守策略：优先 hybrid 或按实际需求选择模式，failClosed 保持关闭，自动 IP 轮换保持关闭；softTPS/hardTPS、连续命中、错误次数、隔离时长和主动间隔必须依据当前链路基线说明理由，不得照抄其他部署。
+3. 首次启用采用保守策略：优先 hybrid 或按实际需求选择模式，failClosed 保持关闭，自动 IP 轮换保持关闭；softTPS/hardTPS、连续命中、错误次数、隔离时长和主动间隔必须依据当前链路基线说明理由，不得照抄其他部署。推荐链路是“家宽/Resin →（可选中转）→ Mihomo 分片与 listener → Grok2API/CPA 出口节点 → Quality Guard”；中转只改善传输，不是最终 residential exit。
 4. 校验 minimumHealthyNodes 与可隔离节点数。节点不足时先调整方案，不得让普通模式把可用出口全部摘除。固定回退节点保持受保护，不得覆盖现有代理、账号绑定或无关 Compose 服务。
 5. 仅使用当前仓库提供的集成方式启动或更新必要组件。基础 config.yaml 变化需要主服务重新生成 bootstrap 时才做针对性重启；管理页保存的运行策略应验证为热加载。
-6. 只有在已存在受信任、仅内部可达且按节点白名单限制的轮换端点时，才讨论 rotationURL/rotatableNodeIDs；不得自行创建公网轮换端点。若使用粘性会话，必须确认只修改目标节点并验证出口确实变化。
+6. 先按出口类型接入：固定家宽 sticky 使用“一 session、一 listener、一应用节点”，`proxyPool=false`；Resin 动态池使用独立 pool listener，`proxyPool=true`，单个隧道失败不得冷却整个池。不要让应用直接混用原始代理用户名。
+7. 只有在已存在受信任、仅内部可达且按节点白名单限制的轮换端点时，才讨论 rotationURL/rotatableNodeIDs；不得自行创建公网轮换端点。固定 sticky 的动作顺序必须是“摘流 → 迁移 auto 账号 → 只轮换目标节点 → 验证新旧出口 IP 不同 → 真实模型质量探测 → healthy 才恢复”。动态池只建立新隧道或新连接，不在已经开始输出的流式请求中途换 IP；轮换或重载不得覆盖其他代理、provider 或健康节点。
 
 阶段 3：验收（逐项给出 PASS/FAIL 和脱敏证据）
 - 配置/Compose 解析通过；主服务和 sidecar 健康，且没有重启无关服务。
@@ -1406,6 +1408,8 @@ Stage 3 - acceptance (give PASS/FAIL and redacted evidence for each item):
 - Run the checkout's Quality Guard and session rotator tests, plus relevant frontend/backend tests when available.
 - Internal credentials never appear in public/admin APIs or logs; proxy URLs remain write-only; state/logs omit probe prompts and model bodies; state-file permissions match the security documentation.
 - Quarantine does not delete nodes, change account bindings, or restore manually disabled nodes; rotation affects explicit allowlisted nodes only.
+- Each sticky session has an independent listener/node failure domain, Resin pools use fresh-tunnel semantics, and a relay address is not mistaken for the final exit IP.
+- If rotation occurs, only the target node changes, its exit IP actually changes, and a real model probe passes before restoration; failed or unchanged rotation leaves it quarantined.
 
 Troubleshooting rules:
 - For stale/unavailable status, inspect the sidecar, bootstrap, shared volume, internal API, and timestamps before changing thresholds.
