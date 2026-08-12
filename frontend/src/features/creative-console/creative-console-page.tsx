@@ -130,14 +130,16 @@ export function CreativeConsolePage() {
     chat: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "chat" || model.capability === "responses")),
     image: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "image")),
     video: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "video")),
-    voice: uniqueModelsByPublicID(permittedModels.filter((model) => model.capability === "tts" || model.capability === "stt" || model.capability === "realtime")),
+    // Keep capability-specific routes for VoicePanel so TTS/STT can filter correctly.
+    voice: permittedModels.filter((model) => model.capability === "tts" || model.capability === "stt" || model.capability === "realtime"),
   }), [permittedModels]);
+  const voiceModelChoices = useMemo(() => uniqueModelsByPublicID(modelGroups.voice), [modelGroups.voice]);
   const effectiveModels = useMemo<Record<CreativeMode, string>>(() => ({
     chat: modelGroups.chat.some((model) => model.publicId === selectedModels.chat) ? selectedModels.chat : modelGroups.chat[0]?.publicId ?? "",
     image: modelGroups.image.some((model) => model.publicId === selectedModels.image) ? selectedModels.image : modelGroups.image[0]?.publicId ?? "",
     video: modelGroups.video.some((model) => model.publicId === selectedModels.video) ? selectedModels.video : modelGroups.video[0]?.publicId ?? "",
-    voice: modelGroups.voice.some((model) => model.publicId === selectedModels.voice) ? selectedModels.voice : modelGroups.voice[0]?.publicId ?? "",
-  }), [modelGroups, selectedModels]);
+    voice: voiceModelChoices.some((model) => model.publicId === selectedModels.voice) ? selectedModels.voice : voiceModelChoices[0]?.publicId ?? "",
+  }), [modelGroups, selectedModels, voiceModelChoices]);
 
   const secretMutation = useMutation({
     mutationFn: (id: string) => getClientKeySecret(id),
@@ -1094,10 +1096,26 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const [sttResult, setSttResult] = useState<STTResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const filteredModels = useMemo(() => {
+    const matched = modelOptions.filter((item) => (
+      subMode === "tts"
+        ? item.capability === "tts" || item.capability === "realtime"
+        : item.capability === "stt"
+    ));
+    return uniqueModelsByPublicID(matched);
+  }, [modelOptions, subMode]);
+  const activeModel = filteredModels.some((item) => item.publicId === model)
+    ? model
+    : filteredModels[0]?.publicId ?? "";
+
+  useEffect(() => {
+    if (activeModel !== model) onModelChange(activeModel);
+  }, [activeModel, model, onModelChange]);
+
   const voicesQuery = useQuery({
-    queryKey: ["creative-console", "voices", apiKey, model],
-    queryFn: ({ signal }) => listVoices({ apiKey, model: model || "grok-voice-latest", signal }),
-    enabled: Boolean(apiKey),
+    queryKey: ["creative-console", "voices", apiKey, activeModel],
+    queryFn: ({ signal }) => listVoices({ apiKey, model: activeModel || "grok-voice-latest", signal }),
+    enabled: Boolean(apiKey) && subMode === "tts",
     staleTime: 60_000,
   });
   const voices = voicesQuery.data ?? [];
@@ -1109,7 +1127,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   }, [voiceId, voices]);
 
   const ttsMutation = useMutation({
-    mutationFn: () => synthesizeSpeech({ apiKey, model: model || "grok-voice-latest", text: prompt.trim(), voiceId, language, speed: Number(speed) }),
+    mutationFn: () => synthesizeSpeech({ apiKey, model: activeModel || "grok-voice-latest", text: prompt.trim(), voiceId, language, speed: Number(speed) }),
     onSuccess: (result) => {
       setTtsResult(result);
       setSttResult(null);
@@ -1118,7 +1136,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const sttMutation = useMutation({
     mutationFn: async () => {
       if (!audioFile) throw new Error(t("creativeConsole.errors.noAudio"));
-      return transcribeSpeech({ apiKey, model: model || "grok-stt", file: audioFile, language });
+      return transcribeSpeech({ apiKey, model: activeModel || "grok-stt", file: audioFile, language });
     },
     onSuccess: (result) => {
       setSttResult(result);
@@ -1128,7 +1146,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!apiKey || !model) return;
+    if (!apiKey || !activeModel) return;
     if (subMode === "tts") {
       if (!prompt.trim() || ttsMutation.isPending) return;
       ttsMutation.reset();
@@ -1185,7 +1203,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
         )}
         <div className="flex items-center justify-between gap-2 px-3 pb-3">
           <div className="flex min-w-0 flex-wrap items-center gap-1">
-            <CompactModelSelect value={model} models={modelOptions} onChange={onModelChange} />
+            <CompactModelSelect value={activeModel} models={filteredModels} onChange={onModelChange} />
             <CompactSelect value={language} options={languageOptions} onChange={setLanguage} ariaLabel={t("creativeConsole.voiceLanguage")} />
             {subMode === "tts" ? (
               <CompactSelect value={speed} options={speedOptions} onChange={setSpeed} ariaLabel={t("creativeConsole.voiceSpeed")} suffix="x" icon={<Clock3 />} />
@@ -1203,7 +1221,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
               </Select>
             ) : null}
           </div>
-          <Button type="submit" size="icon" aria-label={subMode === "tts" ? t("creativeConsole.synthesize") : t("creativeConsole.transcribe")} disabled={!apiKey || !model || busy || (subMode === "tts" ? !prompt.trim() : !audioFile)}>
+          <Button type="submit" size="icon" aria-label={subMode === "tts" ? t("creativeConsole.synthesize") : t("creativeConsole.transcribe")} disabled={!apiKey || !activeModel || busy || (subMode === "tts" ? !prompt.trim() : !audioFile)}>
             {busy ? <Loader2 className="animate-spin" /> : <ArrowUp />}
           </Button>
         </div>
