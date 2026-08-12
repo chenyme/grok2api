@@ -17,6 +17,7 @@ type ModelSpec struct {
 	UpstreamModel           string
 	SupportsReasoning       bool
 	SupportsReasoningEffort bool
+	DisallowsClientTools    bool
 	DefaultReasoningEffort  string
 	MaxOutputTokens         int
 }
@@ -25,7 +26,7 @@ var catalog = []ModelSpec{
 	{PublicID: "grok-4.3", UpstreamModel: "grok-4.3", SupportsReasoning: true, SupportsReasoningEffort: true, DefaultReasoningEffort: "medium", MaxOutputTokens: 1_000_000},
 	{PublicID: "grok-4.20-0309-reasoning", UpstreamModel: "grok-4.20-0309-reasoning", SupportsReasoning: true, MaxOutputTokens: 1_000_000},
 	{PublicID: "grok-4.20-0309-non-reasoning", UpstreamModel: "grok-4.20-0309-non-reasoning", MaxOutputTokens: 1_000_000},
-	{PublicID: "grok-4.20-multi-agent-0309", UpstreamModel: "grok-4.20-multi-agent-0309", SupportsReasoning: true, SupportsReasoningEffort: true, MaxOutputTokens: 1_000_000},
+	{PublicID: "grok-4.20-multi-agent-0309", UpstreamModel: "grok-4.20-multi-agent-0309", SupportsReasoning: true, SupportsReasoningEffort: true, DisallowsClientTools: true, MaxOutputTokens: 1_000_000},
 	{PublicID: "grok-4.5", UpstreamModel: "grok-4.5", SupportsReasoning: true, SupportsReasoningEffort: true, DefaultReasoningEffort: "medium", MaxOutputTokens: 1_000_000},
 	{PublicID: "grok-build-0.1", UpstreamModel: "grok-build-0.1", MaxOutputTokens: 256_000},
 }

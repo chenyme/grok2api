@@ -38,8 +38,10 @@ func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 	}
 	normalizeReasoning(payload, spec)
 	ensureReasoningInclude(payload)
-	retainedClientTools := normalizeConsoleTools(payload)
-	normalizeConsoleToolChoice(payload, retainedClientTools)
+	toolSummary := normalizeConsoleTools(payload, spec.DisallowsClientTools)
+	if err := normalizeConsoleToolChoice(payload, toolSummary, spec.DisallowsClientTools); err != nil {
+		return nil, err
+	}
 	return json.Marshal(payload)
 }
 
@@ -202,35 +204,59 @@ func ensureReasoningInclude(payload map[string]any) {
 	payload["include"] = result
 }
 
-func normalizeConsoleTools(payload map[string]any) bool {
+type consoleToolSummary struct {
+	retainedClientTools bool
+	removedClientTools  bool
+}
+
+func normalizeConsoleTools(payload map[string]any, disallowsClientTools bool) consoleToolSummary {
+	summary := consoleToolSummary{}
 	value, exists := payload["tools"]
 	if !exists || value == nil {
 		delete(payload, "tools")
-		delete(payload, "tool_choice")
-		return false
+		return summary
 	}
 	tools, ok := value.([]any)
 	if !ok {
 		delete(payload, "tools")
-		delete(payload, "tool_choice")
-		return false
+		return summary
 	}
 	result := make([]any, 0, len(tools))
-	retainedClientTools := false
+	seenServerTools := make(map[string]struct{})
 	for _, rawTool := range tools {
 		tool, ok := rawTool.(map[string]any)
 		if !ok {
 			continue
 		}
 		typeName, _ := tool["type"].(string)
-		switch strings.ToLower(strings.TrimSpace(typeName)) {
+		normalizedType := strings.ToLower(strings.TrimSpace(typeName))
+		if disallowsClientTools {
+			normalizedType = strings.ReplaceAll(normalizedType, "-", "_")
+		}
+		if disallowsClientTools && isMultiAgentClientTool(normalizedType) {
+			summary.removedClientTools = true
+			continue
+		}
+		switch normalizedType {
 		case "web_search", "web_search_preview", "web_search_preview_2025_03_11", "web_search_2025_08_26":
+			if disallowsClientTools {
+				if _, exists := seenServerTools["web_search"]; exists {
+					continue
+				}
+				seenServerTools["web_search"] = struct{}{}
+			}
 			clean := map[string]any{"type": "web_search", "enable_image_understanding": true}
 			if enabled, ok := tool["enable_image_understanding"].(bool); ok {
 				clean["enable_image_understanding"] = enabled
 			}
 			result = append(result, clean)
 		case "x_search":
+			if disallowsClientTools {
+				if _, exists := seenServerTools["x_search"]; exists {
+					continue
+				}
+				seenServerTools["x_search"] = struct{}{}
+			}
 			clean := map[string]any{"type": "x_search", "enable_video_understanding": true}
 			if enabled, ok := tool["enable_video_understanding"].(bool); ok {
 				clean["enable_video_understanding"] = enabled
@@ -248,56 +274,87 @@ func normalizeConsoleTools(payload map[string]any) bool {
 				}
 			}
 			result = append(result, clean)
-			retainedClientTools = true
+			summary.retainedClientTools = true
 		case "mcp", "shell", "image_generation", "collections_search", "file_search", "code_execution", "code_interpreter":
 			// These are native xAI Responses tool variants. Keep their payloads,
 			// while namespace/tool_search remain client-side abstractions and are
 			// intentionally omitted instead of causing an upstream 400.
 			result = append(result, tool)
-			retainedClientTools = true
+			summary.retainedClientTools = true
 		}
 	}
 	if len(result) == 0 {
 		delete(payload, "tools")
-		delete(payload, "tool_choice")
-		return false
+		return summary
 	}
 	payload["tools"] = result
-	return retainedClientTools
+	return summary
 }
 
-func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool) {
+func isMultiAgentClientTool(toolType string) bool {
+	return toolType == "function" || toolType == "custom" || toolType == "shell" ||
+		toolType == "mcp" || strings.HasPrefix(toolType, "mcp_")
+}
+
+func normalizeConsoleToolChoice(payload map[string]any, summary consoleToolSummary, disallowsClientTools bool) error {
 	if _, exists := payload["tools"]; !exists {
+		if disallowsClientTools && summary.removedClientTools && toolChoiceRequiresTool(payload["tool_choice"]) {
+			return fmt.Errorf("模型不支持请求中必需的客户端工具")
+		}
 		delete(payload, "tool_choice")
-		return
+		return nil
+	}
+	if disallowsClientTools {
+		choice, exists := payload["tool_choice"]
+		if !exists {
+			payload["tool_choice"] = "auto"
+			return nil
+		}
+		if value, ok := choice.(string); ok {
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case "none", "auto", "required":
+				payload["tool_choice"] = strings.ToLower(strings.TrimSpace(value))
+			default:
+				payload["tool_choice"] = "auto"
+			}
+			return nil
+		}
+		if object, ok := choice.(map[string]any); ok {
+			typeName, _ := object["type"].(string)
+			if isMultiAgentClientTool(strings.ReplaceAll(strings.ToLower(strings.TrimSpace(typeName)), "-", "_")) {
+				return fmt.Errorf("模型不支持请求中指定的客户端工具")
+			}
+		}
+		payload["tool_choice"] = "required"
+		return nil
 	}
 	choice, exists := payload["tool_choice"]
 	if !exists {
 		payload["tool_choice"] = "auto"
-		return
+		return nil
 	}
 	if value, ok := choice.(string); ok {
 		switch strings.ToLower(strings.TrimSpace(value)) {
 		case "none", "auto":
 			payload["tool_choice"] = strings.ToLower(strings.TrimSpace(value))
 		case "required":
-			if !retainedClientTools {
+			if !summary.retainedClientTools {
 				payload["tool_choice"] = "auto"
 			}
 		default:
 			payload["tool_choice"] = "auto"
 		}
-		return
+		return nil
 	}
 	object, ok := choice.(map[string]any)
 	if !ok {
 		payload["tool_choice"] = "auto"
-		return
+		return nil
 	}
 	typeName, _ := object["type"].(string)
-	if typeName != "function" || !retainedClientTools {
+	if typeName != "function" || !summary.retainedClientTools {
 		payload["tool_choice"] = "auto"
-		return
+		return nil
 	}
 	name, _ := object["name"].(string)
 	if strings.TrimSpace(name) == "" {
@@ -307,9 +364,18 @@ func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool
 	}
 	if strings.TrimSpace(name) == "" {
 		payload["tool_choice"] = "auto"
-		return
+		return nil
 	}
 	payload["tool_choice"] = map[string]any{"type": "function", "name": strings.TrimSpace(name)}
+	return nil
+}
+
+func toolChoiceRequiresTool(choice any) bool {
+	if value, ok := choice.(string); ok {
+		return strings.EqualFold(strings.TrimSpace(value), "required")
+	}
+	_, isObject := choice.(map[string]any)
+	return isObject
 }
 
 func toolIdentity(value any) string {
