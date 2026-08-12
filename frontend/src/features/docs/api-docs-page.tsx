@@ -211,7 +211,7 @@ const endpoints: Record<string, EndpointDefinition> = {
     ],
     noteKeys: ["docs.reference.noteAudioTasksCompat", "docs.reference.noteTTSModels"],
     request: (model) => ({ model, input: "Hello from Grok voice.", voice: "alloy", response_format: "mp3", language: "en" }),
-    response: { audio: "<base64>", content_type: "audio/mpeg", note: "Compatibility path that returns a JSON envelope by default." },
+    response: { content_type: "audio/mpeg", note: "Compatibility path that returns raw audio bytes by default." },
   },
   "voice/audio-transcriptions": {
     key: "voice/audio-transcriptions", category: "Voice", title: "OpenAI transcriptions", method: "POST", path: "/audio/transcriptions",

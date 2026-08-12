@@ -29,16 +29,17 @@ type openAISpeechRequest struct {
 }
 
 func (h *Handler) synthesizeOpenAISpeech(c *gin.Context) {
-	h.handleOpenAISpeech(c, false)
+	h.handleOpenAISpeech(c)
 }
 
 // synthesizeOpenAIAudioTask keeps a compatibility path used by some OpenAI-style
 // clients that post speech jobs to /v1/audio/tasks instead of /v1/audio/speech.
+// Behavior matches /audio/speech: raw audio by default, JSON only when requested.
 func (h *Handler) synthesizeOpenAIAudioTask(c *gin.Context) {
-	h.handleOpenAISpeech(c, true)
+	h.handleOpenAISpeech(c)
 }
 
-func (h *Handler) handleOpenAISpeech(c *gin.Context, asTask bool) {
+func (h *Handler) handleOpenAISpeech(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodyBytes)
 	if !isJSONRequest(c) {
 		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "audio speech 仅支持 application/json")
@@ -138,9 +139,6 @@ func (h *Handler) handleOpenAISpeech(c *gin.Context, asTask bool) {
 	}
 	if request.WithTimestamps != nil {
 		input.WithTimestamps = *request.WithTimestamps
-	} else if asTask {
-		// Task-style clients usually expect a JSON envelope instead of raw bytes.
-		input.WithTimestamps = true
 	}
 
 	result, err := h.gateway.SynthesizeSpeech(c.Request.Context(), input)
