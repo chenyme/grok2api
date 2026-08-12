@@ -812,7 +812,8 @@ func decodeProbeIP(body []byte) (string, error) {
 
 func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, boundNodeID uint64) (*Lease, bool, error) {
 	now := time.Now().UTC()
-	managedClearance := isGrokWebScope(scope) && m.clearanceMode() == "flaresolverr"
+	clearanceMode := m.clearanceMode()
+	managedClearance := isGrokWebScope(scope) && (clearanceMode == "flaresolverr" || clearanceMode == "on_demand")
 	configured := false
 	var available []domain.Node
 	if boundNodeID != 0 {
@@ -1817,7 +1818,11 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 		state.lastUsedAt = now
 		m.clearances[key] = state
 	}
-	if cfg.Mode != "flaresolverr" {
+	if cfg.Mode == "on_demand" && !forceRefresh {
+		m.clearanceMu.Unlock()
+		return existingCookies, existingUserAgent, nil
+	}
+	if cfg.Mode != "flaresolverr" && cfg.Mode != "on_demand" {
 		m.clearanceMu.Unlock()
 		return existingCookies, existingUserAgent, nil
 	}
@@ -1843,7 +1848,7 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 	solver := m.solver
 	lock := m.clearanceLock
 	m.clearanceMu.Unlock()
-	if cfg.Mode != "flaresolverr" {
+	if cfg.Mode != "flaresolverr" && cfg.Mode != "on_demand" {
 		return clearanceSolution{}, errors.New("FlareSolverr Clearance 未启用")
 	}
 	timeout := cfg.Timeout

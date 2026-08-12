@@ -25,6 +25,7 @@ const (
 	StatsigModeURL                = "url"
 	ClearanceModeManual           = "manual"
 	ClearanceModeFlareSolverr     = "flaresolverr"
+	ClearanceModeOnDemand         = "on_demand"
 	DefaultStatsigSignerURL       = "https://grok.wodf.de/sign"
 	DefaultFlareSolverrURL        = "http://flaresolverr:8191"
 	RecommendedBuildClientVersion = "0.2.119"
@@ -567,12 +568,12 @@ func (c Config) Validate() error {
 	}
 	switch c.Provider.Web.ClearanceMode {
 	case ClearanceModeManual:
-	case ClearanceModeFlareSolverr:
+	case ClearanceModeFlareSolverr, ClearanceModeOnDemand:
 		if err := validateFlareSolverrURL(c.Provider.Web.FlareSolverrURL); err != nil {
 			return fmt.Errorf("provider.web FlareSolverr URL 无效: %w", err)
 		}
 	default:
-		return errors.New("provider.web Clearance 模式必须是 manual 或 flaresolverr")
+		return errors.New("provider.web Clearance 模式必须是 manual、flaresolverr 或 on_demand")
 	}
 	if c.Provider.Web.ClearanceTimeout.Value() < 10*time.Second || c.Provider.Web.ClearanceTimeout.Value() > 5*time.Minute {
 		return errors.New("provider.web Clearance 超时必须在 10 秒到 5 分钟之间")

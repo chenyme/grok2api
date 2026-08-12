@@ -1846,6 +1846,67 @@ func TestWebForbiddenStillRebuildsBrowserSession(t *testing.T) {
 	}
 }
 
+func TestOnDemandClearanceRefreshesOnlyAfterRejection(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookies, err := cipher.Encrypt("cf_clearance=existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{
+		ID: 1, Name: "console", Scope: domain.ScopeConsole, Enabled: true, Health: 1,
+		EncryptedCloudflareCookie: cookies, UserAgent: "Chrome/existing",
+	}}
+	solver := &clearanceSolverStub{}
+	manager := NewManager(repository, cipher)
+	manager.solver = solver
+	manager.UpdateClearanceConfig(ClearanceConfig{Mode: "on_demand", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com", Timeout: time.Second, RefreshInterval: time.Hour})
+
+	first, err := manager.Acquire(context.Background(), domain.ScopeConsole, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if solver.calls != 0 || first.CFCookies != "cf_clearance=existing" {
+		t.Fatalf("initial calls=%d cookies=%q", solver.calls, first.CFCookies)
+	}
+	first.InvalidateClearance()
+	first.Release()
+
+	second, err := manager.Acquire(context.Background(), domain.ScopeConsole, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	if solver.calls != 1 || second.CFCookies != "cf_clearance=value-1" {
+		t.Fatalf("refresh calls=%d cookies=%q", solver.calls, second.CFCookies)
+	}
+	stored, err := cipher.Decrypt(repository.node.EncryptedCloudflareCookie)
+	if err != nil || stored != "cf_clearance=value-1" {
+		t.Fatalf("stored cookies=%q err=%v", stored, err)
+	}
+}
+
+func TestOnDemandClearanceSkipsBackgroundRefresh(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &mutableEgressRepository{node: domain.Node{ID: 1, Name: "console", Scope: domain.ScopeConsole, Enabled: true, Health: 1}}
+	solver := &clearanceSolverStub{}
+	manager := NewManager(repository, cipher)
+	manager.solver = solver
+	manager.UpdateClearanceConfig(ClearanceConfig{Mode: "on_demand", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com", Timeout: time.Second, RefreshInterval: time.Nanosecond})
+
+	if err := manager.RefreshDueClearances(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	if solver.calls != 0 {
+		t.Fatalf("background refresh called solver %d times", solver.calls)
+	}
+}
+
 func TestFlareSolverrRefreshesRejectedNodeBeforeNextLease(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
