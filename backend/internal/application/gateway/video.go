@@ -93,6 +93,13 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		if operation == provider.VideoOperationEdit && input.Duration != 0 {
 			return media.Job{}, fmt.Errorf("视频编辑不支持 duration")
 		}
+		if operation == provider.VideoOperationEdit {
+			// Official edit has no duration field. Persist a placeholder that
+			// satisfies media_jobs.seconds CHECK (1-15); worker ignores it.
+			if input.Duration == 0 {
+				input.Duration = 1
+			}
+		}
 		if operation == provider.VideoOperationExtend {
 			if input.Duration == 0 {
 				input.Duration = 6
@@ -101,9 +108,14 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 				return media.Job{}, fmt.Errorf("视频延长 duration 必须在 2 到 10 秒之间")
 			}
 		}
-		// Edit/extend keep source geometry; ignore generation-only knobs.
-		input.AspectRatio = ""
-		input.Resolution = ""
+		// Edit/extend keep source geometry upstream, but media_jobs still requires
+		// non-empty size/quality columns. Store stable placeholders only.
+		if strings.TrimSpace(input.AspectRatio) == "" {
+			input.AspectRatio = "source"
+		}
+		if strings.TrimSpace(input.Resolution) == "" {
+			input.Resolution = "source"
+		}
 	}
 	allRefs := videoInputReferences(input.ImageURL, input.ReferenceURLs)
 	if err := s.validateVideoInputReferences(ctx, allRefs); err != nil {
