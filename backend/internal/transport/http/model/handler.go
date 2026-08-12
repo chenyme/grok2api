@@ -234,12 +234,10 @@ func (h *Handler) batchDelete(c *gin.Context) {
 }
 
 func (h *Handler) sync(c *gin.Context) {
-	count, err := h.service.Sync(c.Request.Context())
-	if err != nil {
-		response.Error(c, http.StatusBadGateway, "modelSyncFailed", "同步上游模型失败")
-		return
-	}
-	response.Success(c, http.StatusOK, gin.H{"synced": count})
+	// 异步触发全量同步，不阻塞 HTTP 响应。
+	// 同步需要 2min+，Cloudflare 免费版 100s 超时，直接同步会 524 → 浏览器 Failed to fetch。
+	go h.service.SyncAsync(c.Request.Context())
+	response.Success(c, http.StatusOK, gin.H{"synced": 0, "async": true})
 }
 
 func (h *Handler) update(c *gin.Context) {

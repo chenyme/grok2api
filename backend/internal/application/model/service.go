@@ -412,6 +412,13 @@ func (s *Service) Sync(ctx context.Context) (int, error) {
 	}
 }
 
+// SyncAsync 异步触发全量模型同步，不阻塞调用方。用 context.Background 避免请求超时导致同步中断。
+func (s *Service) SyncAsync(_ context.Context) {
+	s.syncAll.DoChan("all", func() (any, error) {
+		return s.syncAllAccounts(context.Background())
+	})
+}
+
 func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
 	if s.providers == nil {
 		return 0, fmt.Errorf("Provider 注册表未初始化")
