@@ -35,7 +35,6 @@ func (a *Adapter) DialVoiceWebSocket(ctx context.Context, request provider.Voice
 	if err != nil {
 		return nil, nil, err
 	}
-	cfg := a.config()
 	requestCtx, cancel := context.WithCancel(ctx)
 	lease, err := a.egress.AcquireCredential(requestCtx, egressdomain.ScopeConsole, request.Credential)
 	if err != nil {
