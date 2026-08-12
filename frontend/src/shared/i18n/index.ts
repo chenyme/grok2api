@@ -221,6 +221,7 @@ const resources = {
         transcribe: "识别语音",
         voiceLanguage: "语言",
         voiceId: "音色",
+        voiceSpeed: "语速",
 
         send: "发送",
         messageList: "对话消息",
@@ -1346,6 +1347,7 @@ const resources = {
         transcribe: "Transcribe",
         voiceLanguage: "Language",
         voiceId: "Voice",
+        voiceSpeed: "Speed",
         send: "Send",
         messageList: "Conversation messages",
         scrollToLatest: "Scroll to latest message",

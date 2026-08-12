@@ -205,6 +205,7 @@ export async function synthesizeSpeech(input: {
   text: string;
   voiceId: string;
   language: string;
+  speed?: number;
   signal?: AbortSignal;
 }): Promise<TTSResult> {
   const response = await fetch("/v1/tts", {
@@ -219,6 +220,7 @@ export async function synthesizeSpeech(input: {
       text: input.text,
       voice_id: input.voiceId,
       language: input.language,
+      ...(typeof input.speed === "number" ? { speed: input.speed } : {}),
     }),
     signal: input.signal,
   });

@@ -1088,6 +1088,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const [prompt, setPrompt] = useState("");
   const [language, setLanguage] = useState("zh");
   const [voiceId, setVoiceId] = useState("eve");
+  const [speed, setSpeed] = useState("1.0");
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [ttsResult, setTtsResult] = useState<TTSResult | null>(null);
   const [sttResult, setSttResult] = useState<STTResult | null>(null);
@@ -1108,7 +1109,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   }, [voiceId, voices]);
 
   const ttsMutation = useMutation({
-    mutationFn: () => synthesizeSpeech({ apiKey, model: model || "grok-voice-latest", text: prompt.trim(), voiceId, language }),
+    mutationFn: () => synthesizeSpeech({ apiKey, model: model || "grok-voice-latest", text: prompt.trim(), voiceId, language, speed: Number(speed) }),
     onSuccess: (result) => {
       setTtsResult(result);
       setSttResult(null);
@@ -1141,6 +1142,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
 
   const busy = ttsMutation.isPending || sttMutation.isPending;
   const languageOptions = ["auto", "zh", "en", "ja", "ko", "fr", "de", "es"] as const;
+  const speedOptions = ["0.7", "0.8", "0.9", "1.0", "1.1", "1.2", "1.3", "1.4", "1.5"] as const;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -1185,6 +1187,9 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
           <div className="flex min-w-0 flex-wrap items-center gap-1">
             <CompactModelSelect value={model} models={modelOptions} onChange={onModelChange} />
             <CompactSelect value={language} options={languageOptions} onChange={setLanguage} ariaLabel={t("creativeConsole.voiceLanguage")} />
+            {subMode === "tts" ? (
+              <CompactSelect value={speed} options={speedOptions} onChange={setSpeed} ariaLabel={t("creativeConsole.voiceSpeed")} suffix="x" icon={<Clock3 />} />
+            ) : null}
             {subMode === "tts" ? (
               <Select value={voiceId} onValueChange={setVoiceId} disabled={voices.length === 0 && voicesQuery.isPending}>
                 <SelectTrigger className="h-8 w-auto max-w-40 gap-1 border-0 bg-transparent px-2 shadow-none hover:bg-secondary/70 focus:ring-0" aria-label={t("creativeConsole.voiceId")}>
