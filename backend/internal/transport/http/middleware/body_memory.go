@@ -100,6 +100,8 @@ func inferenceBodyOperation(path string) string {
 		return "stt"
 	case "/v1/realtime/client_secrets":
 		return "realtime_client_secret"
+	case "/v1/realtime":
+		return "realtime_websocket"
 	case "/v1/custom-voices":
 		return "custom_voices"
 	case "/v1/videos/generations":

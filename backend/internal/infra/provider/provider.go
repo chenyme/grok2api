@@ -591,6 +591,28 @@ type RealtimeVoiceAdapter interface {
 	RealtimeWebSocketURL(model string, query string) (string, error)
 }
 
+// VoiceWebSocketConn is a minimal duplex websocket used by voice streaming proxies.
+type VoiceWebSocketConn interface {
+	ReadMessage() (messageType int, data []byte, err error)
+	WriteMessage(messageType int, data []byte) error
+	Close() error
+}
+
+// VoiceWebSocketRequest dials an upstream voice websocket with provider auth.
+type VoiceWebSocketRequest struct {
+	Credential account.Credential
+	// Path is a v1-relative path such as /realtime, /tts, or /stt.
+	Path  string
+	Query string
+	Model string
+}
+
+// VoiceWebSocketAdapter dials official voice websocket endpoints with account auth.
+type VoiceWebSocketAdapter interface {
+	Adapter
+	DialVoiceWebSocket(ctx context.Context, request VoiceWebSocketRequest) (VoiceWebSocketConn, func(), error)
+}
+
 // CustomVoiceAdapter manages team-scoped cloned voices.
 type CustomVoiceAdapter interface {
 	Adapter
@@ -802,6 +824,11 @@ func (r *Registry) Validate() error {
 		if definition.Media.Realtime {
 			if _, ok := adapter.(RealtimeVoiceAdapter); !ok {
 				return fmt.Errorf("Provider %s 声明实时语音能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.TTS || definition.Media.STT || definition.Media.Realtime {
+			if _, ok := adapter.(VoiceWebSocketAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明语音能力但未实现 WebSocket 适配器", value)
 			}
 		}
 		if definition.Media.CustomVoices {
@@ -1053,6 +1080,15 @@ func (r *Registry) RealtimeVoice(value account.Provider) (RealtimeVoiceAdapter, 
 		return nil, false
 	}
 	result, ok := adapter.(RealtimeVoiceAdapter)
+	return result, ok
+}
+
+func (r *Registry) VoiceWebSocket(value account.Provider) (VoiceWebSocketAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(VoiceWebSocketAdapter)
 	return result, ok
 }
 
