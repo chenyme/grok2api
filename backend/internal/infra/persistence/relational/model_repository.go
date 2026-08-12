@@ -758,7 +758,7 @@ func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (s
 			return upstreamModel, model.CapabilityVideo
 		case "grok-voice-latest", "grok-voice-think-fast-2.0", "grok-voice-think-fast-1.0":
 			return upstreamModel, model.CapabilityRealtime
-		case "grok-transcribe":
+		case "grok-stt":
 			return upstreamModel, model.CapabilitySTT
 		default:
 			return upstreamModel, model.CapabilityResponses

@@ -42,7 +42,7 @@ func TestConsoleRoutesUseStableProviderNamespace(t *testing.T) {
 			t.Fatalf("Console voice route capabilities for %s = %#v", modelID, seen[modelID])
 		}
 	}
-	if !seen["Console/grok-transcribe"]["stt"] {
+	if !seen["Console/grok-stt"]["stt"] {
 		t.Fatal("Console STT route is missing")
 	}
 	if !seen["Console/grok-imagine-video"]["video"] {

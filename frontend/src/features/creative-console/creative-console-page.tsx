@@ -1118,7 +1118,7 @@ function VoicePanel({ apiKey, model, modelOptions, onModelChange }: CreativePane
   const sttMutation = useMutation({
     mutationFn: async () => {
       if (!audioFile) throw new Error(t("creativeConsole.errors.noAudio"));
-      return transcribeSpeech({ apiKey, model: model || "grok-transcribe", file: audioFile, language });
+      return transcribeSpeech({ apiKey, model: model || "grok-stt", file: audioFile, language });
     },
     onSuccess: (result) => {
       setSttResult(result);

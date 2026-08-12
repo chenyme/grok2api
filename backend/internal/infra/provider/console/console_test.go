@@ -59,7 +59,7 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 		{publicID: "Console/grok-voice-think-fast-2.0", capability: modeldomain.CapabilityTTS}:            "grok-voice-think-fast-2.0",
 		{publicID: "Console/grok-voice-think-fast-1.0", capability: modeldomain.CapabilityRealtime}:       "grok-voice-think-fast-1.0",
 		{publicID: "Console/grok-voice-think-fast-1.0", capability: modeldomain.CapabilityTTS}:            "grok-voice-think-fast-1.0",
-		{publicID: "Console/grok-transcribe", capability: modeldomain.CapabilitySTT}:                      "grok-transcribe",
+		{publicID: "Console/grok-stt", capability: modeldomain.CapabilitySTT}:                      "grok-stt",
 	}
 	routes := Routes()
 	if len(routes) != len(expected) {
@@ -100,7 +100,7 @@ func TestCatalogContainsAllConsoleModelsAndAliases(t *testing.T) {
 	for model, want := range map[string]string{
 		"grok-4.5": QuotaMode, "grok-imagine-image-quality": QuotaModeImage,
 		"grok-imagine-image": QuotaModeImage, "grok-imagine-video": QuotaModeVideo, "grok-imagine-video-1.5": QuotaModeVideo,
-		"grok-voice-latest": QuotaMode, "grok-voice-think-fast-2.0": QuotaMode, "grok-voice-think-fast-1.0": QuotaMode, "grok-transcribe": QuotaMode,
+		"grok-voice-latest": QuotaMode, "grok-voice-think-fast-2.0": QuotaMode, "grok-voice-think-fast-1.0": QuotaMode, "grok-stt": QuotaMode,
 	} {
 		if got := adapter.QuotaMode(model); got != want {
 			t.Fatalf("QuotaMode(%q) = %q, want %q", model, got, want)

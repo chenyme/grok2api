@@ -150,7 +150,7 @@ func (h *Handler) transcribeSpeech(c *gin.Context) {
 		return
 	}
 	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
-	input := gateway.STTInput{RequestID: requestID, ClientKey: clientKey, PublicModel: "grok-transcribe"}
+	input := gateway.STTInput{RequestID: requestID, ClientKey: clientKey, PublicModel: "grok-stt"}
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		if err := c.Request.ParseMultipartForm(h.maxBodyBytes); err != nil {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "STT multipart 请求无效")

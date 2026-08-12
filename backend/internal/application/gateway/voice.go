@@ -435,7 +435,7 @@ func (s *Service) executeVoice(
 	if err != nil {
 		// Voice catalog helpers may not require a specific model when only voices are listed.
 		// Fall back to any enabled route for the capability so built-in voice listing still works.
-		if publicModel == "" || publicModel == "grok-voice-latest" || publicModel == "grok-transcribe" {
+		if publicModel == "" || publicModel == "grok-voice-latest" || publicModel == "grok-stt" {
 			return nil, ErrModelNotFound
 		}
 		return nil, ErrModelNotFound

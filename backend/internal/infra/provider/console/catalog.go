@@ -45,7 +45,7 @@ var mediaCatalog = []struct {
 	{PublicID: "grok-voice-latest", UpstreamModel: "grok-voice-latest", Capabilities: []modeldomain.Capability{modeldomain.CapabilityRealtime, modeldomain.CapabilityTTS}},
 	{PublicID: "grok-voice-think-fast-2.0", UpstreamModel: "grok-voice-think-fast-2.0", Capabilities: []modeldomain.Capability{modeldomain.CapabilityRealtime, modeldomain.CapabilityTTS}},
 	{PublicID: "grok-voice-think-fast-1.0", UpstreamModel: "grok-voice-think-fast-1.0", Capabilities: []modeldomain.Capability{modeldomain.CapabilityRealtime, modeldomain.CapabilityTTS}},
-	{PublicID: "grok-transcribe", UpstreamModel: "grok-transcribe", Capabilities: []modeldomain.Capability{modeldomain.CapabilitySTT}},
+	{PublicID: "grok-stt", UpstreamModel: "grok-stt", Capabilities: []modeldomain.Capability{modeldomain.CapabilitySTT}},
 }
 
 // Effort-suffixed aliases only include levels each Provider/model combination

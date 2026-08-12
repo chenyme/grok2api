@@ -317,7 +317,7 @@ function fallbackModel(key: string): string {
   if (key.startsWith("image/")) return key === "image/edits" ? "grok-imagine-image-edit" : "grok-imagine-image-2.0";
   if (key.startsWith("video/")) return "grok-imagine-video";
   if (key.startsWith("voice/")) {
-    if (key === "voice/stt") return "grok-transcribe";
+    if (key === "voice/stt") return "grok-stt";
     return "grok-voice-latest";
   }
   return "your-enabled-model";
