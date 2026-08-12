@@ -584,6 +584,16 @@ function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
   if (audit.operation === "video") {
     return <MediaUsage input={t("audits.imageCount", { count: audit.mediaInputImages })} output={t("audits.secondsCount", { count: audit.mediaOutputSeconds })} />;
   }
+  if (audit.operation === "tts" || audit.operation === "stt" || audit.operation === "realtime" || audit.operation === "voice") {
+    return (
+      <div className="flex h-[52px] w-full items-center gap-2 rounded-md bg-muted/45 px-2.5 text-[11px]">
+        <div className="min-w-0">
+          <p className="truncate font-medium">{t(`audits.operations.${audit.operation}`)}</p>
+          <p className="truncate text-muted-foreground">{(audit.durationMs / 1000).toFixed(2)}s</p>
+        </div>
+      </div>
+    );
+  }
   if (audit.operation === "image" || audit.operation === "image_edit" || audit.mediaInputImages > 0 || audit.mediaOutputImages > 0) {
     return <MediaUsage input={t("audits.imageCount", { count: audit.mediaInputImages })} output={t("audits.imageCount", { count: audit.mediaOutputImages })} />;
   }
