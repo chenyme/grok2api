@@ -27,6 +27,7 @@ func TestEstimateOfficialCostMatchesControlledModelFamilies(t *testing.T) {
 		canonical string
 	}{
 		{model: "Build/grok-build-0.1", canonical: "grok-build-0.1"},
+		{model: "Console/grok-4.6-latest", canonical: "grok-4.6"},
 		{model: "grok_build/grok-code-fast-1-0825", canonical: "grok-build-0.1"},
 		{model: "Console/grok-4.3-high", canonical: "grok-4.3"},
 		{model: "Web/grok-4.5-2026-07-14", canonical: "grok-4.5"},
@@ -53,6 +54,7 @@ func TestOfficialPricingMatchesPublishedTokenRates(t *testing.T) {
 		inputCost, cachedCost, outputCost int64
 	}{
 		{model: "grok-build-0.1", inputCost: 10_000_000_000, cachedCost: 2_000_000_000, outputCost: 20_000_000_000},
+		{model: "grok-4.6", inputCost: 20_000_000_000, cachedCost: 5_000_000_000, outputCost: 60_000_000_000},
 		{model: "grok-4.5", inputCost: 20_000_000_000, cachedCost: 3_000_000_000, outputCost: 60_000_000_000},
 		{model: "grok-4.3", inputCost: 12_500_000_000, cachedCost: 2_000_000_000, outputCost: 25_000_000_000},
 		{model: "grok-4.20-multi-agent-0309", inputCost: 12_500_000_000, cachedCost: 2_000_000_000, outputCost: 25_000_000_000},
@@ -74,13 +76,13 @@ func TestOfficialPricingMatchesPublishedTokenRates(t *testing.T) {
 }
 
 func TestMediaPricingAcceptsProviderPrefixes(t *testing.T) {
-	if result, ok := EstimateOfficialImageCost("Web/grok-imagine-image", "1k", 1); !ok || result.CostInUSDTicks != 200_000_000 {
+	if result, ok := EstimateOfficialImageCost("Web/grok-imagine-image", "1k", "", 1); !ok || result.CostInUSDTicks != 200_000_000 {
 		t.Fatalf("prefixed image price = %#v, %v", result, ok)
 	}
-	if result, ok := EstimateOfficialImageEditCost("grok_web/grok-imagine-image-edit", "1k", 1, 1); !ok || result.CostInUSDTicks != 600_000_000 {
+	if result, ok := EstimateOfficialImageEditCost("grok_web/grok-imagine-image-edit", "1k", "", 1, 1); !ok || result.CostInUSDTicks != 600_000_000 {
 		t.Fatalf("prefixed image edit price = %#v, %v", result, ok)
 	}
-	if result, ok := EstimateOfficialVideoCost("Web/grok-imagine-video", "480p", 1); !ok || result.CostInUSDTicks != 800_000_000 {
+	if result, ok := EstimateOfficialVideoCost("Web/grok-imagine-video", "480p", 1, 0); !ok || result.CostInUSDTicks != 500_000_000 {
 		t.Fatalf("prefixed video price = %#v, %v", result, ok)
 	}
 }
@@ -100,68 +102,121 @@ func TestEstimateOfficialTextReservationUsesOutputLimitAndIgnoresInlineMediaByte
 }
 
 func TestEstimateOfficialImageCost(t *testing.T) {
-	result, ok := EstimateOfficialImageCost("grok-imagine-image-quality", "1k", 2)
+	result, ok := EstimateOfficialImageCost("grok-imagine-image-quality", "1k", "", 2)
 	if !ok || result.Model != "grok-imagine-image-quality-1k" || result.CostInUSDTicks != 1_000_000_000 {
 		t.Fatalf("1k result = %#v, ok = %v", result, ok)
 	}
-	result, ok = EstimateOfficialImageCost("grok-imagine-image-quality", "2k", 3)
+	result, ok = EstimateOfficialImageCost("grok-imagine-image-quality", "2k", "", 3)
 	if !ok || result.Model != "grok-imagine-image-quality-2k" || result.CostInUSDTicks != 2_100_000_000 {
 		t.Fatalf("2k result = %#v, ok = %v", result, ok)
 	}
-	result, ok = EstimateOfficialImageCost("grok-imagine-image", "2k", 4)
+	result, ok = EstimateOfficialImageCost("grok-imagine-image", "2k", "", 4)
 	if !ok || result.Model != "grok-imagine-image" || result.CostInUSDTicks != 800_000_000 {
 		t.Fatalf("Lite result = %#v, ok = %v", result, ok)
+	}
+	result, ok = EstimateOfficialImageCost("Console/grok-imagine-image-2.0", "2k", "", 2)
+	if !ok || result.Model != "grok-imagine-image-2.0-medium-2k" || result.CostInUSDTicks != 1_600_000_000 {
+		t.Fatalf("2.0 default-medium result = %#v, ok = %v", result, ok)
+	}
+	result, ok = EstimateOfficialImageCost("Console/grok-imagine-image-2.0", "2k", "low", 2)
+	if !ok || result.Model != "grok-imagine-image-2.0-low-2k" || result.CostInUSDTicks != 1_200_000_000 {
+		t.Fatalf("2.0 low result = %#v, ok = %v", result, ok)
+	}
+}
+
+func TestImage20PricingMatchesPublishedResolutionAndQualityRates(t *testing.T) {
+	tests := []struct {
+		resolution string
+		quality    string
+		wantTicks  int64
+	}{
+		{resolution: "1k", quality: "low", wantTicks: 400_000_000},
+		{resolution: "2k", quality: "low", wantTicks: 600_000_000},
+		{resolution: "1k", quality: "medium", wantTicks: 600_000_000},
+		{resolution: "2k", quality: "medium", wantTicks: 800_000_000},
+	}
+	for _, test := range tests {
+		result, ok := EstimateOfficialImageCost("grok-imagine-image-2.0", test.resolution, test.quality, 1)
+		if !ok || result.CostInUSDTicks != test.wantTicks {
+			t.Fatalf("Image 2.0 %s/%s = %#v, ok=%v", test.resolution, test.quality, result, ok)
+		}
+	}
+	if _, ok := EstimateOfficialImageCost("grok-imagine-image-2.0", "1k", "high", 1); ok {
+		t.Fatal("unsupported Image 2.0 quality was priced")
 	}
 }
 
 func TestEstimateOfficialImageEditCost(t *testing.T) {
-	result, ok := EstimateOfficialImageEditCost("grok-imagine-image-edit", "1k", 2, 1)
+	result, ok := EstimateOfficialImageEditCost("grok-imagine-image-edit", "1k", "", 2, 1)
 	if !ok || result.Model != "grok-imagine-image-edit-1k" || result.CostInUSDTicks != 1_100_000_000 {
 		t.Fatalf("1k edit result = %#v, ok = %v", result, ok)
 	}
-	result, ok = EstimateOfficialImageEditCost("grok-imagine-image-edit", "2K", 3, 4)
+	result, ok = EstimateOfficialImageEditCost("grok-imagine-image-edit", "2K", "", 3, 4)
 	if !ok || result.Model != "grok-imagine-image-edit-2k" || result.CostInUSDTicks != 2_500_000_000 {
 		t.Fatalf("2k edit result = %#v, ok = %v", result, ok)
 	}
-	if result, ok = EstimateOfficialImageEditCost("grok-imagine-image-edit", "4k", 1, 1); ok || result.CostInUSDTicks != 0 {
+	if result, ok = EstimateOfficialImageEditCost("grok-imagine-image-edit", "4k", "", 1, 1); ok || result.CostInUSDTicks != 0 {
 		t.Fatalf("unknown edit resolution = %#v, ok = %v", result, ok)
 	}
-	result, ok = EstimateOfficialImageEditCost("Console/grok-imagine-image-quality", "2k", 1, 2)
+	result, ok = EstimateOfficialImageEditCost("Console/grok-imagine-image-quality", "2k", "", 1, 2)
 	if !ok || result.Model != "grok-imagine-image-quality-edit-2k" || result.CostInUSDTicks != 900_000_000 {
 		t.Fatalf("Console quality edit price = %#v, ok = %v", result, ok)
 	}
-	result, ok = EstimateOfficialImageEditCost("Console/grok-imagine-image", "1k", 1, 2)
+	result, ok = EstimateOfficialImageEditCost("Console/grok-imagine-image", "1k", "", 1, 2)
 	if !ok || result.Model != "grok-imagine-image-edit-lite-1k" || result.CostInUSDTicks != 240_000_000 {
 		t.Fatalf("Console lite edit price = %#v, ok = %v", result, ok)
+	}
+	result, ok = EstimateOfficialImageEditCost("Console/grok-imagine-image-2.0", "2k", "medium", 2, 1)
+	if !ok || result.Model != "grok-imagine-image-2.0-edit-medium-2k" || result.CostInUSDTicks != 1_700_000_000 {
+		t.Fatalf("Console 2.0 edit price = %#v, ok = %v", result, ok)
 	}
 }
 
 func TestEstimateOfficialVideoCost(t *testing.T) {
-	result, ok := EstimateOfficialVideoCost("grok-imagine-video", "480p", 10)
-	if !ok || result.Model != "grok-imagine-video-480p" || result.CostInUSDTicks != 8_000_000_000 {
+	result, ok := EstimateOfficialVideoCost("grok-imagine-video", "480p", 10, 0)
+	if !ok || result.Model != "grok-imagine-video-480p" || result.CostInUSDTicks != 5_000_000_000 {
 		t.Fatalf("480p video result = %#v, ok = %v", result, ok)
 	}
-	result, ok = EstimateOfficialVideoCost("grok-imagine-video", "720P", 6)
-	if !ok || result.Model != "grok-imagine-video-720p" || result.CostInUSDTicks != 8_400_000_000 {
+	result, ok = EstimateOfficialVideoCost("grok-imagine-video", "720P", 6, 2)
+	if !ok || result.Model != "grok-imagine-video-720p" || result.CostInUSDTicks != 4_240_000_000 {
 		t.Fatalf("720p video result = %#v, ok = %v", result, ok)
 	}
-	if result, ok = EstimateOfficialVideoCost("grok-imagine-video", "1080p", 10); ok || result.CostInUSDTicks != 0 {
+	if result, ok = EstimateOfficialVideoCost("grok-imagine-video", "1080p", 10, 0); ok || result.CostInUSDTicks != 0 {
 		t.Fatalf("unpriced video resolution = %#v, ok = %v", result, ok)
 	}
 
-	result, ok = EstimateOfficialVideoCost("grok-imagine-video-1.5", "720p", 6)
+	result, ok = EstimateOfficialVideoCost("grok-imagine-video-1.5", "720p", 6, 0)
 	if !ok || result.Model != "grok-imagine-video-1.5-720p" || result.CostInUSDTicks != 8_400_000_000 {
 		t.Fatalf("1.5 720p video result = %#v, ok = %v", result, ok)
 	}
-	result, ok = EstimateOfficialVideoCost("Build/grok-imagine-video-1.5", "480p", 1)
-	if !ok || result.Model != "grok-imagine-video-1.5-480p" || result.CostInUSDTicks != 800_000_000 {
+	result, ok = EstimateOfficialVideoCost("Build/grok-imagine-video-1.5", "480p", 1, 1)
+	if !ok || result.Model != "grok-imagine-video-1.5-480p" || result.CostInUSDTicks != 900_000_000 {
 		t.Fatalf("prefixed 1.5 video result = %#v, ok = %v", result, ok)
 	}
-	if result, ok = EstimateOfficialVideoCost("grok-imagine-video-1.5-fast", "720p", 6); ok || result.CostInUSDTicks != 0 {
+	result, ok = EstimateOfficialVideoCost("grok-imagine-video-1.5", "1080p", 6, 0)
+	if !ok || result.Model != "grok-imagine-video-1.5-1080p" || result.CostInUSDTicks != 15_000_000_000 {
+		t.Fatalf("1.5 1080p video result = %#v, ok = %v", result, ok)
+	}
+	if result, ok = EstimateOfficialVideoCost("grok-imagine-video-1.5-fast", "720p", 6, 0); ok || result.CostInUSDTicks != 0 {
 		t.Fatalf("unknown 1.5 suffix was priced = %#v, ok = %v", result, ok)
 	}
-	if result, ok = EstimateOfficialVideoCost("grok-imagine-video-2.0", "720p", 6); ok || result.CostInUSDTicks != 0 {
+	if result, ok = EstimateOfficialVideoCost("grok-imagine-video-2.0", "720p", 6, 0); ok || result.CostInUSDTicks != 0 {
 		t.Fatalf("unknown video model was priced = %#v, ok = %v", result, ok)
+	}
+}
+
+func TestEstimateOfficialVoiceCosts(t *testing.T) {
+	if result, ok := EstimateOfficialTTSCost("Hello 世界"); !ok || result.Model != "grok-voice-tts" || result.CostInUSDTicks != 8*150_000 {
+		t.Fatalf("tts pricing = %#v, ok=%v", result, ok)
+	}
+	if result, ok := EstimateOfficialSTTCost(3600, false); !ok || result.Model != "grok-stt-rest" || result.CostInUSDTicks != 1_000_000_000 {
+		t.Fatalf("rest stt pricing = %#v, ok=%v", result, ok)
+	}
+	if result, ok := EstimateOfficialSTTCost(3.45, true); !ok || result.Model != "grok-stt-streaming" || result.CostInUSDTicks != 1_916_667 {
+		t.Fatalf("streaming stt pricing = %#v, ok=%v", result, ok)
+	}
+	if _, ok := EstimateOfficialSTTCost(0, false); ok {
+		t.Fatal("zero-duration STT must remain unpriced")
 	}
 }
 
@@ -179,7 +234,11 @@ func TestReconstructOfficialCostReturnsExactStoredFormulaInputs(t *testing.T) {
 		t.Fatalf("image reconstruction = %#v, %v", imageResult, ok)
 	}
 	videoResult, ok := ReconstructOfficialCost("grok-imagine-video-1.5-720p", 0, 0, 0, 0, 1, 0, 6)
-	if !ok || videoResult.CostInUSDTicks != 8_400_000_000 || videoResult.Components[0].Unit != PricingUnitSecond {
+	if !ok || videoResult.CostInUSDTicks != 8_500_000_000 || len(videoResult.Components) != 2 || videoResult.Components[0].Unit != PricingUnitSecond || videoResult.Components[1].Kind != PricingComponentInputImage {
 		t.Fatalf("video reconstruction = %#v, %v", videoResult, ok)
+	}
+	legacyImage20, ok := ReconstructOfficialCost("grok-imagine-image-2.0", 0, 0, 0, 0, 0, 2, 0)
+	if !ok || legacyImage20.CostInUSDTicks != 800_000_000 {
+		t.Fatalf("legacy Image 2.0 reconstruction = %#v, %v", legacyImage20, ok)
 	}
 }

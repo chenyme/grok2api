@@ -13,17 +13,6 @@ import (
 var ErrSubscriptionSync = errors.New("代理订阅同步失败")
 
 func (s *Service) syncSource(ctx context.Context, operations OperationsRepository, source domain.SubscriptionSource) (ImportResult, error) {
-	config, err := operations.GetEgressOperationsConfig(ctx)
-	if err != nil {
-		now := time.Now().UTC()
-		nextSyncAt := sourceNextSyncAt(source, now)
-		_ = operations.UpdateEgressSourceSync(context.WithoutCancel(ctx), source.ID, now, nextSyncAt, 0, "订阅拉取或解析失败")
-		return ImportResult{}, ErrSubscriptionSync
-	}
-	return s.syncSourceWithConfig(ctx, operations, source, config)
-}
-
-func (s *Service) syncSourceWithConfig(ctx context.Context, operations OperationsRepository, source domain.SubscriptionSource, config domain.OperationsConfig) (ImportResult, error) {
 	now := time.Now().UTC()
 	nextSyncAt := sourceNextSyncAt(source, now)
 	recordFailure := func() {
@@ -40,7 +29,7 @@ func (s *Service) syncSourceWithConfig(ctx context.Context, operations Operation
 		recordFailure()
 		return ImportResult{}, ErrSubscriptionSync
 	}
-	fetchProxy, err := s.subscriptionFetchProxy(config)
+	fetchProxy, err := s.subscriptionFetchProxy(source)
 	if err != nil {
 		recordFailure()
 		return ImportResult{}, ErrSubscriptionSync
@@ -93,8 +82,8 @@ func sourceNextSyncAt(source domain.SubscriptionSource, now time.Time) time.Time
 	return now.Add(time.Duration(source.RefreshIntervalSeconds) * time.Second)
 }
 
-func (s *Service) subscriptionFetchProxy(config domain.OperationsConfig) (string, error) {
-	encrypted := strings.TrimSpace(config.EncryptedSubscriptionProxyURL)
+func (s *Service) subscriptionFetchProxy(source domain.SubscriptionSource) (string, error) {
+	encrypted := strings.TrimSpace(source.EncryptedProxyURL)
 	if encrypted == "" {
 		return "", nil
 	}

@@ -24,10 +24,12 @@ func TestWebQuotaRefreshDeduplicatesPerMode(t *testing.T) {
 	service.QueueQuotaRefresh(43, "console")
 	service.QueueQuotaRefresh(43, "console_image")
 	service.QueueQuotaRefresh(43, "console_video")
+	service.QueueQuotaRefresh(44, accountdomain.QuotaModeWebImagePro)
+	service.QueueQuotaRefresh(44, accountdomain.QuotaModeWebVideo720p)
 
 	service.quotaRefreshMu.Lock()
 	defer service.quotaRefreshMu.Unlock()
-	if len(service.quotaRefreshes) != 5 {
+	if len(service.quotaRefreshes) != 6 {
 		t.Fatalf("refresh states = %#v", service.quotaRefreshes)
 	}
 	if service.quotaRefreshes["42:fast"].generation != 2 || !service.quotaRefreshes["42:fast"].queued {
@@ -44,7 +46,10 @@ func TestWebQuotaRefreshDeduplicatesPerMode(t *testing.T) {
 			t.Fatalf("Console %s refresh state is invalid: %#v", mode, state)
 		}
 	}
-	if len(service.quotaRefreshQueue) != 5 {
+	if state := service.quotaRefreshes["44:"+accountdomain.QuotaGroupWebImagine]; state == nil || state.generation != 2 || !state.queued {
+		t.Fatalf("Imagine group refresh state is invalid: %#v", state)
+	}
+	if len(service.quotaRefreshQueue) != 6 {
 		t.Fatalf("queued refreshes = %d", len(service.quotaRefreshQueue))
 	}
 }
@@ -351,6 +356,58 @@ func TestRefreshQuotaModeDoesNotTriggerFullProviderSyncForAutoTier(t *testing.T)
 	service.runQuotaRefresh(ctx, request)
 	if adapter.modeCalls.Load() != 2 {
 		t.Fatalf("worker without distributed lease made %d mode calls", adapter.modeCalls.Load())
+	}
+}
+
+func TestRefreshWebImagineQuotaModeAtomicallyReplacesGroup(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "imagine-quota-group.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO,
+		Name: "web-imagine", SourceKey: "web-imagine", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accounts.SaveQuotaWindows(ctx, credential.ID, accountdomain.WebTierSuper, now, []accountdomain.QuotaWindow{
+		{AccountID: credential.ID, Mode: "weekly", Remaining: 90, Total: 100, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: accountdomain.QuotaModeWebImagePro, Remaining: 4, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: accountdomain.QuotaModeWebVideo720p, Remaining: 1, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &imagineQuotaGroupAdapter{}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	window, err := service.RefreshQuotaMode(ctx, credential.ID, accountdomain.QuotaModeWebImagePro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Remaining != 3 || adapter.calls.Load() != 1 {
+		t.Fatalf("window = %#v, calls = %d", window, adapter.calls.Load())
+	}
+	stored, err := accounts.GetQuotaWindows(ctx, []uint64{credential.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byMode := make(map[string]accountdomain.QuotaWindow)
+	for _, current := range stored[credential.ID] {
+		byMode[current.Mode] = current
+	}
+	if byMode["weekly"].Remaining != 90 || byMode[accountdomain.QuotaModeWebImagePro].Remaining != 3 {
+		t.Fatalf("stored = %#v", stored[credential.ID])
+	}
+	if _, exists := byMode[accountdomain.QuotaModeWebVideo720p]; exists {
+		t.Fatalf("stale video_720p window survived group replacement: %#v", stored[credential.ID])
 	}
 }
 
@@ -837,6 +894,36 @@ type quotaCountingAdapter struct {
 	fullErr       error
 	modeStarted   chan struct{}
 	modeRelease   chan struct{}
+}
+
+type imagineQuotaGroupAdapter struct {
+	calls atomic.Int64
+}
+
+func (a *imagineQuotaGroupAdapter) Provider() accountdomain.Provider {
+	return accountdomain.ProviderWeb
+}
+
+func (a *imagineQuotaGroupAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: accountdomain.ProviderWeb, ModelNamespace: accountdomain.ProviderWeb.ModelNamespace(),
+		Quota: provider.QuotaRemoteWindow, Credential: provider.CredentialSurface{AuthType: accountdomain.AuthTypeSSO},
+	}
+}
+
+func (a *imagineQuotaGroupAdapter) SyncQuotaGroup(_ context.Context, credential accountdomain.Credential, group string) (provider.QuotaGroupSnapshot, error) {
+	a.calls.Add(1)
+	if group != accountdomain.QuotaGroupWebImagine {
+		return provider.QuotaGroupSnapshot{}, errors.New("unexpected group")
+	}
+	now := time.Now().UTC()
+	return provider.QuotaGroupSnapshot{
+		Group: group, Modes: accountdomain.WebImagineQuotaModes(), SyncedAt: now,
+		Windows: []accountdomain.QuotaWindow{{
+			AccountID: credential.ID, Mode: accountdomain.QuotaModeWebImagePro, Remaining: 3,
+			WindowSeconds: 86400, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now,
+		}},
+	}, nil
 }
 
 type consoleQuotaSnapshotAdapter struct {

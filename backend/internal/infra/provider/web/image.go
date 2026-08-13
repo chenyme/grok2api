@@ -274,6 +274,9 @@ func numberAsInt(value any) (int, bool) {
 }
 
 func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
+	if strings.TrimSpace(request.Quality) != "" {
+		return invalidImageRequest("Grok Web 图片模型不支持 quality")
+	}
 	count := request.Count
 	if count <= 0 {
 		count = 1
@@ -510,9 +513,9 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 			return nil, err
 		}
 		if parsed.Text.Len() > 0 {
-			parsed.Text.WriteString("\n\n")
+			parsed.appendText("\n\n")
 		}
-		parsed.Text.WriteString(liteImageMarkdown(item))
+		parsed.appendText(liteImageMarkdown(item))
 	}
 	payload := buildOpenAIResult("chat", responseID, input.Model, parsed, false)
 	data, err := json.Marshal(payload)
@@ -540,7 +543,7 @@ func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWrite
 		if parsed.Text.Len() > 0 {
 			delta = "\n\n" + delta
 		}
-		parsed.Text.WriteString(delta)
+		parsed.appendText(delta)
 		if err := writeStreamDelta(writer, "chat", responseID, model, "text", delta); err != nil {
 			_ = writer.CloseWithError(err)
 			return
@@ -675,6 +678,9 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 }
 
 func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
+	if strings.TrimSpace(request.Quality) != "" {
+		return invalidImageRequest("Grok Web 图片模型不支持 quality")
+	}
 	if len(request.ImageURLs) == 0 || len(request.ImageURLs) > 8 {
 		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "image 数量必须在 1 到 8 之间", "type": "invalid_request_error"}}), nil
 	}

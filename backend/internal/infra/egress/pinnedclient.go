@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -81,6 +82,12 @@ func newPinnedHTTPSClient(proxyURL, serverName string, tlsConfig *tls.Config) (*
 				return nil, fmt.Errorf("创建固定地址 SOCKS 代理: %w", err)
 			}
 			transport.DialContext = dialContext(dialer)
+		case "trojan", "vless", "ss", "vmess":
+			dialer, err := tunnelproxy.NewDialer(proxyURL)
+			if err != nil {
+				return nil, fmt.Errorf("创建固定地址隧道代理: %w", err)
+			}
+			transport.DialContext = dialer.DialContext
 		default:
 			return nil, fmt.Errorf("固定地址请求不支持代理协议 %q", parsed.Scheme)
 		}
