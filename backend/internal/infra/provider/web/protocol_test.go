@@ -37,7 +37,8 @@ import (
 
 func TestCatalogMatchesSupportedSurface(t *testing.T) {
 	values := Catalog()
-	if len(values) != 9 {
+	requiredModels := []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-edit", "grok-imagine-video"}
+	if len(values) != len(requiredModels) {
 		t.Fatalf("catalog size = %d", len(values))
 	}
 	publicIDs := make(map[string]struct{}, len(values))
@@ -50,7 +51,7 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 		routeKeys[routeKey] = struct{}{}
 		publicIDs[value.PublicID] = struct{}{}
 	}
-	for _, required := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-edit", "imagine-x-1", "grok-imagine-video"} {
+	for _, required := range requiredModels {
 		if _, exists := publicIDs[required]; !exists {
 			t.Fatalf("missing supported model: %s", required)
 		}
@@ -1076,7 +1077,7 @@ func TestQuotaRefreshGroupSeparatesImagineEndpointFromLiteChatQuota(t *testing.T
 	if got := adapter.QuotaRefreshGroup("grok-imagine-image"); got != "" {
 		t.Fatalf("lite refresh group = %q", got)
 	}
-	for _, model := range []string{"grok-imagine-image-quality", "imagine-x-1", "imagine-image-edit", "grok-imagine-video"} {
+	for _, model := range []string{"grok-imagine-image-quality", "imagine-image-edit", "grok-imagine-video"} {
 		if got := adapter.QuotaRefreshGroup(model); got != account.QuotaGroupWebImagine {
 			t.Fatalf("QuotaRefreshGroup(%q) = %q", model, got)
 		}
