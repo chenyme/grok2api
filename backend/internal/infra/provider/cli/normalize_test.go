@@ -52,8 +52,13 @@ func TestNormalizeBuildReasoningEffort(t *testing.T) {
 		{name: "4.5 uppercase max", model: "grok-4.5", effort: "MAX", want: "high"},
 		{name: "multi-agent xhigh", model: "grok-4.20-multi-agent-0309", effort: "xhigh", want: "xhigh"},
 		{name: "multi-agent uppercase xhigh", model: "grok-4.20-multi-agent-0309", effort: "XHIGH", want: "xhigh"},
-		{name: "multi-agent max remains guarded", model: "grok-4.20-multi-agent-0309", effort: "max", want: "high"},
+		{name: "multi-agent max maps to highest supported effort", model: "grok-4.20-multi-agent-0309", effort: "max", want: "xhigh"},
+		{name: "4.6 xhigh", model: "grok-4.6", effort: "xhigh", want: "xhigh"},
+		{name: "4.6 uppercase xhigh", model: "grok-4.6", effort: "XHIGH", want: "xhigh"},
+		{name: "4.6 max maps to xhigh", model: "grok-4.6", effort: "max", want: "xhigh"},
+		{name: "prefixed 4.6 uppercase max maps to xhigh", model: "Build/grok-4.6", effort: "MAX", want: "xhigh"},
 		{name: "unknown xhigh remains guarded", model: "future-model", effort: "xhigh", want: "high"},
+		{name: "unknown max remains guarded", model: "future-model", effort: "max", want: "high"},
 		{name: "high", model: "grok-4.5", effort: "high", want: "high"},
 		{name: "medium", model: "grok-4.5", effort: "medium", want: "medium"},
 	}
@@ -71,6 +76,54 @@ func TestNormalizeBuildReasoningEffort(t *testing.T) {
 			reasoning, ok := payload["reasoning"].(map[string]any)
 			if !ok || reasoning["effort"] != test.want {
 				t.Fatalf("reasoning = %#v, want %q", payload["reasoning"], test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeBuildMaxAcrossCompatibilityProtocols(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{name: "responses", body: []byte(`{"reasoning":{"effort":"max"},"input":"hello"}`)},
+		{name: "chat completions", body: func() []byte {
+			converted, _, err := conversation.ConvertRequestWithOptions(
+				[]byte(`{"model":"public","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"max"}`),
+				"grok-4.6",
+				conversation.OperationChat,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return converted
+		}()},
+		{name: "anthropic messages", body: func() []byte {
+			converted, _, err := conversation.ConvertRequestWithOptions(
+				[]byte(`{"model":"public","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}`),
+				"grok-4.6",
+				conversation.OperationMessages,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return converted
+		}()},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalized, err := normalizeBuildRequest(test.body, "grok-4.6")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(normalized, &payload); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, ok := payload["reasoning"].(map[string]any)
+			if !ok || reasoning["effort"] != "xhigh" {
+				t.Fatalf("reasoning = %#v, want max normalized to xhigh", payload["reasoning"])
 			}
 		})
 	}

@@ -118,6 +118,12 @@ definitions:
         example: false
         type: boolean
     type: object
+  httpserver.SwaggerVideoAudioInput:
+    properties:
+      voice_id:
+        example: eve
+        type: string
+    type: object
   httpserver.SwaggerVideoGenerationRequest:
     properties:
       aspect_ratio:
@@ -126,14 +132,35 @@ definitions:
       duration:
         example: 8
         type: integer
+      image:
+        $ref: '#/definitions/httpserver.SwaggerVideoMediaInput'
       model:
         example: grok-imagine-video
         type: string
       prompt:
         example: A cinematic tracking shot in the rain
         type: string
+      reference_audios:
+        items:
+          $ref: '#/definitions/httpserver.SwaggerVideoAudioInput'
+        type: array
+      reference_images:
+        items:
+          $ref: '#/definitions/httpserver.SwaggerVideoMediaInput'
+        type: array
       resolution:
         example: 720p
+        type: string
+      video:
+        $ref: '#/definitions/httpserver.SwaggerVideoMediaInput'
+    type: object
+  httpserver.SwaggerVideoMediaInput:
+    properties:
+      file_id:
+        example: file_123
+        type: string
+      url:
+        example: https://example.com/input.png
         type: string
     type: object
 info:
@@ -473,6 +500,66 @@ paths:
       security:
       - BearerAuth: []
       summary: 查询异步视频任务
+      tags:
+      - Videos
+  /v1/videos/edits:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerVideoGenerationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建异步视频编辑任务
+      tags:
+      - Videos
+  /v1/videos/extensions:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: 请求
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/httpserver.SwaggerVideoGenerationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: 创建异步视频延长任务
       tags:
       - Videos
   /v1/videos/generations:

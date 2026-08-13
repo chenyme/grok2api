@@ -19,7 +19,7 @@ import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHea
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressAutomation, EgressSources } from "@/features/settings/egress-operations";
-import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type ClearanceMode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -34,7 +34,7 @@ const emptyInput: EgressNodeInput = { name: "", scope: "grok_build", enabled: tr
 type ImportForm = { name: string; scope: EgressScope; accountCapacity: number; content: string };
 const emptyImport: ImportForm = { name: "", scope: "grok_build", accountCapacity: 0, content: "" };
 
-export function EgressNodes({ title, clearanceMode }: { title: string; clearanceMode: "manual" | "flaresolverr" }) {
+export function EgressNodes({ title, clearanceMode }: { title: string; clearanceMode: ClearanceMode }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<EgressNodeDTO | null | undefined>(undefined);
@@ -302,7 +302,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={() => openEdit(node)}><Pencil />{t("common.edit")}</DropdownMenuItem>
                       <DropdownMenuSeparator />
-                      {clearanceMode === "flaresolverr" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
+                      {clearanceMode !== "manual" && !node.accountBoundProxy && (node.scope === "grok_web" || node.scope === "grok_web_asset" || node.scope === "grok_console") ? <DropdownMenuItem disabled={refreshClearance.isPending} onClick={() => refreshClearance.mutate(node.id)}><RefreshCw />{t("settings.egress.refreshClearance")}</DropdownMenuItem> : null}
                       <DropdownMenuItem disabled={testNode.isPending || !node.proxyConfigured} onClick={() => testNode.mutate(node.id)}><RefreshCw />{t("settings.egress.test")}</DropdownMenuItem>
                       <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => remove.mutate(node.id)}><Trash2 />{t("common.delete")}</DropdownMenuItem>
                     </DropdownMenuContent>
@@ -401,7 +401,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
               <div className="flex h-10 items-center justify-between gap-4 rounded-md bg-muted/45 px-3">
                 <span className="text-xs font-medium">{t("settings.egress.clearance")}</span>
                 <Badge variant="secondary" className="shrink-0 text-[10px]">
-                  {clearanceMode === "flaresolverr" ? t("settings.web.clearanceFlareSolverr") : t("settings.web.clearanceManual")}
+                  {clearanceMode === "flaresolverr" ? t("settings.web.clearanceFlareSolverr") : clearanceMode === "on_demand" ? t("settings.web.clearanceOnDemand") : t("settings.web.clearanceManual")}
                 </Badge>
               </div>
             ) : null}
@@ -485,11 +485,14 @@ function ErrorTooltip({ message }: { message: string }) {
   );
 }
 
-function ClearanceBadge({ node, clearanceMode }: { node: EgressNodeDTO; clearanceMode: "manual" | "flaresolverr" }) {
+function ClearanceBadge({ node, clearanceMode }: { node: EgressNodeDTO; clearanceMode: ClearanceMode }) {
   const { t } = useTranslation();
   if (node.scope === "grok_build") return <span className="text-xs text-muted-foreground">—</span>;
   if (clearanceMode === "flaresolverr") {
     return <Badge variant="secondary" className="text-[10px]">{node.accountBoundProxy ? `${t("settings.web.clearanceFlareSolverr")} · Resin` : t("settings.web.clearanceFlareSolverr")}</Badge>;
+  }
+  if (clearanceMode === "on_demand") {
+    return <Badge variant="secondary" className="text-[10px]">{node.accountBoundProxy ? `${t("settings.web.clearanceOnDemand")} · Resin` : t("settings.web.clearanceOnDemand")}</Badge>;
   }
   return <Badge variant={node.cookieConfigured ? "secondary" : "outline"} className={cn("text-[10px]", !node.cookieConfigured && "text-muted-foreground")}>{node.cookieConfigured ? t("settings.egress.configured") : t("settings.egress.none")}</Badge>;
 }
