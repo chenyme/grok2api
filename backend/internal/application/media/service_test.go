@@ -98,7 +98,7 @@ func TestTransientInputIsHiddenReadableAndExpires(t *testing.T) {
 	if _, _, openErr := service.OpenImage(ctx, input.ID); !errors.Is(openErr, ErrAssetNotFound) {
 		t.Fatalf("public open error=%v", openErr)
 	}
-	stored, body, err := service.OpenInputImage(ctx, input.ID)
+	stored, body, err := service.OpenInputAsset(ctx, input.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,10 +165,10 @@ func TestTransientInputIsHiddenReadableAndExpires(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := service.OpenInputImage(ctx, activeInputID); !errors.Is(err, ErrInputImageNotFound) {
+	if _, _, err := service.OpenInputAsset(ctx, activeInputID); !errors.Is(err, ErrInputAssetNotFound) {
 		t.Fatalf("open active expired input error=%v", err)
 	}
-	if err := service.ReleaseInputImages(ctx, []string{mediadomain.InputReference(activeInputID)}); err != nil {
+	if err := service.ReleaseInputAssets(ctx, []string{mediadomain.InputReference(activeInputID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := assets.GetMediaAsset(ctx, activeInputID); err != nil {
@@ -180,7 +180,7 @@ func TestTransientInputIsHiddenReadableAndExpires(t *testing.T) {
 	if _, err := assets.GetMediaAsset(ctx, activeInputID); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("active expired input metadata error=%v", err)
 	}
-	if err := service.ReleaseInputImages(ctx, []string{mediadomain.InputReference(input.ID)}); err != nil {
+	if err := service.ReleaseInputAssets(ctx, []string{mediadomain.InputReference(input.ID)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := assets.GetMediaAsset(ctx, input.ID); !errors.Is(err, repository.ErrNotFound) {
@@ -212,6 +212,18 @@ func TestSaveInputImageReservesCleanupHeadroom(t *testing.T) {
 	}
 	if len(service.cleanupSignal) != 1 {
 		t.Fatal("capacity rejection did not schedule media cleanup")
+	}
+}
+
+func TestSaveInputImageEnforcesSharedInputAssetLimit(t *testing.T) {
+	service := NewService(nil, nil, nil, nil, Config{
+		MaxImageBytes: mediadomain.MaxInputAssetBytes * 2,
+		MaxTotalBytes: mediadomain.MaxInputAssetBytes * 4,
+	})
+	data := make([]byte, mediadomain.MaxInputAssetBytes+1)
+	copy(data, []byte("\x89PNG\r\n\x1a\n"))
+	if _, err := service.SaveInputImage(context.Background(), data); !errors.Is(err, ErrInvalidImage) {
+		t.Fatalf("SaveInputImage oversized error = %v, want ErrInvalidImage", err)
 	}
 }
 

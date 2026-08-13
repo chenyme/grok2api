@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,45 +23,40 @@ import (
 )
 
 type TTSInput struct {
-	RequestID               string
-	ClientKey               clientkey.Key
-	PublicModel             string
-	Text                    string
-	VoiceID                 string
-	Language                string
-	OutputFormat            provider.TTSOutputFormat
-	Speed                   float64
+	RequestID                string
+	ClientKey                clientkey.Key
+	PublicModel              string
+	Text                     string
+	VoiceID                  string
+	Language                 string
+	OutputFormat             provider.TTSOutputFormat
+	Speed                    float64
 	OptimizeStreamingLatency int
-	TextNormalization       bool
-	WithTimestamps          bool
+	TextNormalization        bool
+	WithTimestamps           bool
 }
 
 type STTInput struct {
-	RequestID   string
-	ClientKey   clientkey.Key
-	PublicModel string
-	FileName    string
-	FileMIME    string
-	FileData    []byte
-	URL         string
-	AudioFormat string
-	SampleRate  string
-	Language    string
-	Format      bool
-	Multichannel bool
-	Channels    int
-	Diarize     bool
-	KeyTerms    []string
-	FillerWords bool
-	VADThreshold *float64
-}
-
-type RealtimeClientSecretInput struct {
 	RequestID    string
 	ClientKey    clientkey.Key
 	PublicModel  string
-	ExpiresAfter int
-	SessionJSON  []byte
+	FileName     string
+	FileMIME     string
+	FileData     []byte
+	URL          string
+	AudioFormat  string
+	SampleRate   string
+	Language     string
+	Format       bool
+	Multichannel bool
+	Channels     int
+	Diarize      bool
+	KeyTerms     []string
+	FillerWords  bool
+	VADThreshold *float64
+	// ResponseFormat is empty for the native Console-compatible response, or an
+	// OpenAI-compatible format normalized by the HTTP transport.
+	ResponseFormat string
 }
 
 type VoiceListInput struct {
@@ -69,33 +65,7 @@ type VoiceListInput struct {
 	PublicModel string
 }
 
-type CustomVoiceCreateInput struct {
-	RequestID   string
-	ClientKey   clientkey.Key
-	PublicModel string
-	Name        string
-	Language    string
-	Gender      string
-	Tone        string
-	UseCase     string
-	FileName    string
-	FileMIME    string
-	FileData    []byte
-}
-
-type CustomVoiceUpdateInput struct {
-	RequestID   string
-	ClientKey   clientkey.Key
-	PublicModel string
-	VoiceID     string
-	Name        *string
-	Language    *string
-	Gender      *string
-	Tone        *string
-	UseCase     *string
-}
-
-type CustomVoiceIDInput struct {
+type VoiceIDInput struct {
 	RequestID   string
 	ClientKey   clientkey.Key
 	PublicModel string
@@ -104,14 +74,20 @@ type CustomVoiceIDInput struct {
 
 type voiceProviderSupport func(accountdomain.Provider) bool
 
+type voiceExecutionResult struct {
+	response *provider.Response
+	pricing  audit.PricingResult
+}
+
 func (s *Service) SynthesizeSpeech(ctx context.Context, input TTSInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
+	reservation, _ := audit.EstimateOfficialTTSCost(input.Text)
+	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, reservation, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.TTS(providerValue)
 		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
+	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, upstream string) (voiceExecutionResult, error) {
 		adapter, ok := s.providers.TTS(providerValue)
 		if !ok {
-			return nil, ErrNoAvailableAccount
+			return voiceExecutionResult{}, ErrNoAvailableAccount
 		}
 		result, err := adapter.SynthesizeSpeech(executionCtx, provider.TTSRequest{
 			Credential: credential, Model: upstream, Text: input.Text, VoiceID: input.VoiceID, Language: input.Language,
@@ -119,7 +95,7 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, input TTSInput) (*Result
 			TextNormalization: input.TextNormalization, WithTimestamps: input.WithTimestamps,
 		})
 		if err != nil {
-			return voiceErrorResponse(err)
+			return voiceExecutionResult{}, err
 		}
 		if result.JSONEnvelope || input.WithTimestamps {
 			payload := map[string]any{
@@ -134,33 +110,33 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, input TTSInput) (*Result
 				}
 				payload["audio_timestamps"] = map[string]any{"graph_chars": result.Timestamps.GraphChars, "graph_times": times}
 			}
-			return jsonVoiceResponse(http.StatusOK, payload), nil
+			return voiceExecutionResult{response: jsonVoiceResponse(http.StatusOK, payload), pricing: reservation}, nil
 		}
 		header := http.Header{}
 		header.Set("Content-Type", firstNonEmpty(result.ContentType, "audio/mpeg"))
 		header.Set("Content-Length", fmt.Sprintf("%d", len(result.Audio)))
-		return &provider.Response{
+		return voiceExecutionResult{response: &provider.Response{
 			StatusCode: http.StatusOK,
 			Status:     fmt.Sprintf("%d %s", http.StatusOK, http.StatusText(http.StatusOK)),
 			Header:     header,
 			Body:       io.NopCloser(bytes.NewReader(result.Audio)),
 			QuotaUnits: 1,
-		}, nil
+		}, pricing: reservation}, nil
 	})
 }
 
 func (s *Service) ListTTSVoices(ctx context.Context, input VoiceListInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
+	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, false, audit.PricingResult{}, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.TTS(providerValue)
 		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (*provider.Response, error) {
+	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (voiceExecutionResult, error) {
 		adapter, ok := s.providers.TTS(providerValue)
 		if !ok {
-			return nil, ErrNoAvailableAccount
+			return voiceExecutionResult{}, ErrNoAvailableAccount
 		}
 		voices, err := adapter.ListTTSVoices(executionCtx, credential)
 		if err != nil {
-			return voiceErrorResponse(err)
+			return voiceExecutionResult{}, err
 		}
 		items := make([]map[string]any, 0, len(voices))
 		for _, voice := range voices {
@@ -172,22 +148,24 @@ func (s *Service) ListTTSVoices(ctx context.Context, input VoiceListInput) (*Res
 			}
 			items = append(items, item)
 		}
-		return jsonVoiceResponse(http.StatusOK, map[string]any{"voices": items}), nil
+		response := jsonVoiceResponse(http.StatusOK, map[string]any{"voices": items})
+		response.QuotaUnits = 0
+		return voiceExecutionResult{response: response}, nil
 	})
 }
 
-func (s *Service) GetTTSVoice(ctx context.Context, input CustomVoiceIDInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
+func (s *Service) GetTTSVoice(ctx context.Context, input VoiceIDInput) (*Result, error) {
+	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, false, audit.PricingResult{}, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.TTS(providerValue)
 		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (*provider.Response, error) {
+	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (voiceExecutionResult, error) {
 		adapter, ok := s.providers.TTS(providerValue)
 		if !ok {
-			return nil, ErrNoAvailableAccount
+			return voiceExecutionResult{}, ErrNoAvailableAccount
 		}
 		voice, err := adapter.GetTTSVoice(executionCtx, credential, input.VoiceID)
 		if err != nil {
-			return voiceErrorResponse(err)
+			return voiceExecutionResult{}, err
 		}
 		payload := map[string]any{"voice_id": voice.VoiceID, "name": voice.Name}
 		if voice.Language != "" {
@@ -195,18 +173,20 @@ func (s *Service) GetTTSVoice(ctx context.Context, input CustomVoiceIDInput) (*R
 		} else {
 			payload["language"] = nil
 		}
-		return jsonVoiceResponse(http.StatusOK, payload), nil
+		response := jsonVoiceResponse(http.StatusOK, payload)
+		response.QuotaUnits = 0
+		return voiceExecutionResult{response: response}, nil
 	})
 }
 
 func (s *Service) TranscribeSpeech(ctx context.Context, input STTInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationSTT, modeldomain.CapabilitySTT, func(providerValue accountdomain.Provider) bool {
+	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationSTT, modeldomain.CapabilitySTT, true, audit.PricingResult{}, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.STT(providerValue)
 		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
+	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, upstream string) (voiceExecutionResult, error) {
 		adapter, ok := s.providers.STT(providerValue)
 		if !ok {
-			return nil, ErrNoAvailableAccount
+			return voiceExecutionResult{}, ErrNoAvailableAccount
 		}
 		result, err := adapter.TranscribeSpeech(executionCtx, provider.STTRequest{
 			Credential: credential, Model: upstream, FileName: input.FileName, FileMIME: input.FileMIME, FileData: input.FileData,
@@ -215,19 +195,29 @@ func (s *Service) TranscribeSpeech(ctx context.Context, input STTInput) (*Result
 			FillerWords: input.FillerWords, VADThreshold: input.VADThreshold,
 		})
 		if err != nil {
-			return voiceErrorResponse(err)
+			return voiceExecutionResult{}, err
 		}
-		if len(result.RawJSON) > 0 {
-			header := http.Header{}
-			header.Set("Content-Type", "application/json")
-			header.Set("Content-Length", fmt.Sprintf("%d", len(result.RawJSON)))
-			return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: io.NopCloser(bytes.NewReader(result.RawJSON)), QuotaUnits: 1}, nil
-		}
-		payload := map[string]any{"text": result.Text, "language": result.Language, "duration": result.Duration}
+		pricing, _ := audit.EstimateOfficialSTTCost(result.Duration, false)
+		return voiceExecutionResult{response: formatSTTResponse(result, input.ResponseFormat), pricing: pricing}, nil
+	})
+}
+
+func formatSTTResponse(result provider.STTResult, responseFormat string) *provider.Response {
+	switch responseFormat {
+	case "text":
+		data := []byte(result.Text)
+		header := http.Header{}
+		header.Set("Content-Type", "text/plain; charset=utf-8")
+		header.Set("Content-Length", strconv.Itoa(len(data)))
+		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: io.NopCloser(bytes.NewReader(data)), QuotaUnits: 1}
+	case "json":
+		return jsonVoiceResponse(http.StatusOK, map[string]any{"text": result.Text})
+	case "verbose_json":
+		payload := map[string]any{"task": "transcribe", "text": result.Text, "language": result.Language, "duration": result.Duration}
 		if len(result.Words) > 0 {
 			words := make([]map[string]any, 0, len(result.Words))
 			for _, word := range result.Words {
-				item := map[string]any{"text": word.Text, "start": word.Start, "end": word.End}
+				item := map[string]any{"word": word.Text, "start": word.Start, "end": word.End}
 				if word.Speaker != nil {
 					item["speaker"] = *word.Speaker
 				}
@@ -235,187 +225,46 @@ func (s *Service) TranscribeSpeech(ctx context.Context, input STTInput) (*Result
 			}
 			payload["words"] = words
 		}
-		if len(result.Channels) > 0 {
-			channels := make([]map[string]any, 0, len(result.Channels))
-			for _, channel := range result.Channels {
-				item := map[string]any{"index": channel.Index, "text": channel.Text}
-				if len(channel.Words) > 0 {
-					words := make([]map[string]any, 0, len(channel.Words))
-					for _, word := range channel.Words {
-						wordItem := map[string]any{"text": word.Text, "start": word.Start, "end": word.End}
-						if word.Speaker != nil {
-							wordItem["speaker"] = *word.Speaker
-						}
-						words = append(words, wordItem)
-					}
-					item["words"] = words
-				}
-				channels = append(channels, item)
-			}
-			payload["channels"] = channels
-		}
-		return jsonVoiceResponse(http.StatusOK, payload), nil
-	})
-}
-
-func (s *Service) CreateRealtimeClientSecret(ctx context.Context, input RealtimeClientSecretInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationRealtime, modeldomain.CapabilityRealtime, func(providerValue accountdomain.Provider) bool {
-		_, ok := s.providers.RealtimeVoice(providerValue)
-		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, upstream string) (*provider.Response, error) {
-		adapter, ok := s.providers.RealtimeVoice(providerValue)
-		if !ok {
-			return nil, ErrNoAvailableAccount
-		}
-		result, err := adapter.CreateRealtimeClientSecret(executionCtx, provider.RealtimeClientSecretRequest{
-			Credential: credential, Model: firstNonEmpty(upstream, input.PublicModel), ExpiresAfter: input.ExpiresAfter, SessionJSON: input.SessionJSON,
-		})
-		if err != nil {
-			return voiceErrorResponse(err)
-		}
-		if len(result.RawJSON) > 0 {
-			header := http.Header{}
-			header.Set("Content-Type", "application/json")
-			header.Set("Content-Length", fmt.Sprintf("%d", len(result.RawJSON)))
-			return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: io.NopCloser(bytes.NewReader(result.RawJSON)), QuotaUnits: 1}, nil
-		}
-		return jsonVoiceResponse(http.StatusOK, map[string]any{"value": result.Value, "expires_at": result.ExpiresAt}), nil
-	})
-}
-
-func (s *Service) CreateCustomVoice(ctx context.Context, input CustomVoiceCreateInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationVoice, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
-		_, ok := s.providers.CustomVoices(providerValue)
-		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (*provider.Response, error) {
-		adapter, ok := s.providers.CustomVoices(providerValue)
-		if !ok {
-			return nil, ErrNoAvailableAccount
-		}
-		result, err := adapter.CreateCustomVoice(executionCtx, provider.CustomVoiceCreateRequest{
-			Credential: credential, Name: input.Name, Language: input.Language, Gender: input.Gender, Tone: input.Tone,
-			UseCase: input.UseCase, FileName: input.FileName, FileMIME: input.FileMIME, FileData: input.FileData,
-		})
-		if err != nil {
-			return voiceErrorResponse(err)
-		}
-		if len(result.RawJSON) > 0 {
-			header := http.Header{}
-			header.Set("Content-Type", "application/json")
-			header.Set("Content-Length", fmt.Sprintf("%d", len(result.RawJSON)))
-			return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: io.NopCloser(bytes.NewReader(result.RawJSON)), QuotaUnits: 1}, nil
-		}
-		return jsonVoiceResponse(http.StatusOK, customVoicePayload(result)), nil
-	})
-}
-
-func (s *Service) ListCustomVoices(ctx context.Context, input VoiceListInput, limit int, paginationToken string) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationVoice, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
-		_, ok := s.providers.CustomVoices(providerValue)
-		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (*provider.Response, error) {
-		adapter, ok := s.providers.CustomVoices(providerValue)
-		if !ok {
-			return nil, ErrNoAvailableAccount
-		}
-		voices, next, err := adapter.ListCustomVoices(executionCtx, credential, limit, paginationToken)
-		if err != nil {
-			return voiceErrorResponse(err)
-		}
-		items := make([]map[string]any, 0, len(voices))
-		for _, voice := range voices {
-			items = append(items, customVoicePayload(voice))
-		}
-		payload := map[string]any{"voices": items}
-		if next != "" {
-			payload["pagination_token"] = next
-		}
-		return jsonVoiceResponse(http.StatusOK, payload), nil
-	})
-}
-
-func (s *Service) GetCustomVoice(ctx context.Context, input CustomVoiceIDInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationVoice, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
-		_, ok := s.providers.CustomVoices(providerValue)
-		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (*provider.Response, error) {
-		adapter, ok := s.providers.CustomVoices(providerValue)
-		if !ok {
-			return nil, ErrNoAvailableAccount
-		}
-		result, err := adapter.GetCustomVoice(executionCtx, credential, input.VoiceID)
-		if err != nil {
-			return voiceErrorResponse(err)
-		}
-		if len(result.RawJSON) > 0 {
-			header := http.Header{}
-			header.Set("Content-Type", "application/json")
-			header.Set("Content-Length", fmt.Sprintf("%d", len(result.RawJSON)))
-			return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: io.NopCloser(bytes.NewReader(result.RawJSON)), QuotaUnits: 1}, nil
-		}
-		return jsonVoiceResponse(http.StatusOK, customVoicePayload(result)), nil
-	})
-}
-
-func (s *Service) UpdateCustomVoice(ctx context.Context, input CustomVoiceUpdateInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationVoice, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
-		_, ok := s.providers.CustomVoices(providerValue)
-		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (*provider.Response, error) {
-		adapter, ok := s.providers.CustomVoices(providerValue)
-		if !ok {
-			return nil, ErrNoAvailableAccount
-		}
-		result, err := adapter.UpdateCustomVoice(executionCtx, provider.CustomVoiceUpdateRequest{
-			Credential: credential, VoiceID: input.VoiceID, Name: input.Name, Language: input.Language, Gender: input.Gender, Tone: input.Tone, UseCase: input.UseCase,
-		})
-		if err != nil {
-			return voiceErrorResponse(err)
-		}
-		if len(result.RawJSON) > 0 {
-			header := http.Header{}
-			header.Set("Content-Type", "application/json")
-			header.Set("Content-Length", fmt.Sprintf("%d", len(result.RawJSON)))
-			return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: io.NopCloser(bytes.NewReader(result.RawJSON)), QuotaUnits: 1}, nil
-		}
-		return jsonVoiceResponse(http.StatusOK, customVoicePayload(result)), nil
-	})
-}
-
-func (s *Service) DeleteCustomVoice(ctx context.Context, input CustomVoiceIDInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationVoice, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
-		_, ok := s.providers.CustomVoices(providerValue)
-		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (*provider.Response, error) {
-		adapter, ok := s.providers.CustomVoices(providerValue)
-		if !ok {
-			return nil, ErrNoAvailableAccount
-		}
-		if err := adapter.DeleteCustomVoice(executionCtx, credential, input.VoiceID); err != nil {
-			return voiceErrorResponse(err)
-		}
-		return jsonVoiceResponse(http.StatusOK, map[string]any{"deleted": true, "voice_id": input.VoiceID}), nil
-	})
-}
-
-func (s *Service) GetCustomVoiceAudio(ctx context.Context, input CustomVoiceIDInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationVoice, modeldomain.CapabilityTTS, func(providerValue accountdomain.Provider) bool {
-		_, ok := s.providers.CustomVoices(providerValue)
-		return ok
-	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (*provider.Response, error) {
-		adapter, ok := s.providers.CustomVoices(providerValue)
-		if !ok {
-			return nil, ErrNoAvailableAccount
-		}
-		data, contentType, err := adapter.GetCustomVoiceAudio(executionCtx, credential, input.VoiceID)
-		if err != nil {
-			return voiceErrorResponse(err)
-		}
+		return jsonVoiceResponse(http.StatusOK, payload)
+	}
+	if len(result.RawJSON) > 0 {
 		header := http.Header{}
-		header.Set("Content-Type", firstNonEmpty(contentType, "audio/mpeg"))
-		header.Set("Content-Length", fmt.Sprintf("%d", len(data)))
-		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: io.NopCloser(bytes.NewReader(data)), QuotaUnits: 1}, nil
-	})
+		header.Set("Content-Type", "application/json")
+		header.Set("Content-Length", strconv.Itoa(len(result.RawJSON)))
+		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: header, Body: io.NopCloser(bytes.NewReader(result.RawJSON)), QuotaUnits: 1}
+	}
+	payload := map[string]any{"text": result.Text, "language": result.Language, "duration": result.Duration}
+	if len(result.Words) > 0 {
+		words := make([]map[string]any, 0, len(result.Words))
+		for _, word := range result.Words {
+			item := map[string]any{"text": word.Text, "start": word.Start, "end": word.End}
+			if word.Speaker != nil {
+				item["speaker"] = *word.Speaker
+			}
+			words = append(words, item)
+		}
+		payload["words"] = words
+	}
+	if len(result.Channels) > 0 {
+		channels := make([]map[string]any, 0, len(result.Channels))
+		for _, channel := range result.Channels {
+			item := map[string]any{"index": channel.Index, "text": channel.Text}
+			if len(channel.Words) > 0 {
+				words := make([]map[string]any, 0, len(channel.Words))
+				for _, word := range channel.Words {
+					wordItem := map[string]any{"text": word.Text, "start": word.Start, "end": word.End}
+					if word.Speaker != nil {
+						wordItem["speaker"] = *word.Speaker
+					}
+					words = append(words, wordItem)
+				}
+				item["words"] = words
+			}
+			channels = append(channels, item)
+		}
+		payload["channels"] = channels
+	}
+	return jsonVoiceResponse(http.StatusOK, payload)
 }
 
 func (s *Service) executeVoice(
@@ -425,24 +274,27 @@ func (s *Service) executeVoice(
 	publicModel string,
 	operation audit.Operation,
 	capability modeldomain.Capability,
+	consumesQuota bool,
+	reservation audit.PricingResult,
 	supports voiceProviderSupport,
-	execute func(context.Context, accountdomain.Provider, accountdomain.Credential, string) (*provider.Response, error),
+	execute func(context.Context, accountdomain.Provider, accountdomain.Credential, string) (voiceExecutionResult, error),
 ) (*Result, error) {
 	ctx, egressTrace := infraegress.WithTrace(ctx)
 	startedAt := time.Now()
 	eventID := newAuditEventID()
 	routes, err := s.models.GetByPublicIDCandidates(ctx, publicModel)
 	if err != nil {
-		// Voice catalog helpers may not require a specific model when only voices are listed.
-		// Fall back to any enabled route for the capability so built-in voice listing still works.
-		if publicModel == "" || publicModel == "grok-voice-latest" || publicModel == "grok-stt" {
-			return nil, ErrModelNotFound
-		}
 		return nil, ErrModelNotFound
 	}
-	route, err := s.selectMediaRoute(routes, key, capability, supports)
+	route, preselectedSession, err := s.selectSchedulableMediaRoute(ctx, routes, key, capability, consumesQuota, supports)
 	if err != nil {
-		return nil, err
+		// Keep selection failures observable in request audits when no same-name
+		// target is schedulable; capability/scope failures still return directly.
+		route, err = s.selectMediaRoute(routes, key, capability, supports)
+		if err != nil {
+			return nil, err
+		}
+		preselectedSession = nil
 	}
 	externalModel := modeldomain.ExternalPublicID(route.Provider, route.PublicID)
 	auditBase := audit.Record{
@@ -452,6 +304,11 @@ func (s *Service) executeVoice(
 	}
 	if err := s.checkLedgerReady(); err != nil {
 		return nil, err
+	}
+	if reservation.CostInUSDTicks > 0 {
+		if _, err := s.clientKeys.ReserveBilling(ctx, key, eventID, reservation.CostInUSDTicks, mediaBillingReservationTTL); err != nil {
+			return nil, err
+		}
 	}
 	writeFailureAudit := func(statusCode int, errorCode string, credential *accountdomain.Credential) {
 		record := auditBase
@@ -471,13 +328,18 @@ func (s *Service) executeVoice(
 			s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", requestID, "error", auditErr)
 		}
 	}
-	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+	quotaMode := ""
+	if consumesQuota {
+		quotaMode = s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+	}
 	attemptPolicy := newRoutingAttemptPolicy(int(s.maxAttempts.Load()))
 	excluded := make(map[uint64]bool)
-	var selection *selectionSession
+	selection := preselectedSession
 	var lease *accountLease
 	var credential accountdomain.Credential
 	var response *provider.Response
+	var completedPricing audit.PricingResult
+	var responseRequestScoped bool
 	var lastCredentialFailure *accountdomain.Credential
 	var lastCredentialError error
 	for attempt := 0; attemptPolicy.allows(attempt); attempt++ {
@@ -506,20 +368,43 @@ func (s *Service) executeVoice(
 			continue
 		}
 		lease.markSelectorUpstreamStarted()
-		response, err = execute(ctx, route.Provider, credential, route.UpstreamModel)
+		responseRequestScoped = false
+		execution, executionErr := execute(ctx, route.Provider, credential, route.UpstreamModel)
+		response, completedPricing, err = execution.response, execution.pricing, executionErr
 		if err != nil {
-			if isSSOCredentialRejected(err, credential) {
+			if _, ok := provider.ErrorHTTPStatus(err); ok {
+				responseRequestScoped = provider.IsRequestScopedError(err)
+				response, err = voiceErrorResponse(err)
+			} else if isSSOCredentialRejected(err, credential) {
 				s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
 				failedCredential := credential
 				lastCredentialFailure = &failedCredential
 				lastCredentialError = provider.ErrUnauthorized
 				lease.Release()
 				continue
+			} else {
+				failure := newTransportUpstreamFailure(err, credential.ID, credential.Name)
+				lastCredentialError = failure
+				if ctx.Err() == nil && isRetryableTransportFailure(credential.Provider, err) && attemptPolicy.hasNext(attempt) {
+					// Transport failures are normally tied to the selected egress. Retry the
+					// same account after the adapter has invalidated/rebuilt that transport,
+					// without cooling an otherwise healthy credential.
+					delete(excluded, credential.ID)
+					if selection != nil {
+						selection.RetryAccount(credential.ID)
+					}
+					lease.Release()
+					continue
+				}
+				lease.Release()
+				writeFailureAudit(failure.HTTPStatus, failure.AuditCode(), &credential)
+				return nil, failure
 			}
-			s.selector.MarkFailure(ctx, credential, 0, 0)
-			lease.Release()
-			writeFailureAudit(http.StatusBadGateway, "upstream_unavailable", &credential)
-			return nil, err
+			if err != nil {
+				lease.Release()
+				writeFailureAudit(http.StatusBadGateway, "upstream_unavailable", &credential)
+				return nil, err
+			}
 		}
 		if response.StatusCode == http.StatusUnauthorized && credential.AuthType == accountdomain.AuthTypeSSO {
 			_, _ = readRetryableBody(response.Body)
@@ -531,7 +416,7 @@ func (s *Service) executeVoice(
 			lease.Release()
 			continue
 		}
-		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && attempt == 0 && attemptPolicy.hasNext(attempt) {
+		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && !responseRequestScoped && attempt == 0 && attemptPolicy.hasNext(attempt) {
 			_, _ = readRetryableBody(response.Body)
 			delete(excluded, credential.ID)
 			if selection != nil {
@@ -540,11 +425,24 @@ func (s *Service) executeVoice(
 			lease.Release()
 			continue
 		}
-		if response.StatusCode == http.StatusTooManyRequests && attemptPolicy.hasNext(attempt) {
+		if response.StatusCode == http.StatusPaymentRequired || response.StatusCode == http.StatusTooManyRequests {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
-			body, _ := readRetryableBody(response.Body)
-			s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
-			response.Body = io.NopCloser(bytes.NewReader(body))
+			if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
+				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
+				s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
+				if reconcileErr != nil || !exhausted {
+					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+				}
+			} else {
+				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+			}
+			if attemptPolicy.hasNext(attempt) {
+				_, _ = readRetryableBody(response.Body)
+				lease.Release()
+				continue
+			}
+		}
+		if response.StatusCode >= http.StatusInternalServerError && attemptPolicy.hasNext(attempt) {
 			_, _ = readRetryableBody(response.Body)
 			lease.Release()
 			continue
@@ -565,14 +463,39 @@ func (s *Service) executeVoice(
 			successful := auditRequestSucceeded(response.StatusCode, errorCode)
 			lease.completeSelectorObservation(successful)
 			lease.Release()
+			budget := newFinalizationBudget(string(operation), string(route.Provider))
 			record := auditBase
 			record.AccountID, record.AccountName, record.StatusCode = &accountID, credential.Name, response.StatusCode
 			record.ErrorCode = errorCode
 			record.DurationMS, record.CreatedAt = time.Since(startedAt).Milliseconds(), time.Now().UTC()
 			applyAuditEgress(&record, egressTrace, route.Provider)
-			persistCtx, cancel := context.WithTimeout(context.Background(), finalizationTimeout)
-			defer cancel()
-			if err := s.audits.Create(persistCtx, record); err != nil {
+			if successful && completedPricing.CostInUSDTicks > 0 {
+				record.EstimatedCostInUSDTicks = completedPricing.CostInUSDTicks
+				record.PricingModel = completedPricing.Model
+				record.PricingVersion = audit.OfficialPricingAsOf
+			}
+			if successful && response.QuotaUnits > 0 && quotaMode != "" && quotaMode != "weekly" {
+				units := response.QuotaUnits
+				var updated bool
+				err := budget.run("quota_decrement", finalizationQuotaBudget, func(stageCtx context.Context) error {
+					var decrementErr error
+					updated, decrementErr = s.accounts.DecrementQuota(stageCtx, accountID, quotaMode, units)
+					return decrementErr
+				})
+				if err != nil {
+					s.logger.Warn("voice_quota_decrement_failed", "provider", route.Provider, "account_id", accountID, "mode", quotaMode, "units", units, "error", err)
+				} else if updated {
+					s.selector.ConsumeQuota(route.Provider, accountID, quotaMode, units)
+				}
+			}
+			if successful && response.QuotaUnits > 0 && quotaMode != "" {
+				if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow {
+					s.accounts.QueueQuotaRefresh(accountID, quotaMode)
+				}
+			}
+			if err := budget.run("audit", finalizationAuditBudget, func(stageCtx context.Context) error {
+				return s.audits.Create(stageCtx, record)
+			}); err != nil {
 				s.logger.Error("request_usage_write_failed", "event_id", record.EventID, "request_id", requestID, "error", err)
 			}
 		})
@@ -595,37 +518,19 @@ func jsonVoiceResponse(status int, value any) *provider.Response {
 }
 
 func voiceErrorResponse(err error) (*provider.Response, error) {
-	var upstream interface{ HTTPStatusCode() int; Error() string }
-	if errors.As(err, &upstream) && upstream.HTTPStatusCode() > 0 {
-		return jsonVoiceResponse(upstream.HTTPStatusCode(), map[string]any{"error": map[string]any{"type": "upstream_error", "message": upstream.Error()}}), nil
+	if status, ok := provider.ErrorHTTPStatus(err); ok {
+		message, safe := provider.ErrorPublicMessage(err)
+		if !safe {
+			message = "上游语音服务返回错误"
+		}
+		response := jsonVoiceResponse(status, map[string]any{"error": map[string]any{"type": "upstream_error", "message": message}})
+		if retryAfter := provider.ErrorRetryAfter(err); retryAfter > 0 {
+			seconds := max(int64(1), int64((retryAfter+time.Second-1)/time.Second))
+			response.Header.Set("Retry-After", strconv.FormatInt(seconds, 10))
+		}
+		return response, nil
 	}
 	return nil, err
-}
-
-func customVoicePayload(value provider.CustomVoice) map[string]any {
-	payload := map[string]any{
-		"voice_id": value.VoiceID,
-		"name":     value.Name,
-	}
-	if value.Language != "" {
-		payload["language"] = value.Language
-	}
-	if value.Gender != "" {
-		payload["gender"] = value.Gender
-	}
-	if value.Tone != "" {
-		payload["tone"] = value.Tone
-	}
-	if value.UseCase != "" {
-		payload["use_case"] = value.UseCase
-	}
-	if value.CreatedAt != "" {
-		payload["created_at"] = value.CreatedAt
-	}
-	if value.UpdatedAt != "" {
-		payload["updated_at"] = value.UpdatedAt
-	}
-	return payload
 }
 
 func firstNonEmpty(values ...string) string {

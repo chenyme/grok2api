@@ -173,6 +173,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if err := d.ensureMediaJobConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 数据库约束: %w", err)
 	}
+	if err := d.migrateMediaJobOperations(ctx); err != nil {
+		return fmt.Errorf("迁移 media job 操作类型: %w", err)
+	}
 	if err := d.ensureMediaJobInputConstraint(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 输入长度约束: %w", err)
 	}
@@ -412,9 +415,43 @@ func (d *Database) ensureMediaJobConstraints(ctx context.Context) error {
 	}, "grok_console"); err != nil {
 		return err
 	}
-	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+	if err := d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_egress_scope"},
-	}, "grok_console")
+	}, "grok_console"); err != nil {
+		return err
+	}
+	for _, constraint := range []consoleConstraint{
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_operation"},
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_seconds"},
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_size"},
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_quality"},
+	} {
+		marker := "0"
+		if constraint.name == "chk_media_jobs_operation" {
+			marker = "extend"
+		}
+		if err := d.ensureNamedConstraints(ctx, []consoleConstraint{constraint}, marker); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateMediaJobOperations preserves queued and in-progress edit/extension
+// jobs created before media_jobs.operation existed. Those releases persisted
+// the operation only in the compact JSON metadata; AutoMigrate necessarily
+// fills the new non-null column with "generate", which must not change the
+// request semantics when a job is recovered after an upgrade.
+func (d *Database) migrateMediaJobOperations(ctx context.Context) error {
+	editPattern := `%"operation":"edit"%`
+	extendPattern := `%"operation":"extend"%`
+	return d.db.WithContext(ctx).Exec(
+		`UPDATE media_jobs
+		 SET operation = CASE WHEN input_json LIKE ? THEN ? ELSE ? END
+		 WHERE operation = ? AND (input_json LIKE ? OR input_json LIKE ?)`,
+		editPattern, media.VideoOperationEdit, media.VideoOperationExtend,
+		media.VideoOperationGenerate, editPattern, extendPattern,
+	).Error
 }
 
 // ensureMediaJobInputConstraint 允许异步视频任务持久化 Base64 首图。

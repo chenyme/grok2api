@@ -87,6 +87,7 @@ export async function generateImage(input: {
   count: number;
   aspectRatio: string;
   resolution: string;
+  quality?: "low" | "medium";
   signal?: AbortSignal;
 }): Promise<ImageResult[]> {
   const payload = await publicApiRequest(
@@ -100,6 +101,7 @@ export async function generateImage(input: {
         n: input.count,
         aspect_ratio: input.aspectRatio,
         resolution: input.resolution,
+        ...(input.quality ? { quality: input.quality } : {}),
         response_format: "url",
         stream: false,
       },
@@ -158,7 +160,8 @@ export async function editVideo(input: {
   apiKey: string;
   model: string;
   prompt: string;
-  videoURL: string;
+  videoURL?: string;
+  videoFileID?: string;
   signal?: AbortSignal;
 }): Promise<string> {
   const payload = await publicApiRequest(
@@ -169,7 +172,7 @@ export async function editVideo(input: {
       body: {
         model: input.model,
         prompt: input.prompt,
-        video: { url: input.videoURL },
+        video: input.videoFileID ? { file_id: input.videoFileID } : { url: input.videoURL },
       },
       signal: input.signal,
     },
@@ -185,14 +188,15 @@ export async function extendVideo(input: {
   apiKey: string;
   model: string;
   prompt: string;
-  videoURL: string;
+  videoURL?: string;
+  videoFileID?: string;
   duration?: number;
   signal?: AbortSignal;
 }): Promise<string> {
   const body: Record<string, unknown> = {
     model: input.model,
     prompt: input.prompt,
-    video: { url: input.videoURL },
+    video: input.videoFileID ? { file_id: input.videoFileID } : { url: input.videoURL },
   };
   if (typeof input.duration === "number") body.duration = input.duration;
   const payload = await publicApiRequest(

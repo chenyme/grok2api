@@ -17,12 +17,12 @@ import (
 
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
-	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
@@ -94,7 +94,6 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.GET("/videos/:requestId", h.getVideo)
 	router.GET("/videos/:requestId/content", h.getVideoContent)
 	router.POST("/tts", h.synthesizeSpeech)
-	router.GET("/tts", h.proxyTTSWebSocket)
 	router.GET("/tts/voices", h.listTTSVoices)
 	router.GET("/tts/voices/:voiceId", h.getTTSVoice)
 	router.POST("/stt", h.transcribeSpeech)
@@ -103,15 +102,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/audio/speech", h.synthesizeOpenAISpeech)
 	router.POST("/audio/tasks", h.synthesizeOpenAIAudioTask)
 	router.POST("/audio/transcriptions", h.transcribeOpenAIAudio)
-	router.POST("/audio/translations", h.transcribeOpenAIAudio)
-	router.POST("/realtime/client_secrets", h.createRealtimeClientSecret)
 	router.GET("/realtime", h.proxyRealtimeWebSocket)
-	router.POST("/custom-voices", h.createCustomVoice)
-	router.GET("/custom-voices", h.listCustomVoices)
-	router.GET("/custom-voices/:voiceId", h.getCustomVoice)
-	router.PATCH("/custom-voices/:voiceId", h.updateCustomVoice)
-	router.DELETE("/custom-voices/:voiceId", h.deleteCustomVoice)
-	router.GET("/custom-voices/:voiceId/audio", h.getCustomVoiceAudio)
 	router.POST("/responses/compact", h.compactResponse)
 	router.GET("/responses/:responseId", h.getResponse)
 	router.DELETE("/responses/:responseId", h.deleteResponse)
@@ -146,6 +137,7 @@ type imageGenerationRequest struct {
 	Size           string          `json:"size"`
 	AspectRatio    string          `json:"aspect_ratio"`
 	Resolution     string          `json:"resolution"`
+	Quality        string          `json:"quality"`
 	ResponseFormat string          `json:"response_format"`
 	StorageOptions json.RawMessage `json:"storage_options"`
 	Stream         bool            `json:"stream"`
@@ -165,6 +157,7 @@ type imageEditJSONRequest struct {
 	Size           string               `json:"size"`
 	AspectRatio    string               `json:"aspect_ratio"`
 	Resolution     string               `json:"resolution"`
+	Quality        string               `json:"quality"`
 	ResponseFormat string               `json:"response_format"`
 	StorageOptions json.RawMessage      `json:"storage_options"`
 	Stream         bool                 `json:"stream"`
@@ -420,6 +413,11 @@ func (h *Handler) generateImage(c *gin.Context) {
 			return
 		}
 	}
+	quality := strings.ToLower(strings.TrimSpace(request.Quality))
+	if quality != "" && quality != "low" && quality != "medium" {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "quality 必须是 low 或 medium")
+		return
+	}
 	clientKey, requestID, ok := requestIdentity(c)
 	if !ok {
 		return
@@ -427,7 +425,7 @@ func (h *Handler) generateImage(c *gin.Context) {
 	result, err := h.gateway.GenerateImage(c.Request.Context(), gateway.ImageGenerationInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: request.Model, Prompt: request.Prompt,
 		Count: count, Size: request.Size, AspectRatio: request.AspectRatio,
-		Resolution: request.Resolution, ResponseFormat: request.ResponseFormat,
+		Resolution: request.Resolution, Quality: quality, ResponseFormat: request.ResponseFormat,
 		Streaming: request.Stream, PartialImages: partialImages,
 	})
 	if err != nil {
@@ -605,6 +603,11 @@ func (h *Handler) editImage(c *gin.Context) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "resolution 必须是 1k 或 2k")
 		return
 	}
+	quality := strings.ToLower(strings.TrimSpace(request.Quality))
+	if quality != "" && quality != "low" && quality != "medium" {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "quality 必须是 low 或 medium")
+		return
+	}
 	clientKey, requestID, ok := requestIdentity(c)
 	if !ok {
 		return
@@ -612,7 +615,7 @@ func (h *Handler) editImage(c *gin.Context) {
 	result, err := h.gateway.EditImage(c.Request.Context(), gateway.ImageEditInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model, Prompt: prompt,
 		ImageURLs: imageURLs, Count: count, Size: size, AspectRatio: aspectRatio,
-		Resolution: resolution, ResponseFormat: request.ResponseFormat,
+		Resolution: resolution, Quality: quality, ResponseFormat: request.ResponseFormat,
 		Streaming: request.Stream, PartialImages: partialImages,
 	})
 	if err != nil {
@@ -676,13 +679,6 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	if model == "" {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", label+"缺少有效 model")
 		return
-	}
-	// Edit/extension stay on grok-imagine-video (not 1.5).
-	if operation != gatewayVideoOperationGenerate {
-		if model != "grok-imagine-video" && model != "Console/grok-imagine-video" {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "视频编辑/延长仅支持 grok-imagine-video")
-			return
-		}
 	}
 	parseVideoImage := func(input videoGenerationImage, field string) (string, bool) {
 		urlValue := strings.TrimSpace(input.URL)
@@ -849,7 +845,7 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	job, err := h.gateway.CreateVideo(c.Request.Context(), gateway.VideoInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model,
 		Operation: op,
-		Prompt: prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
+		Prompt:    prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
 		ImageURL: imageURL, ReferenceURLs: referenceURLs, ReferenceAudios: referenceAudios, VideoURL: videoURL,
 	})
 	if err != nil {
@@ -995,9 +991,17 @@ func videoGenerationResponse(job mediadomain.Job, contentURLs ...string) gin.H {
 		if len(contentURLs) > 0 && contentURLs[0] != "" {
 			videoURL = contentURLs[0]
 		}
+		video := gin.H{"url": videoURL, "respect_moderation": true}
+		operation := job.Operation
+		if operation == "" {
+			operation = mediadomain.VideoOperationGenerate
+		}
+		if operation == mediadomain.VideoOperationGenerate && job.Seconds > 0 {
+			video["duration"] = job.Seconds
+		}
 		return gin.H{
 			"status": "done", "model": job.Model, "progress": 100,
-			"video": gin.H{"url": videoURL, "duration": job.Seconds, "respect_moderation": true},
+			"video": video,
 		}
 	case mediadomain.StatusFailed:
 		return gin.H{
@@ -1847,6 +1851,9 @@ func writeGatewayError(c *gin.Context, err error) {
 		message = err.Error()
 	case errors.Is(err, gateway.ErrVideoInputTooLarge), errors.Is(err, gateway.ErrVideoInputUnavailable):
 		status, code = http.StatusBadRequest, "invalid_request"
+		message = err.Error()
+	case errors.Is(err, gateway.ErrVideoOperationUnsupported):
+		status, code = http.StatusBadRequest, "unsupported_model"
 		message = err.Error()
 	case errors.As(err, &upstreamFailure):
 		if isSanitizedUpstreamAvailabilityFailure(upstreamFailure) {

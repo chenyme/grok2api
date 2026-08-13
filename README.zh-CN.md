@@ -148,9 +148,9 @@ flowchart LR
 | :-- | :-- | :-- | :-- |
 | Grok Build | OAuth / 设备授权 | 按账号动态发现 | Responses、Chat、Messages、compact、stored response、付费账号视频 |
 | Grok Web | SSO | 内置并按等级过滤 | Responses、Chat、Messages、stored response、图片、图片编辑、视频 |
-| Grok Console | SSO | 内置 | 无状态 Responses、Chat、Messages、图片、图片编辑、视频 |
+| Grok Console | SSO | 内置 | 无状态 Responses、Chat、Messages、图片、图片编辑、视频、TTS、STT、Realtime |
 
-三个 Provider 独立维护凭据、额度、健康、冷却、并发与模型能力。故障切换不会跨 Provider 混用账号状态。
+三个 Provider 独立维护凭据、额度、健康、冷却、并发与模型能力。单条路由的账号重试始终留在当前 Provider；当同一对外模型名主动聚合了多条路由时，网关可选择另一条可调度路由，但不会跨 Provider 混用账号状态。
 
 ## 快速部署
 
@@ -258,14 +258,14 @@ Web 使用内置目录并按账号等级过滤；更高等级继承低等级模�
 | `grok-chat-auto` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-expert` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-heavy` | 对话 | Heavy | Chat Completions、Responses、Messages |
-| `grok-imagine-image-2.0` | 图像、图像编辑 | Basic | Images Generations、Images Edits |
-| `grok-imagine-image-quality-2.0` | 图像、图像编辑 | Basic | Images Generations、Images Edits |
+| `grok-imagine-image-lite` | 图像 | Basic | Images Generations |
+| `grok-imagine-image-quality-lite` | 图像 | Basic | Images Generations |
 | `grok-imagine-image-edit` | 图像编辑 | Super | Images Edits |
 | `grok-imagine-video` | 视频 | Super | Videos |
 
 ### Grok Console
 
-Console 使用当前版本内置目录。对话为无状态转发；图片和视频使用 xAI 标准资源接口。
+Console 使用当前版本内置目录。对话为无状态转发；图片、视频和语音使用 xAI 标准资源接口。
 
 | 模型 | 类型 | 网关接口能力 |
 | :-- | :-- | :-- |
@@ -277,7 +277,11 @@ Console 使用当前版本内置目录。对话为无状态转发；图片和视
 | `grok-build-0.1` | 对话 | Chat Completions、Responses、Messages |
 | `grok-imagine-image` | 图像、图像编辑 | Images Generations、Images Edits |
 | `grok-imagine-image-quality` | 图像、图像编辑 | Images Generations、Images Edits |
+| `grok-imagine-image-2.0` | 图像、图像编辑 | Images Generations、Images Edits |
 | `grok-imagine-video` | 视频 | Videos |
+| `grok-imagine-video-1.5` | 视频 | 视频生成，包括 Free Console 账号 |
+| `grok-voice-latest`、`grok-voice-think-fast-2.0`、`grok-voice-think-fast-1.0` | 语音 | TTS 和 Realtime WebSocket 代理 |
+| `grok-stt` | 语音 | STT 和 OpenAI 兼容的音频转录 |
 
 同一个 Console 图片模型的生成与编辑能力会聚合展示为一条逻辑模型，不需要创建 `-edit` 模型副本。
 
@@ -310,9 +314,14 @@ Authorization: Bearer g2a_xxx_xxx
 | `POST` | `/v1/messages` | Anthropic Messages JSON/SSE |
 | `POST` | `/v1/images/generations`、`/v1/images/edits` | 生成或编辑图片 |
 | `POST`、`GET` | `/v1/videos/*` | 创建和查询视频任务 |
+| `POST` | `/v1/tts`、`/v1/audio/speech`、`/v1/audio/tasks` | 语音合成 |
+| `POST` | `/v1/stt`、`/v1/audio/transcriptions` | 音频转录 |
+| `GET` | `/v1/stt`、`/v1/realtime` | 代理语音 WebSocket 会话 |
 | `GET` | `/v1/media/images/{asset_id}`、`/v1/media/videos/{asset_id}` | 读取归档媒体 |
 
 stored response 和 compact 取决于最终 Provider。登录管理端后可在 `/docs` 查看当前模型与调用示例；仅在 `server.swaggerEnabled: true` 时提供 Swagger。
+
+`/v1/audio/transcriptions` 支持 `json`（默认）、`verbose_json` 和 `text`。视频编辑与延长按实际路由校验 Console `grok-imagine-video`，对外模型名仍可自定义。金额计费以网关能够可靠测量的官方计价单位为准：TTS 按输入字符数预留并结算，REST 与流式 STT 按成功响应返回的实际音频时长结算。STT 时长只能在请求完成后获得，因此并发中的请求可能使有限额 Key 短暂超过金额上限。Realtime、视频编辑与延长，以及未收录官方定价的自定义路由当前记录为“未计费”，保持可调用且不消耗金额额度。
 
 客户端密钥支持模型白名单，以及可选的 RPM、并发、用量和截止日期限制。
 

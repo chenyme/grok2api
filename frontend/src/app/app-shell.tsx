@@ -70,9 +70,7 @@ const documentation = [
       { href: "/docs/voice/audio-transcriptions", label: "OpenAI Transcriptions", method: "POST" },
       { href: "/docs/voice/voices", label: "List Voices", method: "GET" },
       { href: "/docs/voice/stt", label: "Speech to Text", method: "POST" },
-      { href: "/docs/voice/realtime-secrets", label: "Realtime Secrets", method: "POST" },
       { href: "/docs/voice/realtime", label: "Realtime WebSocket", method: "GET" },
-      { href: "/docs/voice/custom-voices", label: "Custom Voices", method: "POST" },
     ],
   },
 ] as const;

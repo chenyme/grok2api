@@ -32,7 +32,7 @@ func TestConsoleRoutesUseStableProviderNamespace(t *testing.T) {
 	if seen["Console/grok-4.3"] == nil {
 		t.Fatal("canonical Console/grok-4.3 route is missing")
 	}
-	for _, modelID := range []string{"Console/grok-imagine-image-quality-2.0", "Console/grok-imagine-image-2.0"} {
+	for _, modelID := range []string{"Console/grok-imagine-image", "Console/grok-imagine-image-quality", "Console/grok-imagine-image-2.0"} {
 		if !seen[modelID]["image"] || !seen[modelID]["image_edit"] {
 			t.Fatalf("Console image route capabilities for %s = %#v", modelID, seen[modelID])
 		}

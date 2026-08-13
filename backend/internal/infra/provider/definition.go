@@ -58,7 +58,6 @@ type MediaSurface struct {
 	TTS             bool
 	STT             bool
 	Realtime        bool
-	CustomVoices    bool
 }
 
 // CredentialSurface 描述号池凭据的接入和维护方式。

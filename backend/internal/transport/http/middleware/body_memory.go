@@ -100,14 +100,10 @@ func inferenceBodyOperation(path string) string {
 		return "stt"
 	case "/v1/audio/speech", "/v1/audio/tasks":
 		return "tts"
-	case "/v1/audio/transcriptions", "/v1/audio/translations":
+	case "/v1/audio/transcriptions":
 		return "stt"
-	case "/v1/realtime/client_secrets":
-		return "realtime_client_secret"
 	case "/v1/realtime":
 		return "realtime_websocket"
-	case "/v1/custom-voices":
-		return "custom_voices"
 	case "/v1/videos/generations":
 		return "video_generation"
 	case "/v1/videos/edits":

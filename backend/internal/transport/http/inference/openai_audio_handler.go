@@ -3,11 +3,9 @@ package inference
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
-	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/gin-gonic/gin"
 )
 
@@ -70,24 +68,10 @@ func (h *Handler) handleOpenAISpeech(c *gin.Context) {
 		voiceID = mapped
 	}
 
-	format := provider.TTSOutputFormat{}
-	if len(bytesTrim(request.OutputFormat)) > 0 {
-		var raw struct {
-			Codec      string `json:"codec"`
-			SampleRate *int   `json:"sample_rate"`
-			BitRate    *int   `json:"bit_rate"`
-		}
-		if err := json.Unmarshal(request.OutputFormat, &raw); err != nil {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "output_format 无效")
-			return
-		}
-		format.Codec = strings.TrimSpace(raw.Codec)
-		if raw.SampleRate != nil {
-			format.SampleRate = *raw.SampleRate
-		}
-		if raw.BitRate != nil {
-			format.BitRate = *raw.BitRate
-		}
+	format, err := parseTTSOutputFormat(request.OutputFormat)
+	if err != nil {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", err.Error())
+		return
 	}
 	if format.Codec == "" {
 		if codec := mapOpenAIResponseFormat(request.ResponseFormat); codec != "" {
@@ -100,23 +84,15 @@ func (h *Handler) handleOpenAISpeech(c *gin.Context) {
 		}
 	}
 
-	speed := 0.0
-	if request.Speed != nil {
-		if *request.Speed < 0.25 || *request.Speed > 4.0 {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", "speed 必须在 0.25 到 4.0 之间")
-			return
-		}
-		speed = *request.Speed
+	speed, err := parseTTSSpeed(request.Speed)
+	if err != nil {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", err.Error())
+		return
 	}
-	optimize := 0
-	if len(bytesTrim(request.OptimizeStreamingLatency)) > 0 {
-		var asString string
-		var asNumber float64
-		if json.Unmarshal(request.OptimizeStreamingLatency, &asString) == nil {
-			optimize, _ = strconv.Atoi(strings.TrimSpace(asString))
-		} else if json.Unmarshal(request.OptimizeStreamingLatency, &asNumber) == nil {
-			optimize = int(asNumber)
-		}
+	optimize, err := parseOptimizeStreamingLatency(request.OptimizeStreamingLatency)
+	if err != nil {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_parameter", err.Error())
+		return
 	}
 
 	clientKey, requestID, ok := requestIdentity(c)
@@ -150,9 +126,7 @@ func (h *Handler) handleOpenAISpeech(c *gin.Context) {
 }
 
 func (h *Handler) transcribeOpenAIAudio(c *gin.Context) {
-	// OpenAI uses multipart form field "file" plus optional model/language/prompt.
-	// Reuse the existing STT handler which already accepts multipart and JSON.
-	h.transcribeSpeech(c)
+	h.transcribeSpeechRequest(c, true)
 }
 
 func mapOpenAIResponseFormat(value string) string {

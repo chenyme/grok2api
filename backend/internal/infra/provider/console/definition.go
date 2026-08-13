@@ -31,7 +31,7 @@ func (a *Adapter) Definition() provider.Definition {
 		},
 		Media: provider.MediaSurface{
 			ImageGeneration: true, ImageEdit: true, VideoGeneration: true,
-			TTS: true, STT: true, Realtime: true, CustomVoices: true,
+			TTS: true, STT: true, Realtime: true,
 		},
 		// Console shares the browser/clearance surface with Web. A 403 is
 		// therefore normally an egress challenge, not proof that the SSO

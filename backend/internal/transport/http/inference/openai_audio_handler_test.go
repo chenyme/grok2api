@@ -1,6 +1,7 @@
 package inference
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,23 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestStreamingSTTDurationAcceptsOnlyCompletedFiniteEvents(t *testing.T) {
+	duration, ok := streamingSTTDuration([]byte(`{"type":"transcript.done","duration":3.45,"text":"hello"}`))
+	if !ok || math.Abs(duration-3.45) > 1e-9 {
+		t.Fatalf("completed duration = %v, ok = %t", duration, ok)
+	}
+	for _, payload := range [][]byte{
+		[]byte(`{"type":"transcript.delta","duration":3.45}`),
+		[]byte(`{"type":"transcript.done","duration":0}`),
+		[]byte(`{"type":"transcript.done","duration":"3.45"}`),
+		[]byte(`not-json`),
+	} {
+		if duration, ok := streamingSTTDuration(payload); ok || duration != 0 {
+			t.Fatalf("invalid payload %q produced duration %v, ok = %t", payload, duration, ok)
+		}
+	}
+}
 
 func TestOpenAIAudioSpeechValidatesAndMapsFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -58,7 +76,51 @@ func TestOpenAIAudioSpeechValidatesAndMapsFields(t *testing.T) {
 	if transcriptionRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("openai transcription status=%d body=%s", transcriptionRecorder.Code, transcriptionRecorder.Body.String())
 	}
+
+	badTranscriptionFormat := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(`{"model":"grok-stt","url":"https://example.com/a.wav","response_format":"srt"}`))
+	badTranscriptionFormat.Header.Set("Content-Type", "application/json")
+	badTranscriptionRecorder := httptest.NewRecorder()
+	router.ServeHTTP(badTranscriptionRecorder, badTranscriptionFormat)
+	if badTranscriptionRecorder.Code != http.StatusBadRequest || !strings.Contains(badTranscriptionRecorder.Body.String(), "response_format") {
+		t.Fatalf("bad transcription format status=%d body=%s", badTranscriptionRecorder.Code, badTranscriptionRecorder.Body.String())
+	}
+
+	unsupportedPrompt := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(`{"model":"grok-stt","url":"https://example.com/a.wav","prompt":"special spelling"}`))
+	unsupportedPrompt.Header.Set("Content-Type", "application/json")
+	unsupportedPromptRecorder := httptest.NewRecorder()
+	router.ServeHTTP(unsupportedPromptRecorder, unsupportedPrompt)
+	if unsupportedPromptRecorder.Code != http.StatusBadRequest || !strings.Contains(unsupportedPromptRecorder.Body.String(), "prompt") {
+		t.Fatalf("unsupported prompt status=%d body=%s", unsupportedPromptRecorder.Code, unsupportedPromptRecorder.Body.String())
+	}
+
+	translation := httptest.NewRequest(http.MethodPost, "/v1/audio/translations", strings.NewReader(`{"model":"grok-stt","url":"https://example.com/a.wav"}`))
+	translation.Header.Set("Content-Type", "application/json")
+	translationRecorder := httptest.NewRecorder()
+	router.ServeHTTP(translationRecorder, translation)
+	if translationRecorder.Code != http.StatusNotFound {
+		t.Fatalf("unsupported translation status=%d body=%s", translationRecorder.Code, translationRecorder.Body.String())
+	}
 }
+
+func TestTTSOptionValidationIsSharedByNativeAndOpenAIHandlers(t *testing.T) {
+	if _, err := parseTTSSpeed(float64Pointer(0.2)); err == nil {
+		t.Fatal("invalid speed was accepted")
+	}
+	if _, err := parseOptimizeStreamingLatency([]byte(`2.5`)); err == nil {
+		t.Fatal("fractional optimize_streaming_latency was accepted")
+	}
+	if _, err := parseOptimizeStreamingLatency([]byte(`"invalid"`)); err == nil {
+		t.Fatal("invalid optimize_streaming_latency was accepted")
+	}
+	if _, err := parseTTSOutputFormat([]byte(`{"codec":"mp3","sample_rate":0}`)); err == nil {
+		t.Fatal("invalid sample rate was accepted")
+	}
+	if value, err := parseOptimizeStreamingLatency([]byte(`"4"`)); err != nil || value != 4 {
+		t.Fatalf("valid optimize_streaming_latency = %d, %v", value, err)
+	}
+}
+
+func float64Pointer(value float64) *float64 { return &value }
 
 func TestMapOpenAIVoiceAndFormat(t *testing.T) {
 	if got := mapOpenAIVoiceID("alloy"); got != "ara" {

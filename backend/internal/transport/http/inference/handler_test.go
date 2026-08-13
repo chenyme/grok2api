@@ -428,6 +428,11 @@ func TestVideoGenerationResponseMatchesOfficialPollingShape(t *testing.T) {
 	if done["status"] != "done" || done["progress"] != 100 || !ok || video["url"] != "https://assets.grok.com/video.mp4" || video["duration"] != 8 || video["respect_moderation"] != true {
 		t.Fatalf("done response=%#v", done)
 	}
+	extended := videoGenerationResponse(mediadomain.Job{Operation: mediadomain.VideoOperationExtend, Status: mediadomain.StatusCompleted, Seconds: 6, UpstreamURL: "https://assets.grok.com/extended.mp4"})
+	extendedVideo, ok := extended["video"].(gin.H)
+	if !ok || extendedVideo["duration"] != nil {
+		t.Fatalf("extended response exposes requested extension as output duration: %#v", extended)
+	}
 	failed := videoGenerationResponse(mediadomain.Job{Status: mediadomain.StatusFailed, ErrorCode: "account_unavailable", ErrorMessage: "try later"})
 	errorValue, ok := failed["error"].(gin.H)
 	if failed["status"] != "failed" || !ok || errorValue["code"] != "service_unavailable" || failed["model"] != nil || failed["progress"] != nil {
@@ -447,6 +452,7 @@ func TestImageGenerationEndpointValidatesXAIContractBeforeRouting(t *testing.T) 
 	}{
 		{name: "zero n", body: `{"model":"grok-imagine-image","prompt":"test","n":0}`, want: "n 必须在 1 到 10 之间"},
 		{name: "large n", body: `{"model":"grok-imagine-image","prompt":"test","n":11}`, want: "n 必须在 1 到 10 之间"},
+		{name: "invalid quality", body: `{"model":"grok-imagine-image-2.0","prompt":"test","quality":"high"}`, want: "quality 必须是 low 或 medium"},
 		{name: "storage options", body: `{"model":"grok-imagine-image","prompt":"test","storage_options":{"filename":"test.jpg"}}`, want: "不支持 storage_options"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -503,6 +509,17 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	router.ServeHTTP(invalidResolutionRecorder, invalidResolution)
 	if invalidResolutionRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidResolutionRecorder.Body.String(), "resolution 必须是 1k 或 2k") {
 		t.Fatalf("invalid resolution status=%d body=%s", invalidResolutionRecorder.Code, invalidResolutionRecorder.Body.String())
+	}
+
+	invalidQuality := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
+		"model":"grok-imagine-image-2.0","prompt":"test","quality":"high",
+		"image":{"url":"https://example.com/input.png"}
+	}`))
+	invalidQuality.Header.Set("Content-Type", "application/json")
+	invalidQualityRecorder := httptest.NewRecorder()
+	router.ServeHTTP(invalidQualityRecorder, invalidQuality)
+	if invalidQualityRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidQualityRecorder.Body.String(), "quality 必须是 low 或 medium") {
+		t.Fatalf("invalid quality status=%d body=%s", invalidQualityRecorder.Code, invalidQualityRecorder.Body.String())
 	}
 
 	validBatchCount := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
@@ -1028,7 +1045,6 @@ func TestSelectionErrorResponseDistinguishesCoolingAndSaturation(t *testing.T) {
 	}
 }
 
-
 func TestReferenceToVideoRequestValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := &Handler{maxBodyBytes: 1 << 20}
@@ -1082,7 +1098,6 @@ func TestReferenceToVideoRequestValidation(t *testing.T) {
 		t.Fatalf("valid r2v status=%d body=%s", validRec.Code, validRec.Body.String())
 	}
 }
-
 func TestEditAndExtendVideoRequestValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := &Handler{maxBodyBytes: 1 << 20}
@@ -1090,17 +1105,17 @@ func TestEditAndExtendVideoRequestValidation(t *testing.T) {
 	group := router.Group("/v1")
 	handler.Register(group)
 
-	// unsupported model on edit
-	req := httptest.NewRequest(http.MethodPost, "/v1/videos/edits", strings.NewReader(`{"model":"grok-imagine-video-1.5","prompt":"x","video":{"url":"https://example.com/a.mp4"}}`))
-	req.Header.Set("Content-Type", "application/json")
+	// Model compatibility is resolved from the selected upstream route, not the
+	// caller-controlled public model name.
 	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
+	context, _ := gin.CreateTestContext(rec)
+	writeGatewayError(context, gateway.ErrVideoOperationUnsupported)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("edit unsupported model status = %d body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("unsupported video route status = %d body = %s", rec.Code, rec.Body.String())
 	}
 
 	// missing video on extend
-	req = httptest.NewRequest(http.MethodPost, "/v1/videos/extensions", strings.NewReader(`{"model":"grok-imagine-video","prompt":"x","duration":4}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos/extensions", strings.NewReader(`{"model":"grok-imagine-video","prompt":"x","duration":4}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)

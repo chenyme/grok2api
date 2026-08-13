@@ -37,7 +37,7 @@ import (
 
 func TestCatalogMatchesSupportedSurface(t *testing.T) {
 	values := Catalog()
-	if len(values) != 10 {
+	if len(values) != 8 {
 		t.Fatalf("catalog size = %d", len(values))
 	}
 	publicIDs := make(map[string]struct{}, len(values))
@@ -50,23 +50,21 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 		routeKeys[routeKey] = struct{}{}
 		publicIDs[value.PublicID] = struct{}{}
 	}
-	for _, required := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-2.0", "grok-imagine-image-quality-2.0", "grok-imagine-image-edit", "grok-imagine-video"} {
+	for _, required := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-edit", "grok-imagine-video"} {
 		if _, exists := publicIDs[required]; !exists {
 			t.Fatalf("missing supported model: %s", required)
 		}
 	}
 	for _, required := range []string{
-		"grok-imagine-image-2.0|image",
-		"grok-imagine-image-2.0|image_edit",
-		"grok-imagine-image-quality-2.0|image",
-		"grok-imagine-image-quality-2.0|image_edit",
+		"grok-imagine-image-lite|image",
+		"grok-imagine-image-quality-lite|image",
 		"grok-imagine-image-edit|image_edit",
 	} {
 		if _, exists := routeKeys[required]; !exists {
 			t.Fatalf("missing supported route: %s", required)
 		}
 	}
-	for _, removed := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
+	for _, removed := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-2.0", "grok-imagine-image-quality-2.0", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
 		if _, exists := publicIDs[removed]; exists {
 			t.Fatalf("obsolete image model remains: %s", removed)
 		}
@@ -75,8 +73,8 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 
 func TestWebImagePublicNamesPreserveGatewayModels(t *testing.T) {
 	tests := map[string]string{
-		"grok-imagine-image":         "grok-imagine-image-2.0",
-		"grok-imagine-image-quality": "grok-imagine-image-quality-2.0",
+		"grok-imagine-image":         "grok-imagine-image-lite",
+		"grok-imagine-image-quality": "grok-imagine-image-quality-lite",
 	}
 	for upstreamModel, publicID := range tests {
 		spec, ok := Resolve(upstreamModel)

@@ -19,21 +19,15 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
-	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
 const (
-	consoleVoiceBodyLimit   = 64 << 20
-	consoleVoiceAudioLimit  = 512 << 20
-	consoleCustomVoiceLimit = 32 << 20
+	consoleVoiceBodyLimit  = 64 << 20
+	consoleVoiceAudioLimit = 128 << 20
 )
 
 func (a *Adapter) SynthesizeSpeech(ctx context.Context, request provider.TTSRequest) (provider.TTSResult, error) {
-	if model := strings.TrimSpace(request.Model); model != "" && !ResolveMedia(model, modeldomain.CapabilityTTS) {
-		// Official REST TTS is not strictly bound to a single model id; catalog
-		// models remain preferred when callers supply one.
-	}
 	text := strings.TrimSpace(request.Text)
 	if text == "" {
 		return provider.TTSResult{}, invalidConsoleVoiceError("text 不能为空")
@@ -269,299 +263,6 @@ func (a *Adapter) TranscribeSpeech(ctx context.Context, request provider.STTRequ
 	return result, nil
 }
 
-func (a *Adapter) CreateRealtimeClientSecret(ctx context.Context, request provider.RealtimeClientSecretRequest) (provider.RealtimeClientSecretResult, error) {
-	payload := map[string]any{}
-	if request.ExpiresAfter > 0 {
-		payload["expires_after"] = map[string]any{"seconds": request.ExpiresAfter}
-	}
-	if len(bytes.TrimSpace(request.SessionJSON)) > 0 {
-		var session any
-		if err := json.Unmarshal(request.SessionJSON, &session); err != nil {
-			return provider.RealtimeClientSecretResult{}, invalidConsoleVoiceError("session 必须是合法 JSON 对象")
-		}
-		payload["session"] = session
-	} else if modelName := strings.TrimSpace(request.Model); modelName != "" {
-		payload["session"] = map[string]any{"model": modelName}
-	}
-	response, err := a.forwardConsoleVoice(ctx, request.Credential, http.MethodPost, "/realtime/client_secrets", payload, "application/json", "application/json")
-	if err != nil {
-		return provider.RealtimeClientSecretResult{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return provider.RealtimeClientSecretResult{}, consoleVoiceResponseError(response)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, consoleVoiceBodyLimit+1))
-	if err != nil {
-		return provider.RealtimeClientSecretResult{}, err
-	}
-	var payloadResult struct {
-		Value     string `json:"value"`
-		ExpiresAt int64  `json:"expires_at"`
-	}
-	if err := json.Unmarshal(data, &payloadResult); err != nil {
-		return provider.RealtimeClientSecretResult{}, fmt.Errorf("解析 Console realtime client secret 失败: %w", err)
-	}
-	if strings.TrimSpace(payloadResult.Value) == "" {
-		return provider.RealtimeClientSecretResult{}, errors.New("Console realtime client secret 响应缺少 value")
-	}
-	return provider.RealtimeClientSecretResult{Value: payloadResult.Value, ExpiresAt: payloadResult.ExpiresAt, RawJSON: append([]byte(nil), data...)}, nil
-}
-
-func (a *Adapter) RealtimeWebSocketURL(modelName string, query string) (string, error) {
-	base := strings.TrimRight(strings.TrimSpace(a.config().BaseURL), "/")
-	if base == "" {
-		return "", errors.New("Console BaseURL 未配置")
-	}
-	endpoint, err := url.Parse(consoleV1Endpoint(base, "/realtime"))
-	if err != nil {
-		return "", err
-	}
-	switch strings.ToLower(endpoint.Scheme) {
-	case "https":
-		endpoint.Scheme = "wss"
-	case "http":
-		endpoint.Scheme = "ws"
-	case "wss", "ws":
-	default:
-		return "", fmt.Errorf("不支持的 Console realtime scheme: %s", endpoint.Scheme)
-	}
-	values := endpoint.Query()
-	if modelName = strings.TrimSpace(modelName); modelName != "" {
-		values.Set("model", modelName)
-	}
-	if extra := strings.TrimSpace(query); extra != "" {
-		extraValues, err := url.ParseQuery(strings.TrimPrefix(extra, "?"))
-		if err != nil {
-			return "", invalidConsoleVoiceError("realtime query 无效")
-		}
-		for key, items := range extraValues {
-			for _, item := range items {
-				values.Add(key, item)
-			}
-		}
-	}
-	endpoint.RawQuery = values.Encode()
-	return endpoint.String(), nil
-}
-
-func (a *Adapter) CreateCustomVoice(ctx context.Context, request provider.CustomVoiceCreateRequest) (provider.CustomVoice, error) {
-	if strings.TrimSpace(request.Name) == "" {
-		return provider.CustomVoice{}, invalidConsoleVoiceError("name 不能为空")
-	}
-	if len(request.FileData) == 0 {
-		return provider.CustomVoice{}, invalidConsoleVoiceError("自定义音色必须提供参考音频")
-	}
-	if len(request.FileData) > consoleCustomVoiceLimit {
-		return provider.CustomVoice{}, invalidConsoleVoiceError("参考音频不能超过 32 MiB")
-	}
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	_ = writer.WriteField("name", strings.TrimSpace(request.Name))
-	for key, value := range map[string]string{"language": request.Language, "gender": request.Gender, "tone": request.Tone, "use_case": request.UseCase} {
-		if strings.TrimSpace(value) != "" {
-			_ = writer.WriteField(key, strings.TrimSpace(value))
-		}
-	}
-	fileName := strings.TrimSpace(request.FileName)
-	if fileName == "" {
-		fileName = "reference.wav"
-	}
-	part, err := writer.CreateFormFile("file", path.Base(fileName))
-	if err != nil {
-		return provider.CustomVoice{}, err
-	}
-	if _, err := part.Write(request.FileData); err != nil {
-		return provider.CustomVoice{}, err
-	}
-	if err := writer.Close(); err != nil {
-		return provider.CustomVoice{}, err
-	}
-	response, err := a.forwardConsoleVoiceBytes(ctx, request.Credential, http.MethodPost, "/custom-voices", body.Bytes(), writer.FormDataContentType(), "application/json")
-	if err != nil {
-		return provider.CustomVoice{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return provider.CustomVoice{}, consoleVoiceResponseError(response)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, consoleVoiceBodyLimit+1))
-	if err != nil {
-		return provider.CustomVoice{}, err
-	}
-	return parseCustomVoice(data)
-}
-
-func (a *Adapter) ListCustomVoices(ctx context.Context, credential account.Credential, limit int, paginationToken string) ([]provider.CustomVoice, string, error) {
-	values := url.Values{}
-	if limit > 0 {
-		values.Set("limit", strconv.Itoa(limit))
-	}
-	if token := strings.TrimSpace(paginationToken); token != "" {
-		values.Set("pagination_token", token)
-	}
-	pathValue := "/custom-voices"
-	if encoded := values.Encode(); encoded != "" {
-		pathValue += "?" + encoded
-	}
-	response, err := a.forwardConsoleVoice(ctx, credential, http.MethodGet, pathValue, nil, "", "application/json")
-	if err != nil {
-		return nil, "", err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, "", consoleVoiceResponseError(response)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, consoleVoiceBodyLimit+1))
-	if err != nil {
-		return nil, "", err
-	}
-	var payload struct {
-		Voices              []json.RawMessage `json:"voices"`
-		PaginationToken     string            `json:"pagination_token"`
-		NextPaginationToken string            `json:"next_pagination_token"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, "", fmt.Errorf("解析 Console custom voices 失败: %w", err)
-	}
-	result := make([]provider.CustomVoice, 0, len(payload.Voices))
-	for _, raw := range payload.Voices {
-		item, err := parseCustomVoice(raw)
-		if err != nil {
-			return nil, "", err
-		}
-		result = append(result, item)
-	}
-	next := strings.TrimSpace(payload.NextPaginationToken)
-	if next == "" {
-		next = strings.TrimSpace(payload.PaginationToken)
-	}
-	return result, next, nil
-}
-
-func (a *Adapter) GetCustomVoice(ctx context.Context, credential account.Credential, voiceID string) (provider.CustomVoice, error) {
-	voiceID = strings.TrimSpace(voiceID)
-	if voiceID == "" {
-		return provider.CustomVoice{}, invalidConsoleVoiceError("voice_id 不能为空")
-	}
-	response, err := a.forwardConsoleVoice(ctx, credential, http.MethodGet, "/custom-voices/"+url.PathEscape(voiceID), nil, "", "application/json")
-	if err != nil {
-		return provider.CustomVoice{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return provider.CustomVoice{}, consoleVoiceResponseError(response)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, consoleVoiceBodyLimit+1))
-	if err != nil {
-		return provider.CustomVoice{}, err
-	}
-	return parseCustomVoice(data)
-}
-
-func (a *Adapter) UpdateCustomVoice(ctx context.Context, request provider.CustomVoiceUpdateRequest) (provider.CustomVoice, error) {
-	voiceID := strings.TrimSpace(request.VoiceID)
-	if voiceID == "" {
-		return provider.CustomVoice{}, invalidConsoleVoiceError("voice_id 不能为空")
-	}
-	payload := map[string]any{}
-	set := func(key string, value *string) {
-		if value != nil {
-			payload[key] = strings.TrimSpace(*value)
-		}
-	}
-	set("name", request.Name)
-	set("language", request.Language)
-	set("gender", request.Gender)
-	set("tone", request.Tone)
-	set("use_case", request.UseCase)
-	if len(payload) == 0 {
-		return provider.CustomVoice{}, invalidConsoleVoiceError("至少提供一个可更新字段")
-	}
-	response, err := a.forwardConsoleVoice(ctx, request.Credential, http.MethodPatch, "/custom-voices/"+url.PathEscape(voiceID), payload, "application/json", "application/json")
-	if err != nil {
-		return provider.CustomVoice{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return provider.CustomVoice{}, consoleVoiceResponseError(response)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, consoleVoiceBodyLimit+1))
-	if err != nil {
-		return provider.CustomVoice{}, err
-	}
-	return parseCustomVoice(data)
-}
-
-func (a *Adapter) DeleteCustomVoice(ctx context.Context, credential account.Credential, voiceID string) error {
-	voiceID = strings.TrimSpace(voiceID)
-	if voiceID == "" {
-		return invalidConsoleVoiceError("voice_id 不能为空")
-	}
-	response, err := a.forwardConsoleVoice(ctx, credential, http.MethodDelete, "/custom-voices/"+url.PathEscape(voiceID), nil, "", "application/json")
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return consoleVoiceResponseError(response)
-	}
-	return nil
-}
-
-func (a *Adapter) GetCustomVoiceAudio(ctx context.Context, credential account.Credential, voiceID string) ([]byte, string, error) {
-	voiceID = strings.TrimSpace(voiceID)
-	if voiceID == "" {
-		return nil, "", invalidConsoleVoiceError("voice_id 不能为空")
-	}
-	response, err := a.forwardConsoleVoice(ctx, credential, http.MethodGet, "/custom-voices/"+url.PathEscape(voiceID)+"/audio", nil, "", "*/*")
-	if err != nil {
-		return nil, "", err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, "", consoleVoiceResponseError(response)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, consoleCustomVoiceLimit+1))
-	if err != nil {
-		return nil, "", err
-	}
-	if len(data) > consoleCustomVoiceLimit {
-		return nil, "", errors.New("Console custom voice audio 超过安全上限")
-	}
-	return data, firstNonEmpty(response.Header.Get("Content-Type"), "audio/mpeg"), nil
-}
-
-func (a *Adapter) ProxyVoice(ctx context.Context, request provider.VoiceProxyRequest) (*provider.Response, error) {
-	method := strings.ToUpper(strings.TrimSpace(request.Method))
-	if method == "" {
-		method = http.MethodGet
-	}
-	pathValue := strings.TrimSpace(request.Path)
-	if pathValue == "" || strings.Contains(pathValue, "://") || strings.Contains(pathValue, "..") {
-		return invalidConsoleMediaRequest("voice path 无效"), nil
-	}
-	if !strings.HasPrefix(pathValue, "/") {
-		pathValue = "/" + pathValue
-	}
-	if query := strings.TrimSpace(request.Query); query != "" {
-		if strings.Contains(pathValue, "?") {
-			pathValue += "&" + strings.TrimPrefix(query, "?")
-		} else {
-			pathValue += "?" + strings.TrimPrefix(query, "?")
-		}
-	}
-	accept := strings.TrimSpace(request.Accept)
-	if accept == "" {
-		accept = "*/*"
-	}
-	response, err := a.forwardConsoleVoiceBytes(ctx, request.Credential, method, pathValue, request.Body, request.ContentType, accept)
-	if err != nil {
-		return nil, err
-	}
-	return responseResult(response, response.Body), nil
-}
-
 func (a *Adapter) forwardConsoleVoice(ctx context.Context, credential account.Credential, method, pathValue string, payload any, contentType, accept string) (*http.Response, error) {
 	var body []byte
 	var err error
@@ -697,43 +398,13 @@ func parseSTTResult(data []byte) (provider.STTResult, error) {
 	return result, nil
 }
 
-func parseCustomVoice(data []byte) (provider.CustomVoice, error) {
-	var payload struct {
-		VoiceID   string `json:"voice_id"`
-		Name      string `json:"name"`
-		Language  string `json:"language"`
-		Gender    string `json:"gender"`
-		Tone      string `json:"tone"`
-		UseCase   string `json:"use_case"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return provider.CustomVoice{}, fmt.Errorf("解析 Console custom voice 失败: %w", err)
-	}
-	if strings.TrimSpace(payload.VoiceID) == "" {
-		return provider.CustomVoice{}, errors.New("Console custom voice 响应缺少 voice_id")
-	}
-	return provider.CustomVoice{
-		VoiceID: strings.TrimSpace(payload.VoiceID), Name: strings.TrimSpace(payload.Name), Language: strings.TrimSpace(payload.Language),
-		Gender: strings.TrimSpace(payload.Gender), Tone: strings.TrimSpace(payload.Tone), UseCase: strings.TrimSpace(payload.UseCase),
-		CreatedAt: strings.TrimSpace(payload.CreatedAt), UpdatedAt: strings.TrimSpace(payload.UpdatedAt), RawJSON: append([]byte(nil), data...),
-	}, nil
-}
-
 func consoleVoiceResponseError(response *http.Response) error {
 	data, _, err := provider.ReadDiagnosticBody(response.Body)
 	if err != nil {
 		return err
 	}
-	summary := strings.TrimSpace(string(data))
-	if summary == "" {
-		summary = http.StatusText(response.StatusCode)
-	}
-	if len(summary) > 2048 {
-		summary = summary[:2048]
-	}
-	return &consoleMediaUpstreamError{status: response.StatusCode, summary: summary}
+	retryAfter := parseConsoleRetryAfterHeader(response.Header.Get("Retry-After"), time.Now().UTC())
+	return newConsoleMediaUpstreamError(response.StatusCode, data, retryAfter)
 }
 
 func invalidConsoleVoiceError(message string) error {

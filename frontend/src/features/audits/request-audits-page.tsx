@@ -407,7 +407,7 @@ function EgressValue({ audit }: { audit: AuditDTO }) {
 function BillingValue({ audit }: { audit: AuditDTO }) {
   const { t, i18n } = useTranslation();
   const billing = audit.billing ?? fallbackBillingBreakdown(audit);
-  const amount = billing ? formatUSDCost(billing.totalInUsdTicks, 2) : "-";
+  const amount = billing ? formatUSDCost(billing.totalInUsdTicks, 2) : t("audits.unbilled");
   return (
     <div className="max-w-full text-left">
       {billing ? (
@@ -417,7 +417,7 @@ function BillingValue({ audit }: { audit: AuditDTO }) {
             <BillingBreakdown billing={billing} locale={i18n.language} />
           </TooltipContent>
         </Tooltip>
-      ) : <span className="block text-xs text-muted-foreground">-</span>}
+      ) : <span className="block whitespace-nowrap text-xs text-muted-foreground">{amount}</span>}
       {audit.numServerSideToolsUsed > 0 ? (
         <span className="mt-0.5 block whitespace-nowrap text-[10px] text-muted-foreground">
           {t("audits.serverTools", { count: audit.numServerSideToolsUsed })}

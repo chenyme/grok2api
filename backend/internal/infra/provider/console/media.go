@@ -35,9 +35,18 @@ const (
 )
 
 type consoleMediaUpstreamError struct {
-	status  int
-	summary string
+	status        int
+	summary       string
+	retryAfter    time.Duration
+	requestScoped bool
 }
+
+var (
+	_ provider.HTTPStatusError    = (*consoleMediaUpstreamError)(nil)
+	_ provider.RetryAfterError    = (*consoleMediaUpstreamError)(nil)
+	_ provider.RequestScopedError = (*consoleMediaUpstreamError)(nil)
+	_ provider.PublicMessageError = (*consoleMediaUpstreamError)(nil)
+)
 
 func (e *consoleMediaUpstreamError) Error() string {
 	if e == nil {
@@ -51,6 +60,24 @@ func (e *consoleMediaUpstreamError) HTTPStatusCode() int {
 		return 0
 	}
 	return e.status
+}
+
+func (e *consoleMediaUpstreamError) RetryAfterDuration() time.Duration {
+	if e == nil {
+		return 0
+	}
+	return e.retryAfter
+}
+
+func (e *consoleMediaUpstreamError) RequestScopedFailure() bool {
+	return e != nil && e.requestScoped
+}
+
+func (e *consoleMediaUpstreamError) PublicErrorMessage() string {
+	if e == nil {
+		return ""
+	}
+	return e.summary
 }
 
 func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
@@ -79,12 +106,19 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	if err != nil {
 		return invalidConsoleMediaRequest(err.Error()), nil
 	}
+	quality, err := normalizeConsoleImageQuality(request.Model, request.Quality)
+	if err != nil {
+		return invalidConsoleMediaRequest(err.Error()), nil
+	}
 	payload := map[string]any{"model": request.Model, "prompt": request.Prompt, "n": count, "response_format": format}
 	if ratio != "" {
 		payload["aspect_ratio"] = ratio
 	}
 	if resolution != "" {
 		payload["resolution"] = resolution
+	}
+	if quality != "" {
+		payload["quality"] = quality
 	}
 	return a.forwardConsoleMedia(ctx, request.Credential, "/images/generations", payload, format, count)
 }
@@ -118,6 +152,10 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	if err != nil {
 		return invalidConsoleMediaRequest(err.Error()), nil
 	}
+	quality, err := normalizeConsoleImageQuality(request.Model, request.Quality)
+	if err != nil {
+		return invalidConsoleMediaRequest(err.Error()), nil
+	}
 	images := make([]map[string]any, 0, len(request.ImageURLs))
 	for _, rawURL := range request.ImageURLs {
 		value := strings.TrimSpace(rawURL)
@@ -137,6 +175,9 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	}
 	if resolution != "" {
 		payload["resolution"] = resolution
+	}
+	if quality != "" {
+		payload["quality"] = quality
 	}
 	return a.forwardConsoleMedia(ctx, request.Credential, "/images/edits", payload, format, count)
 }
@@ -436,8 +477,15 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	} else if request.Duration != 0 {
 		return provider.VideoResult{}, errors.New("视频编辑不支持 duration")
 	}
-	if request.Resolution != "" && request.Resolution != "480p" && request.Resolution != "720p" {
-		return provider.VideoResult{}, fmt.Errorf("%s 仅支持 480p 或 720p", modelName)
+	if request.Resolution == "1080p" {
+		if modelName != "grok-imagine-video-1.5" {
+			return provider.VideoResult{}, fmt.Errorf("%s 不支持 1080p", modelName)
+		}
+		if len(request.ReferenceURLs) > 0 {
+			return provider.VideoResult{}, errors.New("reference_images 模式最高支持 720p")
+		}
+	} else if request.Resolution != "" && request.Resolution != "480p" && request.Resolution != "720p" {
+		return provider.VideoResult{}, fmt.Errorf("%s 仅支持 480p、720p 或 1080p", modelName)
 	}
 	payload := map[string]any{"model": modelName}
 	if operation == provider.VideoOperationGenerate || operation == provider.VideoOperationExtend {
@@ -608,7 +656,7 @@ func (a *Adapter) doConsoleVideoJSON(ctx context.Context, credential account.Cre
 		if !dpopRequired {
 			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
 		}
-		return nil, newConsoleMediaUpstreamError(response.StatusCode, data)
+		return nil, newConsoleMediaUpstreamError(response.StatusCode, data, parseConsoleRetryAfterHeader(response.Header.Get("Retry-After"), time.Now().UTC()))
 	}
 	a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
 	return data, nil
@@ -702,6 +750,20 @@ func normalizeConsoleImageResolution(value string) (string, error) {
 	return value, nil
 }
 
+func normalizeConsoleImageQuality(model, value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "", nil
+	}
+	if strings.TrimSpace(model) != "grok-imagine-image-2.0" {
+		return "", errors.New("quality 仅支持 grok-imagine-image-2.0")
+	}
+	if value != "low" && value != "medium" {
+		return "", errors.New("quality 必须是 low 或 medium")
+	}
+	return value, nil
+}
+
 func resolveConsoleImageAspectRatio(aspectRatio, size string) (string, error) {
 	value := strings.ToLower(strings.TrimSpace(aspectRatio))
 	if value == "" {
@@ -776,7 +838,7 @@ func parseConsoleVideoStatus(body []byte, progress func(int)) (provider.VideoRes
 	}
 }
 
-func newConsoleMediaUpstreamError(status int, body []byte) error {
+func newConsoleMediaUpstreamError(status int, body []byte, retryAfter time.Duration) error {
 	message := ""
 	var payload map[string]any
 	if json.Unmarshal(body, &payload) == nil {
@@ -784,22 +846,38 @@ func newConsoleMediaUpstreamError(status int, body []byte) error {
 		if message == "" {
 			message = safeConsoleMediaErrorValue(payload["message"])
 		}
+		if message == "" {
+			message = safeConsoleMediaErrorValue(payload["detail"])
+		}
 	}
 	summary := fmt.Sprintf("Console 媒体上游返回 %d", status)
 	if message != "" {
 		summary += ": " + message
 	}
-	return &consoleMediaUpstreamError{status: status, summary: summary}
+	if retryAfter <= 0 {
+		retryAfter = consoleRetryAfter(body)
+	}
+	return &consoleMediaUpstreamError{
+		status: status, summary: summary, retryAfter: retryAfter,
+		requestScoped: status == http.StatusForbidden && provider.IsDPoPProofRequiredBody(body),
+	}
 }
 
 func safeConsoleMediaErrorValue(value any) string {
 	if object, ok := value.(map[string]any); ok {
-		for _, key := range []string{"message", "code", "type"} {
+		for _, key := range []string{"message", "msg", "code", "type", "detail", "error_description"} {
 			raw, exists := object[key]
 			if !exists || raw == nil {
 				continue
 			}
-			if text := safeConsoleMediaText(fmt.Sprint(raw)); text != "" {
+			if text := safeConsoleMediaErrorValue(raw); text != "" {
+				return text
+			}
+		}
+	}
+	if values, ok := value.([]any); ok {
+		for _, item := range values {
+			if text := safeConsoleMediaErrorValue(item); text != "" {
 				return text
 			}
 		}
@@ -807,13 +885,24 @@ func safeConsoleMediaErrorValue(value any) string {
 	if text, ok := value.(string); ok {
 		return safeConsoleMediaText(text)
 	}
+	switch value.(type) {
+	case json.Number, float64, float32, int, int64, int32, uint, uint64, uint32, bool:
+		return safeConsoleMediaText(fmt.Sprint(value))
+	}
 	return ""
 }
 
 func safeConsoleMediaText(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
-	if strings.Contains(strings.ToLower(value), "authorization") || strings.Contains(strings.ToLower(value), "cookie") {
-		return "上游拒绝请求"
+	lower := strings.ToLower(value)
+	for _, sensitive := range []string{
+		"authorization", "cookie", "bearer ",
+		"access_token", "access-token", "refresh_token", "refresh-token",
+		"api_key", "api-key", "sso-rw", "cf_clearance",
+	} {
+		if strings.Contains(lower, sensitive) {
+			return "上游拒绝请求"
+		}
 	}
 	const limit = 160
 	if len(value) <= limit {

@@ -16,7 +16,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
-// DialVoiceWebSocket opens an authenticated Console websocket for realtime/TTS/STT streaming.
+// DialVoiceWebSocket opens an authenticated Console websocket for realtime or STT streaming.
 func (a *Adapter) DialVoiceWebSocket(ctx context.Context, request provider.VoiceWebSocketRequest) (provider.VoiceWebSocketConn, func(), error) {
 	pathValue := strings.TrimSpace(request.Path)
 	if pathValue == "" || strings.Contains(pathValue, "://") || strings.Contains(pathValue, "..") {
@@ -26,7 +26,7 @@ func (a *Adapter) DialVoiceWebSocket(ctx context.Context, request provider.Voice
 		pathValue = "/" + pathValue
 	}
 	switch pathValue {
-	case "/realtime", "/tts", "/stt":
+	case "/realtime", "/stt":
 	default:
 		return nil, nil, invalidConsoleVoiceError("不支持的 voice websocket path")
 	}
@@ -43,71 +43,101 @@ func (a *Adapter) DialVoiceWebSocket(ctx context.Context, request provider.Voice
 	}
 
 	cleanup := func() {
-		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, 0, nil)
 		lease.Release()
 		cancel()
 	}
 
-	endpoint, err := a.voiceWebSocketEndpoint(pathValue, request.Model, request.Query)
+	endpoint, err := a.voiceWebSocketEndpoint(pathValue, request.Model)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
 
-	session, cacheKey, err := a.dpop.get(requestCtx, a, request.Credential, token, lease)
+	proofEndpoint, err := voiceWebSocketProofEndpoint(endpoint)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-
-	httpReq, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		cleanup()
-		return nil, nil, err
-	}
-	applyBrowserHeaders(httpReq, token, lease, request.Credential)
-	httpReq.Header.Set("Accept", "*/*")
-	httpReq.Header.Set("Sec-Fetch-Mode", "websocket")
-	httpReq.Header.Set("Sec-Fetch-Dest", "empty")
-	httpReq.Header.Set("Sec-Fetch-Site", "same-origin")
-	httpReq.Header.Set("Cache-Control", "no-cache")
-	httpReq.Header.Set("Pragma", "no-cache")
-	if err := applyDPoPAuthorization(httpReq, session); err != nil {
-		cleanup()
-		return nil, nil, err
-	}
-
-	headers := fhttp.Header{}
-	for key, values := range httpReq.Header {
-		for _, value := range values {
-			headers.Add(key, value)
+	for attempt := 0; attempt < 2; attempt++ {
+		session, cacheKey, sessionErr := a.dpop.get(requestCtx, a, request.Credential, token, lease)
+		if sessionErr != nil {
+			cleanup()
+			return nil, nil, sessionErr
 		}
-	}
 
-	connection, response, err := lease.DialWebSocket(requestCtx, endpoint, headers, 30*time.Second)
-	if err != nil {
-		if response != nil && response.StatusCode == http.StatusUnauthorized {
-			a.dpop.invalidate(cacheKey, session.accessToken)
+		// The websocket dialer needs wss://, while DPoP protects the underlying
+		// HTTP Upgrade request and Console validates htu against https://. Signing
+		// the websocket URI itself produces a valid JWT with the wrong htu and the
+		// server rejects an otherwise healthy session with 401.
+		httpReq, requestErr := http.NewRequestWithContext(requestCtx, http.MethodGet, proofEndpoint, nil)
+		if requestErr != nil {
+			cleanup()
+			return nil, nil, requestErr
 		}
-		if response != nil && response.Body != nil {
+		applyBrowserHeaders(httpReq, token, lease)
+		httpReq.Header.Set("Accept", "*/*")
+		httpReq.Header.Set("Sec-Fetch-Mode", "websocket")
+		httpReq.Header.Set("Sec-Fetch-Dest", "empty")
+		httpReq.Header.Set("Sec-Fetch-Site", "same-origin")
+		httpReq.Header.Set("Cache-Control", "no-cache")
+		httpReq.Header.Set("Pragma", "no-cache")
+		if requestErr := applyDPoPAuthorization(httpReq, session); requestErr != nil {
+			cleanup()
+			return nil, nil, requestErr
+		}
+
+		headers := fhttp.Header{}
+		for key, values := range httpReq.Header {
+			for _, value := range values {
+				headers.Add(key, value)
+			}
+		}
+
+		connection, response, dialErr := lease.DialWebSocket(requestCtx, endpoint, headers, 30*time.Second)
+		if dialErr == nil {
+			if response != nil && response.Body != nil {
+				_ = response.Body.Close()
+			}
+			if connection == nil {
+				cleanup()
+				return nil, nil, errors.New("Console voice websocket 连接为空")
+			}
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, http.StatusSwitchingProtocols, nil)
+			return connection, cleanup, nil
+		}
+		if response == nil {
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, 0, dialErr)
+			cleanup()
+			return nil, nil, fmt.Errorf("拨号 Console voice websocket 失败: %w", dialErr)
+		}
+		status := response.StatusCode
+		var body []byte
+		if response.Body != nil {
+			body, _, _ = provider.ReadDiagnosticBody(response.Body)
 			_ = response.Body.Close()
 		}
-		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, 0, err)
-		lease.Release()
-		cancel()
-		return nil, nil, fmt.Errorf("拨号 Console voice websocket 失败: %w", err)
-	}
-	if response != nil && response.Body != nil {
-		_ = response.Body.Close()
-	}
-	if connection == nil {
+		if status == http.StatusUnauthorized {
+			a.dpop.invalidate(cacheKey, session.accessToken)
+			if attempt == 0 {
+				continue
+			}
+		}
+		dpopRequired := status == http.StatusForbidden && provider.IsDPoPProofRequiredBody(body)
+		if status == http.StatusForbidden && shouldInvalidateConsoleClearance(body) {
+			lease.InvalidateClearance()
+		}
+		if !dpopRequired {
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, status, nil)
+		}
 		cleanup()
-		return nil, nil, errors.New("Console voice websocket 连接为空")
+		retryAfter := parseConsoleRetryAfterHeader(response.Header.Get("Retry-After"), time.Now().UTC())
+		return nil, nil, newConsoleMediaUpstreamError(status, body, retryAfter)
 	}
-	return connection, cleanup, nil
+	cleanup()
+	return nil, nil, errors.New("Console voice websocket DPoP 重试状态无效")
 }
 
-func (a *Adapter) voiceWebSocketEndpoint(pathValue, modelName, query string) (string, error) {
+func (a *Adapter) voiceWebSocketEndpoint(pathValue, modelName string) (string, error) {
 	base := strings.TrimRight(strings.TrimSpace(a.config().BaseURL), "/")
 	if base == "" {
 		return "", errors.New("Console BaseURL 未配置")
@@ -126,22 +156,28 @@ func (a *Adapter) voiceWebSocketEndpoint(pathValue, modelName, query string) (st
 		return "", fmt.Errorf("不支持的 Console voice websocket scheme: %s", endpoint.Scheme)
 	}
 	values := endpoint.Query()
-	if extra := strings.TrimSpace(query); extra != "" {
-		extraValues, err := url.ParseQuery(strings.TrimPrefix(extra, "?"))
-		if err != nil {
-			return "", invalidConsoleVoiceError("voice websocket query 无效")
-		}
-		for key, items := range extraValues {
-			for _, item := range items {
-				values.Add(key, item)
-			}
-		}
-	}
-	if modelName = strings.TrimSpace(modelName); modelName != "" && values.Get("model") == "" {
+	if modelName = strings.TrimSpace(modelName); modelName != "" {
 		values.Set("model", modelName)
 	}
 	endpoint.RawQuery = values.Encode()
 	return endpoint.String(), nil
+}
+
+func voiceWebSocketProofEndpoint(endpoint string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Host == "" {
+		return "", errors.New("Console voice websocket endpoint 无效")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "wss":
+		parsed.Scheme = "https"
+	case "ws":
+		parsed.Scheme = "http"
+	case "https", "http":
+	default:
+		return "", fmt.Errorf("不支持的 Console voice websocket scheme: %s", parsed.Scheme)
+	}
+	return parsed.String(), nil
 }
 
 // Ensure bogdanfinn websocket.Conn satisfies the provider contract at compile time.

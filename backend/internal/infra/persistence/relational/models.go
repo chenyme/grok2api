@@ -404,10 +404,11 @@ type mediaJobModel struct {
 	Model          string  `gorm:"size:255;not null;check:chk_media_jobs_model,length(trim(model)) BETWEEN 1 AND 255"`
 	ModelRouteID   uint64  `gorm:"not null;check:chk_media_jobs_model_route_id,model_route_id > 0"`
 	UpstreamModel  string  `gorm:"size:255;not null;check:chk_media_jobs_upstream_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
+	Operation      string  `gorm:"size:16;not null;default:'generate';check:chk_media_jobs_operation,operation IN ('generate','edit','extend')"`
 	Prompt         string  `gorm:"type:text;not null;check:chk_media_jobs_prompt,length(prompt) BETWEEN 0 AND 100000"`
-	Seconds        int     `gorm:"not null;check:chk_media_jobs_seconds,seconds BETWEEN 1 AND 15"`
-	Size           string  `gorm:"size:32;not null;check:chk_media_jobs_size,length(trim(size)) BETWEEN 1 AND 32"`
-	Quality        string  `gorm:"size:32;not null;check:chk_media_jobs_quality,length(trim(quality)) BETWEEN 1 AND 32"`
+	Seconds        int     `gorm:"not null;check:chk_media_jobs_seconds,seconds BETWEEN 0 AND 15"`
+	Size           string  `gorm:"size:32;not null;default:'';check:chk_media_jobs_size,length(trim(size)) BETWEEN 0 AND 32"`
+	Quality        string  `gorm:"size:32;not null;default:'';check:chk_media_jobs_quality,length(trim(quality)) BETWEEN 0 AND 32"`
 	Status         string  `gorm:"size:32;not null;check:chk_media_jobs_status,status IN ('queued','in_progress','completed','failed')"`
 	Progress       int     `gorm:"not null;check:chk_media_jobs_progress,progress BETWEEN 0 AND 100"`
 	// InputJSON limit 33554432 must stay equal to media.MaxInputJSONBytes (GORM tags require literals).

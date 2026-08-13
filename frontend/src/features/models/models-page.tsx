@@ -475,7 +475,7 @@ const endpointCapabilityMetadata = {
   video: { icon: Clapperboard, method: "POST", path: "/v1/videos/generations", color: "text-rose-600 dark:text-rose-400" },
   tts: { icon: AudioLines, method: "POST", path: "/v1/tts", color: "text-cyan-700 dark:text-cyan-400" },
   stt: { icon: Mic, method: "POST", path: "/v1/stt", color: "text-teal-700 dark:text-teal-400" },
-  realtime: { icon: Radio, method: "POST", path: "/v1/realtime/client_secrets", color: "text-sky-700 dark:text-sky-400" },
+  realtime: { icon: Radio, method: "GET", path: "/v1/realtime", color: "text-sky-700 dark:text-sky-400" },
 } as const;
 
 type ModelRouteGroup = {

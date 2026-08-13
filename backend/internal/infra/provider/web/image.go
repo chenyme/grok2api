@@ -274,6 +274,9 @@ func numberAsInt(value any) (int, bool) {
 }
 
 func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
+	if strings.TrimSpace(request.Quality) != "" {
+		return invalidImageRequest("Grok Web 图片模型不支持 quality")
+	}
 	count := request.Count
 	if count <= 0 {
 		count = 1
@@ -304,7 +307,7 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	}
 	if protocolModel == "imagine-lite" {
 		if request.Streaming {
-			return invalidImageRequest("grok-imagine-image-2.0 不支持 stream")
+			return invalidImageRequest("grok-imagine-image-lite 不支持 stream")
 		}
 		if count > maxGeneratedImages {
 			return invalidImageRequest("n 不能超过 10")
@@ -469,7 +472,7 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 
 func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provider.ResponseResourceRequest, input openAIRequest, normalized normalizedChatInput, spec ModelSpec) (*provider.Response, error) {
 	if len(normalized.Attachments) > 0 {
-		return invalidImageRequest("grok-imagine-image-2.0 只支持纯文本生图；附件请使用对应的图片编辑或对话模型")
+		return invalidImageRequest("grok-imagine-image-lite 只支持纯文本生图；附件请使用对应的图片编辑或对话模型")
 	}
 	count := 1
 	format := "url"
@@ -675,6 +678,9 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 }
 
 func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
+	if strings.TrimSpace(request.Quality) != "" {
+		return invalidImageRequest("Grok Web 图片模型不支持 quality")
+	}
 	if len(request.ImageURLs) == 0 || len(request.ImageURLs) > 8 {
 		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "image 数量必须在 1 到 8 之间", "type": "invalid_request_error"}}), nil
 	}
