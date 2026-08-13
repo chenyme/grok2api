@@ -87,6 +87,7 @@ type grokModelCapability struct {
 // Codex catalogs never diverge from the levels each model actually supports.
 var grokCapabilities = map[string]grokModelCapability{
 	"grok-4.5":                     {500000, "xAI Grok 4.5 frontier model with reasoning and vision.", true},
+	"grok-4.6":                     {500000, "xAI Grok 4.6 frontier model with reasoning and vision.", true},
 	"grok-4.3":                     {1000000, "xAI Grok 4.3 high-capacity reasoning model.", true},
 	"grok-build-0.1":               {256000, "xAI Grok Build 0.1 coding model.", false},
 	"grok-4.20-0309-reasoning":     {2000000, "xAI Grok 4.20 reasoning model.", true},
