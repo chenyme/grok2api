@@ -95,6 +95,8 @@ routing:
   segmentedSelectorEnabled: false
   segmentedSelectorMinCandidates: 3000
   segmentedSelectorWindowSize: 64
+  # [按需修改] 账号候选缓存 TTL（秒）。大账号池建议 300s，减小周期性全量重载卡顿；0=默认。
+  candidateCacheTTL: 300s
 
 audit:
   # [通常不要修改] 审计批量写入参数；bufferSize 的修改需重启生效。

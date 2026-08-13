@@ -38,7 +38,7 @@ const successPersistInterval = 30 * time.Second
 // Routing writes publish precise invalidation events, so the TTL is only a
 // safety net for out-of-process database changes and missed notifications.
 // Keeping a one-second TTL made large pools rebuild continuously under load.
-const candidateCacheTTL = 30 * time.Second
+const candidateCacheTTLDefault = 30 * time.Second
 const candidateCacheStaleTTL = 5 * time.Minute
 const candidateCacheRetryTTL = 5 * time.Second
 const candidateCacheStaleLogInterval = time.Minute
@@ -261,6 +261,7 @@ type Selector struct {
 	cooldownBase           time.Duration
 	cooldownMax            time.Duration
 	capacityWait           time.Duration
+	candidateCacheTTL      time.Duration
 	preferFreeBuild        bool
 	excludeBuildBotFlagged bool
 	segmentedConfig        segmentedSelectorConfig
@@ -294,12 +295,15 @@ type Selector struct {
 
 func NewSelector(accounts repository.AccountRepository, concurrency repository.ConcurrencyLimiter, sticky repository.StickySessionRepository, tierOrders interface {
 	TierOrder(account.Provider, string) []account.WebTier
-}, stickyTTL, cooldownBase, cooldownMax time.Duration, capacityWait ...time.Duration) *Selector {
+}, stickyTTL, cooldownBase, cooldownMax, candidateCacheTTL time.Duration, capacityWait ...time.Duration) *Selector {
+	if candidateCacheTTL <= 0 {
+		candidateCacheTTL = candidateCacheTTLDefault
+	}
 	wait := time.Duration(0)
 	if len(capacityWait) > 0 && capacityWait[0] > 0 {
 		wait = capacityWait[0]
 	}
-	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, leaseWake: make(chan struct{}), logger: slog.Default(), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), quotaConsumed: make(map[quotaConsumptionKey]int), staleFallbackLoggedAt: make(map[string]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot), routingBases: make(map[routingBaseCacheKey]routingBaseSnapshot), routingOverlays: make(map[routingOverlayCacheKey]routingOverlaySnapshot), routingAccountProvider: make(map[uint64]account.Provider), baseProviderVersion: make(map[account.Provider]uint64), overlayProviderVersion: make(map[account.Provider]uint64), concurrencySnapshots: resultcache.New[[32]byte, map[string]int](maxConcurrencySnapshots, concurrencySnapshotTTL)}
+	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, candidateCacheTTL: candidateCacheTTL, leaseWake: make(chan struct{}), logger: slog.Default(), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), quotaConsumed: make(map[quotaConsumptionKey]int), staleFallbackLoggedAt: make(map[string]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot), routingBases: make(map[routingBaseCacheKey]routingBaseSnapshot), routingOverlays: make(map[routingOverlayCacheKey]routingOverlaySnapshot), routingAccountProvider: make(map[uint64]account.Provider), baseProviderVersion: make(map[account.Provider]uint64), overlayProviderVersion: make(map[account.Provider]uint64), concurrencySnapshots: resultcache.New[[32]byte, map[string]int](maxConcurrencySnapshots, concurrencySnapshotTTL)}
 }
 
 // SetLogger wires the application logger into routing degradation diagnostics.
@@ -310,11 +314,14 @@ func (s *Selector) SetLogger(logger *slog.Logger) {
 	}
 }
 
-func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax time.Duration, capacityWait ...time.Duration) {
+func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax, candidateCacheTTL time.Duration, capacityWait ...time.Duration) {
 	s.configMu.Lock()
 	s.stickyTTL = stickyTTL
 	s.cooldownBase = cooldownBase
 	s.cooldownMax = cooldownMax
+	if candidateCacheTTL > 0 {
+		s.candidateCacheTTL = candidateCacheTTL
+	}
 	if len(capacityWait) > 0 {
 		s.capacityWait = max(time.Duration(0), capacityWait[0])
 	}
@@ -1144,7 +1151,7 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 			return nil, err
 		}
 		s.candidateMu.Lock()
-		s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL)), checkTime)
+		s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(s.candidateCacheTTL)), checkTime)
 		s.candidateMu.Unlock()
 		return values, nil
 	})
@@ -1197,7 +1204,7 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 			s.candidateMu.Lock()
 			stable := baseVersion == s.routingBaseVersionLocked(provider) && overlayVersion == s.routingOverlayVersionLocked(provider)
 			if stable {
-				s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(candidateCacheTTL)), checkTime)
+				s.storeCandidateSnapshotLocked(key, newCandidateSnapshot(values, checkTime.Add(s.candidateCacheTTL)), checkTime)
 			}
 			s.candidateMu.Unlock()
 			if stable {
@@ -1268,7 +1275,7 @@ func (s *Selector) loadRoutingBases(ctx context.Context, layered repository.Rout
 		currentVersion := s.routingBaseVersionLocked(provider)
 		if currentVersion == checkVersion {
 			s.clearQuotaConsumption(provider)
-			s.storeRoutingBaseSnapshotLocked(key, routingBaseSnapshot{values: values, version: checkVersion, expiresAt: checkTime.Add(candidateCacheTTL)}, checkTime)
+			s.storeRoutingBaseSnapshotLocked(key, routingBaseSnapshot{values: values, version: checkVersion, expiresAt: checkTime.Add(s.candidateCacheTTL)}, checkTime)
 			for accountID, cachedProvider := range s.routingAccountProvider {
 				if cachedProvider == provider {
 					delete(s.routingAccountProvider, accountID)
@@ -1336,7 +1343,7 @@ func (s *Selector) loadRoutingOverlay(ctx context.Context, layered repository.Ro
 		s.candidateMu.Lock()
 		currentVersion := s.routingOverlayVersionLocked(provider)
 		if currentVersion == checkVersion {
-			s.storeRoutingOverlaySnapshotLocked(key, routingOverlaySnapshot{value: value, version: checkVersion, expiresAt: checkTime.Add(candidateCacheTTL)}, checkTime)
+			s.storeRoutingOverlaySnapshotLocked(key, routingOverlaySnapshot{value: value, version: checkVersion, expiresAt: checkTime.Add(s.candidateCacheTTL)}, checkTime)
 		}
 		s.candidateMu.Unlock()
 		return routingOverlayLoadResult{value: value, version: checkVersion}, nil

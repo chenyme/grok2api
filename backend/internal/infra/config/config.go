@@ -226,6 +226,8 @@ type RoutingConfig struct {
 	ReasoningReplayEnabled      bool     `yaml:"reasoningReplayEnabled"`
 	ReasoningReplayTTL          Duration `yaml:"reasoningReplayTTL"`
 	ReasoningReplayMaxEntries   int      `yaml:"reasoningReplayMaxEntries"`
+	// CandidateCacheTTL 账号候选缓存 TTL。路由失效事件会即时作废缓存，此值仅作外部改库时的安全网。
+	CandidateCacheTTL Duration `yaml:"candidateCacheTTL"`
 }
 
 type AuditConfig struct {
@@ -619,7 +621,7 @@ func (c Config) Validate() error {
 		return errors.New("routing 配置无效")
 	}
 	if c.Routing.SegmentedMinCandidates < 100 || c.Routing.SegmentedMinCandidates > 1000000 ||
-		c.Routing.SegmentedWindowSize < 8 || c.Routing.SegmentedWindowSize > 256 ||
+		c.Routing.SegmentedWindowSize < 8 || c.Routing.SegmentedWindowSize > 2048 ||
 		c.Routing.SegmentedWindowSize > c.Routing.SegmentedMinCandidates {
 		return errors.New("routing segmented selector 配置无效")
 	}
@@ -628,6 +630,9 @@ func (c Config) Validate() error {
 	}
 	if c.Routing.ReasoningReplayMaxEntries < 100 || c.Routing.ReasoningReplayMaxEntries > 1000000 {
 		return errors.New("routing.reasoningReplayMaxEntries 必须在 100 到 1000000 之间")
+	}
+	if v := c.Routing.CandidateCacheTTL.Value(); v != 0 && (v < time.Second || v > 30*time.Minute) {
+		return errors.New("routing.candidateCacheTTL 必须为 0（使用默认）或 1 秒到 30 分钟之间")
 	}
 	if c.Audit.BufferSize < 1 || c.Audit.BufferSize > maxAuditBufferSize || c.Audit.BatchSize < 1 || c.Audit.BatchSize > maxAuditBatchSize || c.Audit.BatchSize > c.Audit.BufferSize || c.Audit.FlushInterval.Value() < minAuditFlushInterval || c.Audit.FlushInterval.Value() > maxAuditFlushInterval {
 		return errors.New("audit 队列和批量写入配置无效")
@@ -835,6 +840,7 @@ func defaultConfig() Config {
 			ReasoningReplayEnabled:      true,
 			ReasoningReplayTTL:          Duration(time.Hour),
 			ReasoningReplayMaxEntries:   10240,
+			CandidateCacheTTL:            Duration(5 * time.Minute),
 		},
 		Audit: AuditConfig{
 			BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond), CommitDelay: Duration(5 * time.Millisecond),
