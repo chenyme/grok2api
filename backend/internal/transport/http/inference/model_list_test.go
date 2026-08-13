@@ -44,6 +44,7 @@ func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	base := newModelListItems([]modeldomain.Route{
 		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
+		{PublicID: "Build/grok-4.6", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 		{PublicID: "Console/grok-4.3", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 		{PublicID: "Console/grok-4.20-0309-reasoning", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 		{PublicID: "Build/grok-build-0.1", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
@@ -53,7 +54,7 @@ func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
 	for _, item := range expanded {
 		ids[item.ID] = true
 	}
-	for _, want := range []string{"grok-4.5", "grok-4.5-low", "grok-4.5-medium", "grok-4.5-high", "grok-4.3-none", "grok-4.3-low", "grok-4.3-medium", "grok-4.3-high", "grok-build-0.1"} {
+	for _, want := range []string{"grok-4.5", "grok-4.5-low", "grok-4.5-medium", "grok-4.5-high", "grok-4.6", "grok-4.6-low", "grok-4.6-medium", "grok-4.6-high", "grok-4.6-xhigh", "grok-4.3-none", "grok-4.3-low", "grok-4.3-medium", "grok-4.3-high", "grok-build-0.1"} {
 		if !ids[want] {
 			t.Fatalf("missing model %q in %#v", want, expanded)
 		}
