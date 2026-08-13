@@ -16,4 +16,30 @@ type AuditRepository interface {
 	ListCursor(ctx context.Context, query AuditCursorQuery) ([]audit.Record, bool, error)
 	Summarize(ctx context.Context, query AuditSummaryQuery) (audit.Summary, error)
 	SumTokensByAccountsSince(ctx context.Context, accountIDs []uint64, since time.Time) (map[uint64]int64, error)
+	ListDegradeEvents(ctx context.Context, query DegradeEventQuery) ([]DegradeEvent, error)
+}
+
+type DegradeEventQuery struct {
+	Start           time.Time
+	End             time.Time
+	MinOutputTokens int64
+	Limit           int
+}
+
+// DegradeEvent is a slim streaming-success audit plus optional account flags.
+type DegradeEvent struct {
+	ID                 uint64
+	RequestID          string
+	AccountID          *uint64
+	AccountName        string
+	Email              string
+	Enabled            *bool
+	BuildBotFlagSource int
+	EgressNodeID       *uint64
+	EgressNodeName     string
+	OutputTokens       int64
+	FirstTokenMS       int64
+	DurationMS         int64
+	CreatedAt          time.Time
+	Model              string
 }

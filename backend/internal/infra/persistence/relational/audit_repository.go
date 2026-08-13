@@ -683,6 +683,68 @@ func (r *AuditRepository) Summarize(ctx context.Context, input repository.AuditS
 	return result, nil
 }
 
+const degradeEventScanLimit = 20_000
+
+type degradeEventRow struct {
+	ID                 uint64    `gorm:"column:id"`
+	RequestID          string    `gorm:"column:request_id"`
+	AccountID          *uint64   `gorm:"column:account_id"`
+	AccountName        string    `gorm:"column:account_name"`
+	Email              string    `gorm:"column:email"`
+	Enabled            *bool     `gorm:"column:enabled"`
+	BuildBotFlagSource int       `gorm:"column:build_bot_flag_source"`
+	EgressNodeID       *uint64   `gorm:"column:egress_node_id"`
+	EgressNodeName     string    `gorm:"column:egress_node_name"`
+	OutputTokens       int64     `gorm:"column:output_tokens"`
+	FirstTokenMS       int64     `gorm:"column:first_token_ms"`
+	DurationMS         int64     `gorm:"column:duration_ms"`
+	CreatedAt          time.Time `gorm:"column:created_at"`
+	Model              string    `gorm:"column:model_upstream_model"`
+}
+
+func (r *AuditRepository) ListDegradeEvents(ctx context.Context, input repository.DegradeEventQuery) ([]repository.DegradeEvent, error) {
+	limit := input.Limit
+	if limit <= 0 || limit > degradeEventScanLimit {
+		limit = degradeEventScanLimit
+	}
+	minOut := input.MinOutputTokens
+	if minOut <= 0 {
+		minOut = audit.DefaultDegradeMinOutput
+	}
+	var rows []degradeEventRow
+	query := r.db.db.WithContext(ctx).Table("request_audits AS a").
+		Select("a.id, a.request_id, a.account_id, a.account_name, a.egress_node_id, a.egress_node_name, a.output_tokens, a.first_token_ms, a.duration_ms, a.created_at, a.model_upstream_model, p.email, p.enabled, COALESCE(c.build_bot_flag_source, 0) AS build_bot_flag_source").
+		Joins("LEFT JOIN provider_accounts p ON p.id = a.account_id").
+		Joins("LEFT JOIN account_credentials c ON c.account_id = a.account_id").
+		Where("a.provider = ?", "grok_build").
+		Where("a.streaming = ?", true).
+		Where(auditSuccessPredicate).
+		Where("a.output_tokens >= ?", minOut).
+		Where("a.first_token_ms IS NOT NULL").
+		Where("a.duration_ms > a.first_token_ms").
+		Where("a.request_id NOT LIKE ?", "quality_%")
+	if !input.Start.IsZero() {
+		query = query.Where("a.created_at >= ?", input.Start)
+	}
+	if !input.End.IsZero() {
+		query = query.Where("a.created_at < ?", input.End)
+	}
+	if err := query.Order("a.created_at DESC").Limit(limit).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]repository.DegradeEvent, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, repository.DegradeEvent{
+			ID: row.ID, RequestID: row.RequestID, AccountID: row.AccountID, AccountName: row.AccountName,
+			Email: row.Email, Enabled: row.Enabled, BuildBotFlagSource: row.BuildBotFlagSource,
+			EgressNodeID: row.EgressNodeID, EgressNodeName: row.EgressNodeName,
+			OutputTokens: row.OutputTokens, FirstTokenMS: row.FirstTokenMS, DurationMS: row.DurationMS,
+			CreatedAt: row.CreatedAt, Model: row.Model,
+		})
+	}
+	return out, nil
+}
+
 func applyAuditQuery(query *gorm.DB, search string, start, end time.Time, filter repository.AuditListFilter) *gorm.DB {
 	if value := strings.TrimSpace(search); value != "" {
 		pattern := "%" + strings.ToLower(value) + "%"
