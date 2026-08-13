@@ -3717,7 +3717,7 @@ func (s *Service) DetectBuildAccountsWithProgress(ctx context.Context, ids []uin
 			return 0, 0, err
 		}
 	}
-	var progressMu sync.Mutex
+	var observerMu sync.Mutex
 	var progressErr error
 	completed := 0
 	runCtx, cancel := context.WithCancel(ctx)
@@ -3725,9 +3725,11 @@ func (s *Service) DetectBuildAccountsWithProgress(ctx context.Context, ids []uin
 	summary, err := batch.ForEachObserved(runCtx, ids, batch.Options{Workers: pool.Limit(), Pool: pool}, func(workCtx context.Context, id uint64) (BuildDetectItemResult, error) {
 		item := s.detectBuildAccount(workCtx, id)
 		if itemObserver != nil && (selectedMode || item.Outcome == BuildDetectOutcomeInvalid) {
-			progressMu.Lock()
-			notifyErr := itemObserver(item)
-			progressMu.Unlock()
+			notifyErr := func() error {
+				observerMu.Lock()
+				defer observerMu.Unlock()
+				return itemObserver(item)
+			}()
 			if notifyErr != nil {
 				return item, notifyErr
 			}
@@ -3744,8 +3746,8 @@ func (s *Service) DetectBuildAccountsWithProgress(ctx context.Context, ids []uin
 		if errors.As(result.Err, &panicErr) {
 			s.logger.Error("account_bulk_task_panicked", "operation", "build_detect", "account_id", ids[index], "error", panicErr, "stack", string(panicErr.Stack))
 		}
-		progressMu.Lock()
-		defer progressMu.Unlock()
+		observerMu.Lock()
+		defer observerMu.Unlock()
 		completed++
 		if progress != nil {
 			if notifyErr := progress(completed, len(ids)); notifyErr != nil && progressErr == nil {
