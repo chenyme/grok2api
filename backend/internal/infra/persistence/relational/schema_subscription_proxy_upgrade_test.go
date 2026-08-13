@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 )
 
 type legacyOperationsConfigWithSubscriptionProxy struct {
@@ -91,14 +93,45 @@ func TestSchemaMigratesGlobalSubscriptionProxyToEverySource(t *testing.T) {
 			t.Fatalf("migrated source = %#v", source)
 		}
 	}
+	var current egressOperationsConfigModel
+	if err := database.db.First(&current, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !current.SubscriptionProxyMigrationCompleted {
+		t.Fatal("subscription proxy migration was not marked complete")
+	}
+	repository := NewEgressRepository(database)
+	if _, err := repository.SaveEgressOperationsConfig(ctx, egressdomain.DefaultOperationsConfig()); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.First(&current, 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !current.SubscriptionProxyMigrationCompleted {
+		t.Fatal("ordinary operations update reset the subscription proxy migration marker")
+	}
 	var legacy legacyOperationsConfigWithSubscriptionProxy
 	if err := database.db.First(&legacy, 1).Error; err != nil {
 		t.Fatal(err)
 	}
-	if legacy.EncryptedSubscriptionProxyURL != "" {
-		t.Fatal("legacy global subscription proxy was not cleared")
+	if legacy.EncryptedSubscriptionProxyURL != encryptedProxy {
+		t.Fatal("legacy global subscription proxy was not retained for rollback")
+	}
+
+	// Sources created after the one-time migration must remain direct. Keeping
+	// the legacy ciphertext for rollback must not cause it to be copied again.
+	direct := legacySubscriptionSourceWithoutProxy{ID: 3, Name: "direct", Scope: "grok_console", Enabled: true}
+	if err := database.db.Create(&direct).Error; err != nil {
+		t.Fatal(err)
 	}
 	if err := database.InitializeSchema(ctx); err != nil {
 		t.Fatalf("repeated migration failed: %v", err)
+	}
+	var directAfterRestart egressSubscriptionSourceModel
+	if err := database.db.First(&directAfterRestart, direct.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if directAfterRestart.EncryptedProxyURL != "" {
+		t.Fatal("repeated migration applied the legacy proxy to a new direct source")
 	}
 }

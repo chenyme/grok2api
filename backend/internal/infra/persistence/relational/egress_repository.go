@@ -468,9 +468,14 @@ func (r *EgressRepository) SaveEgressOperationsConfig(ctx context.Context, value
 	row := fromEgressOperationsConfigDomain(value)
 	row.ID = 1
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := lockEgressOperationsConfig(tx); err != nil {
+		locked, err := lockEgressOperationsConfig(tx)
+		if err != nil {
 			return err
 		}
+		// This schema-only marker is deliberately outside the domain settings.
+		// Preserve it across ordinary configuration updates so the legacy proxy
+		// migration cannot run again and overwrite an intentionally direct source.
+		row.SubscriptionProxyMigrationCompleted = locked.SubscriptionProxyMigrationCompleted
 		if err := validateLockedEgressFallbackNodes(tx, row); err != nil {
 			return err
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const mediaJobInputMetadataPendingIndex = "CREATE INDEX IF NOT EXISTS idx_media_jobs_input_metadata_pending ON media_jobs(id) WHERE input_image_count IS NULL"
@@ -231,26 +232,37 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 func (d *Database) migratePerSourceSubscriptionProxy(ctx context.Context) error {
 	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var legacy struct {
-			EncryptedProxyURL string `gorm:"column:encrypted_subscription_proxy_url"`
+			EncryptedProxyURL  string `gorm:"column:encrypted_subscription_proxy_url"`
+			MigrationCompleted bool   `gorm:"column:subscription_proxy_migration_completed"`
 		}
-		err := tx.Table("egress_operations_config").Select("encrypted_subscription_proxy_url").Where("id = ?", 1).Take(&legacy).Error
+		err := tx.Table("egress_operations_config").
+			Select("encrypted_subscription_proxy_url", "subscription_proxy_migration_completed").
+			Where("id = ?", 1).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Take(&legacy).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(legacy.EncryptedProxyURL) == "" {
+		if legacy.MigrationCompleted {
 			return nil
 		}
-		if err := tx.Model(&egressSubscriptionSourceModel{}).Where("encrypted_proxy_url = ''").Updates(map[string]any{
-			"encrypted_proxy_url": legacy.EncryptedProxyURL,
-			"next_sync_at":        nil,
-			"last_sync_error":     "",
-		}).Error; err != nil {
-			return err
+		if strings.TrimSpace(legacy.EncryptedProxyURL) != "" {
+			if err := tx.Model(&egressSubscriptionSourceModel{}).Where("encrypted_proxy_url = ''").Updates(map[string]any{
+				"encrypted_proxy_url": legacy.EncryptedProxyURL,
+				"next_sync_at":        nil,
+				"last_sync_error":     "",
+			}).Error; err != nil {
+				return err
+			}
 		}
-		return tx.Table("egress_operations_config").Where("id = ?", 1).Update("encrypted_subscription_proxy_url", "").Error
+		// Keep the encrypted legacy value for still-running old replicas and a
+		// rollback window. The marker prevents subsequent startups from applying
+		// it to sources that were later configured for direct fetching.
+		return tx.Table("egress_operations_config").Where("id = ?", 1).
+			Update("subscription_proxy_migration_completed", true).Error
 	})
 }
 
