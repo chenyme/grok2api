@@ -1820,6 +1820,9 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 	}
 	if cfg.Mode == "on_demand" && !forceRefresh {
 		m.clearanceMu.Unlock()
+		if fallbackAllowed {
+			return fallback.Cookies, fallback.UserAgent, nil
+		}
 		return existingCookies, existingUserAgent, nil
 	}
 	if cfg.Mode != "flaresolverr" && cfg.Mode != "on_demand" {
@@ -1879,8 +1882,12 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 			return clearanceSolution{}, errors.New("另一个实例正在刷新 Cloudflare Clearance")
 		}
 		defer release()
-		if !force {
-			if solution, refreshedAt, ok := m.loadPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval); ok {
+		if solution, refreshedAt, ok := m.loadPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval); ok {
+			// A peer may have refreshed the rejected Clearance immediately before
+			// this instance acquired the distributed lock. Reuse that newer result
+			// instead of performing a duplicate browser solve. A force refresh with
+			// no newer persisted generation must still reach the solver.
+			if !force || (!refreshAfter.IsZero() && refreshedAt.After(refreshAfter)) {
 				m.cacheClearance(key, solution, refreshedAt, solveVersion, fingerprint, bindingFingerprint, interval)
 				return solution, nil
 			}

@@ -1907,6 +1907,108 @@ func TestOnDemandClearanceSkipsBackgroundRefresh(t *testing.T) {
 	}
 }
 
+func TestOnDemandClearanceKeepsLastSuccessfulDirectSolutionPastRefreshInterval(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	solver := &clearanceSolverStub{}
+	manager := NewManager(egressRepositoryTestStub{}, cipher)
+	manager.solver = solver
+	manager.UpdateClearanceConfig(ClearanceConfig{
+		Mode: "on_demand", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com",
+		Timeout: time.Second, RefreshInterval: time.Nanosecond,
+	})
+
+	initial, err := manager.Acquire(context.Background(), domain.ScopeConsole, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.CFCookies != "" || solver.calls != 0 {
+		t.Fatalf("initial lease cookies=%q calls=%d", initial.CFCookies, solver.calls)
+	}
+	initial.InvalidateClearance()
+	initial.Release()
+
+	refreshed, err := manager.Acquire(context.Background(), domain.ScopeConsole, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.CFCookies != "cf_clearance=value-1" || solver.calls != 1 {
+		t.Fatalf("refreshed lease cookies=%q calls=%d", refreshed.CFCookies, solver.calls)
+	}
+	refreshed.Release()
+
+	// The interval is deliberately expired. on_demand must keep using the last
+	// successful runtime-only solution until an upstream rejection invalidates it.
+	reused, err := manager.Acquire(context.Background(), domain.ScopeConsole, "account")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reused.Release()
+	if reused.CFCookies != "cf_clearance=value-1" || reused.UserAgent != "Chrome/146 test" || solver.calls != 1 {
+		t.Fatalf("reused lease=%#v calls=%d", reused, solver.calls)
+	}
+}
+
+func TestOnDemandClearanceReusesPeerRefreshAfterDistributedLock(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := ClearanceConfig{
+		Mode: "on_demand", FlareSolverrURL: "http://solver", TargetURL: "https://grok.com",
+		Timeout: time.Second, RefreshInterval: time.Hour,
+	}
+	oldCookies, err := cipher.Encrypt("cf_clearance=old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRefreshedAt := time.Now().UTC().Add(-time.Minute)
+	repository := &mutableEgressRepository{node: domain.Node{
+		ID: 1, Name: "console", Scope: domain.ScopeConsole, Enabled: true, Health: 1,
+		EncryptedCloudflareCookie: oldCookies, UserAgent: "Chrome/old",
+		ClearanceFingerprint: clearanceFingerprint(config, ""), ClearanceBindingFingerprint: clearanceBindingFingerprint(config, ""),
+		ClearanceRefreshedAt: &oldRefreshedAt,
+	}}
+	solver := &clearanceSolverStub{}
+	firstManager := NewManager(repository, cipher)
+	firstManager.solver = solver
+	firstManager.SetClearanceLock(alwaysAcquiredDistributedLock{})
+	firstManager.UpdateClearanceConfig(config)
+	secondManager := NewManager(repository, cipher)
+	secondManager.solver = solver
+	secondManager.SetClearanceLock(alwaysAcquiredDistributedLock{})
+	secondManager.UpdateClearanceConfig(config)
+
+	firstOld, err := firstManager.Acquire(context.Background(), domain.ScopeConsole, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOld, err := secondManager.Acquire(context.Background(), domain.ScopeConsole, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstOld.InvalidateClearance()
+	secondOld.InvalidateClearance()
+	firstOld.Release()
+	secondOld.Release()
+
+	firstFresh, err := firstManager.Acquire(context.Background(), domain.ScopeConsole, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFresh.Release()
+	secondFresh, err := secondManager.Acquire(context.Background(), domain.ScopeConsole, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondFresh.Release()
+	if solver.calls != 1 || secondFresh.CFCookies != "cf_clearance=value-1" {
+		t.Fatalf("peer refresh was not reused: calls=%d cookies=%q", solver.calls, secondFresh.CFCookies)
+	}
+}
+
 func TestFlareSolverrRefreshesRejectedNodeBeforeNextLease(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {
