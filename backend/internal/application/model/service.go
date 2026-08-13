@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
@@ -63,6 +64,8 @@ type ListFilter struct {
 	ActiveScope bool
 	Sort        repository.SortQuery
 }
+
+type SyncProgressObserver func(completed, total int)
 
 // Service 负责上游模型发现、内部来源路由与对外模型名称维护。
 type Service struct {
@@ -404,8 +407,13 @@ func (s *Service) BatchSetEnabled(ctx context.Context, ids []uint64, enabled boo
 
 // Sync 从全部启用账号同步模型能力，并按 Provider 幂等更新公开路由表。
 func (s *Service) Sync(ctx context.Context) (int, error) {
+	return s.SyncObserved(ctx, nil)
+}
+
+// SyncObserved 执行全量模型同步，并按已完成账号数报告进度。
+func (s *Service) SyncObserved(ctx context.Context, observer SyncProgressObserver) (int, error) {
 	result := s.syncAll.DoChan("all", func() (any, error) {
-		return s.syncAllAccounts(ctx)
+		return s.syncAllAccounts(ctx, observer)
 	})
 	select {
 	case <-ctx.Done():
@@ -418,7 +426,7 @@ func (s *Service) Sync(ctx context.Context) (int, error) {
 	}
 }
 
-func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
+func (s *Service) syncAllAccounts(ctx context.Context, observer SyncProgressObserver) (int, error) {
 	if s.providers == nil {
 		return 0, fmt.Errorf("Provider 注册表未初始化")
 	}
@@ -437,12 +445,20 @@ func (s *Service) syncAllAccounts(ctx context.Context) (int, error) {
 	if len(credentials) == 0 {
 		return 0, fmt.Errorf("没有可用于模型同步的账号")
 	}
-	results, summary, runErr := batch.Map(ctx, credentials, batch.Options{Workers: s.bulkPool.Limit(), Pool: s.bulkPool}, func(workCtx context.Context, value account.Credential) ([]string, error) {
+	if observer != nil {
+		observer(0, len(credentials))
+	}
+	var completed atomic.Int64
+	results, summary, runErr := batch.MapObserved(ctx, credentials, batch.Options{Workers: s.bulkPool.Limit(), Pool: s.bulkPool}, func(workCtx context.Context, value account.Credential) ([]string, error) {
 		adapter, ok := s.providers.Models(value.Provider)
 		if !ok {
 			return nil, fmt.Errorf("Provider %s 未注册模型同步能力", value.Provider)
 		}
 		return s.syncAccountCapabilities(workCtx, value, adapter)
+	}, func(_ int, _ batch.Result[[]string]) {
+		if observer != nil {
+			observer(int(completed.Add(1)), len(credentials))
+		}
 	})
 	pool := s.bulkPool.Snapshot()
 	s.logger.Info("model_bulk_sync_completed", "total", summary.Total, "submitted", summary.Submitted, "succeeded", summary.Succeeded, "failed", summary.Failed, "panicked", summary.Panicked, "duration_ms", summary.Duration.Milliseconds(), "canceled", summary.Canceled, "pool_limit", pool.Limit, "pool_active", pool.Active, "pool_queued", pool.Queued, "pool_peak", pool.Peak, "error", runErr)

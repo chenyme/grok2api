@@ -1,11 +1,14 @@
 package model
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
@@ -17,6 +20,11 @@ import (
 )
 
 type Handler struct{ service *modelapp.Service }
+
+const (
+	modelSyncHeartbeatInterval = 15 * time.Second
+	modelSyncWriteTimeout      = 30 * time.Second
+)
 
 func NewHandler(service *modelapp.Service) *Handler { return &Handler{service: service} }
 
@@ -234,12 +242,94 @@ func (h *Handler) batchDelete(c *gin.Context) {
 }
 
 func (h *Handler) sync(c *gin.Context) {
-	count, err := h.service.Sync(c.Request.Context())
-	if err != nil {
-		response.Error(c, http.StatusBadGateway, "modelSyncFailed", "同步上游模型失败")
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache, no-transform")
+	c.Header("X-Accel-Buffering", "no")
+	if err := writeModelSyncComment(c, "connected"); err != nil {
 		return
 	}
-	response.Success(c, http.StatusOK, gin.H{"synced": count})
+
+	type syncResult struct {
+		synced int
+		err    error
+	}
+	result := make(chan syncResult, 1)
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+	var completed atomic.Int64
+	var total atomic.Int64
+	go func() {
+		synced, err := h.service.SyncObserved(ctx, func(current, maximum int) {
+			completed.Store(int64(current))
+			total.Store(int64(maximum))
+		})
+		result <- syncResult{synced: synced, err: err}
+	}()
+
+	heartbeat := time.NewTicker(modelSyncHeartbeatInterval)
+	defer heartbeat.Stop()
+	progressTicker := time.NewTicker(250 * time.Millisecond)
+	defer progressTicker.Stop()
+	lastCompleted, lastTotal := -1, -1
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case value := <-result:
+			if value.err != nil {
+				_ = writeModelSyncEvent(c, "error", gin.H{"code": "modelSyncFailed", "message": "同步模型能力失败"})
+				return
+			}
+			_ = writeModelSyncEvent(c, "complete", gin.H{"synced": value.synced})
+			return
+		case <-heartbeat.C:
+			if err := writeModelSyncComment(c, "heartbeat"); err != nil {
+				return
+			}
+		case <-progressTicker.C:
+			current, maximum := int(completed.Load()), int(total.Load())
+			if maximum > 0 && (current != lastCompleted || maximum != lastTotal) {
+				if err := writeModelSyncEvent(c, "progress", gin.H{"completed": current, "total": maximum}); err != nil {
+					return
+				}
+				lastCompleted, lastTotal = current, maximum
+			}
+		}
+	}
+}
+
+func writeModelSyncEvent(c *gin.Context, event string, value any) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if err := setModelSyncWriteDeadline(c.Writer); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, payload); err != nil {
+		return err
+	}
+	c.Writer.Flush()
+	return c.Request.Context().Err()
+}
+
+func writeModelSyncComment(c *gin.Context, comment string) error {
+	if err := setModelSyncWriteDeadline(c.Writer); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(c.Writer, ": %s\n\n", comment); err != nil {
+		return err
+	}
+	c.Writer.Flush()
+	return c.Request.Context().Err()
+}
+
+func setModelSyncWriteDeadline(writer http.ResponseWriter) error {
+	err := http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(modelSyncWriteTimeout))
+	if errors.Is(err, http.ErrNotSupported) {
+		return nil
+	}
+	return err
 }
 
 func (h *Handler) update(c *gin.Context) {
