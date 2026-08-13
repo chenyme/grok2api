@@ -51,6 +51,79 @@ func TestQueueAccountModelSyncDeduplicatesConcurrentETagRefresh(t *testing.T) {
 	close(resolver.release)
 }
 
+func TestVoiceWebSocketAuditOutcomeUsesLogicalSuccessStatus(t *testing.T) {
+	if status, code := voiceWebSocketAuditOutcome(VoiceWebSocketOutcome{}); status != http.StatusOK || code != "" {
+		t.Fatalf("successful outcome = status %d code %q", status, code)
+	}
+	if status, code := voiceWebSocketAuditOutcome(VoiceWebSocketOutcome{ErrorCode: " upstream_stream_interrupted "}); status != http.StatusBadGateway || code != "upstream_stream_interrupted" {
+		t.Fatalf("failed outcome = status %d code %q", status, code)
+	}
+}
+
+func TestStreamingSTTPricingUsesCompletedDuration(t *testing.T) {
+	result, ok := audit.EstimateOfficialSTTCost(3.45, true)
+	if !ok || result.Model != "grok-stt-streaming" || result.CostInUSDTicks != 1_916_667 {
+		t.Fatalf("streaming STT pricing = %#v, ok = %t", result, ok)
+	}
+}
+
+func TestVoiceErrorResponseDoesNotExposeUnclassifiedErrors(t *testing.T) {
+	response, err := voiceErrorResponse(testVoiceStatusError{status: http.StatusBadGateway, message: "access_token=secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(body), "access_token") || strings.Contains(string(body), "secret") {
+		t.Fatalf("unclassified provider error leaked through public response: %s", body)
+	}
+}
+
+type testVoiceStatusError struct {
+	status  int
+	message string
+}
+
+func (e testVoiceStatusError) Error() string       { return e.message }
+func (e testVoiceStatusError) HTTPStatusCode() int { return e.status }
+
+func TestFormatSTTResponseHonorsOpenAIFormats(t *testing.T) {
+	speaker := 2
+	result := provider.STTResult{
+		Text: "hello", Language: "en", Duration: 1.25,
+		Words:   []provider.STTWord{{Text: "hello", Start: 0.1, End: 0.8, Speaker: &speaker}},
+		RawJSON: []byte(`{"text":"native","provider_field":true}`),
+	}
+	for _, test := range []struct {
+		format      string
+		contentType string
+		contains    []string
+	}{
+		{format: "text", contentType: "text/plain; charset=utf-8", contains: []string{"hello"}},
+		{format: "json", contentType: "application/json", contains: []string{`"text":"hello"`}},
+		{format: "verbose_json", contentType: "application/json", contains: []string{`"task":"transcribe"`, `"word":"hello"`, `"speaker":2`}},
+		{format: "", contentType: "application/json", contains: []string{`"provider_field":true`}},
+	} {
+		response := formatSTTResponse(result, test.format)
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.Header.Get("Content-Type") != test.contentType {
+			t.Fatalf("format %q content type = %q", test.format, response.Header.Get("Content-Type"))
+		}
+		for _, expected := range test.contains {
+			if !strings.Contains(string(body), expected) {
+				t.Fatalf("format %q body %q missing %q", test.format, body, expected)
+			}
+		}
+	}
+}
+
 type etagSyncResolver struct {
 	calls   atomic.Int64
 	started chan uint64
@@ -969,6 +1042,293 @@ func TestSelectMediaRouteSkipsSameNamedConversationRoute(t *testing.T) {
 	var unavailable *SelectionUnavailableError
 	if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" {
 		t.Fatalf("media route must not leave provider scope: %#v, err = %v", unavailable, err)
+	}
+}
+
+func TestSelectSchedulableMediaRouteSkipsUnavailableFirstTarget(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "media-route-failover.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	now := time.Now().UTC()
+	coolingUntil := now.Add(time.Hour)
+	buildAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth,
+		Name: "cooling-build", SourceKey: "cooling-build", EncryptedAccessToken: "build-token",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1, CooldownUntil: &coolingUntil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+		Name: "healthy-web", SourceKey: "healthy-web", EncryptedAccessToken: "web-token",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const publicModel = "shared-media-target"
+	routeInputs := []modeldomain.Route{
+		{PublicID: publicModel, Provider: account.ProviderBuild, UpstreamModel: "build-image-target", Capability: modeldomain.CapabilityImage, Enabled: true},
+		{PublicID: publicModel, Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: modeldomain.CapabilityImage, Enabled: true},
+	}
+	if err := modelRepo.UpsertRoutes(ctx, routeInputs); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, buildAccount.ID, []string{"build-image-target"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, webAccount.ID, []string{"grok-imagine-image"}, now); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := modelRepo.GetByPublicIDCandidates(ctx, publicModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := provider.NewRegistry(&credentialFailureImageAdapter{}, &webImageStreamAdapter{})
+	sticky := memory.NewStickyStore()
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := &Service{
+		clientKeys: clientkeyapp.NewService(nil, nil, nil, 60, 4, nil),
+		providers:  registry,
+		selector:   selector,
+	}
+	selected, selection, err := service.selectSchedulableMediaRoute(ctx, routes, clientkey.Key{}, modeldomain.CapabilityImage, true, func(providerValue account.Provider) bool {
+		_, ok := registry.ImageGeneration(providerValue)
+		return ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Provider != account.ProviderWeb || selection == nil {
+		t.Fatalf("selected route = %#v, selection = %#v", selected, selection)
+	}
+	lease, err := selection.Acquire(ctx, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Credential.ID != webAccount.ID {
+		t.Fatalf("selected account = %d, want %d", lease.Credential.ID, webAccount.ID)
+	}
+	lease.Release()
+
+	// Non-consuming metadata calls (for example voice listing) must not inherit
+	// the Provider quota mode from route probing. Otherwise an account with an
+	// exhausted inference window cannot serve a request that consumes no quota.
+	if err := accountRepo.SaveQuotaWindows(ctx, webAccount.ID, account.WebTierSuper, now, []account.QuotaWindow{{
+		AccountID: webAccount.ID, Mode: "fast", Remaining: 0, Total: 10, WindowSeconds: 3600,
+		Source: account.QuotaSourceUpstream, SyncedAt: &now,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	quotaSelector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), registry, time.Hour, time.Second, time.Minute)
+	service.selector = quotaSelector
+	if _, _, err := service.selectSchedulableMediaRoute(ctx, routes, clientkey.Key{}, modeldomain.CapabilityImage, true, func(providerValue account.Provider) bool {
+		_, ok := registry.ImageGeneration(providerValue)
+		return ok
+	}); err == nil {
+		t.Fatal("quota-consuming selection unexpectedly accepted an exhausted account")
+	}
+	selected, selection, err = service.selectSchedulableMediaRoute(ctx, routes, clientkey.Key{}, modeldomain.CapabilityImage, false, func(providerValue account.Provider) bool {
+		_, ok := registry.ImageGeneration(providerValue)
+		return ok
+	})
+	if err != nil || selected.Provider != account.ProviderWeb || selection == nil {
+		t.Fatalf("non-consuming route = %#v, selection = %#v, err = %v", selected, selection, err)
+	}
+}
+
+func TestUnpricedVoiceRemainsAvailableToFiniteClientKey(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "voice-billing-policy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO,
+		Name: "console-voice", SourceKey: "console-voice", EncryptedAccessToken: "console-token",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const voiceModel = "voice-billing-policy"
+	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{{
+		PublicID: voiceModel, Provider: account.ProviderConsole, UpstreamModel: voiceModel,
+		Capability: modeldomain.CapabilityTTS, Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{voiceModel}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	registry := provider.NewRegistry(statelessConsoleAdapter{})
+	sticky := memory.NewStickyStore()
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, nil, 1)
+	executed := false
+	result, err := service.executeVoice(ctx, "req-voice-billing", clientkey.Key{ID: 1, BillingLimitUSDTicks: 1}, voiceModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, audit.PricingResult{}, func(account.Provider) bool {
+		return true
+	}, func(context.Context, account.Provider, account.Credential, string) (voiceExecutionResult, error) {
+		executed = true
+		return voiceExecutionResult{response: jsonVoiceResponse(http.StatusOK, map[string]any{"ok": true})}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !executed {
+		t.Fatal("unpriced voice request did not reach the provider")
+	}
+	result.Finalize(Usage{}, "", "")
+	_ = result.Body.Close()
+}
+
+func TestVoicePricingSettlesTTSAndRESTSTTUsage(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "voice-pricing.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credential, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO,
+		Name: "console-priced-voice", SourceKey: "console-priced-voice", EncryptedAccessToken: "console-token",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const (
+		ttsModel = "voice-priced-tts"
+		sttModel = "voice-priced-stt"
+	)
+	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{
+		{PublicID: ttsModel, Provider: account.ProviderConsole, UpstreamModel: ttsModel, Capability: modeldomain.CapabilityTTS, Enabled: true},
+		{PublicID: sttModel, Provider: account.ProviderConsole, UpstreamModel: sttModel, Capability: modeldomain.CapabilitySTT, Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{ttsModel, sttModel}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	limitedKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "voice-priced-key", Prefix: "voice-priced", SecretHash: strings.Repeat("a", 64), EncryptedSecret: "encrypted",
+		Enabled: true, BillingLimitUSDTicks: 10_000_000_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	registry := provider.NewRegistry(statelessConsoleAdapter{})
+	sticky := memory.NewStickyStore()
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	clientKeyService := clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil)
+	service := NewService(modelRepo, auditRepo, accountService, clientKeyService, registry, selector, nil, 1)
+
+	ttsPricing, ok := audit.EstimateOfficialTTSCost("Hello 世界")
+	if !ok {
+		t.Fatal("TTS pricing unavailable")
+	}
+	ttsResult, err := service.executeVoice(ctx, "req-priced-tts", limitedKey, ttsModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, ttsPricing, func(account.Provider) bool {
+		return true
+	}, func(context.Context, account.Provider, account.Credential, string) (voiceExecutionResult, error) {
+		return voiceExecutionResult{response: jsonVoiceResponse(http.StatusOK, map[string]any{"ok": true}), pricing: ttsPricing}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ttsResult.Finalize(Usage{}, "", "")
+	_ = ttsResult.Body.Close()
+
+	settledKey, err := keyRepo.Get(ctx, limitedKey.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settledKey.BilledUsageUSDTicks != ttsPricing.CostInUSDTicks || settledKey.ReservedUsageUSDTicks != 0 {
+		t.Fatalf("TTS billing = billed %d reserved %d, want billed %d reserved 0", settledKey.BilledUsageUSDTicks, settledKey.ReservedUsageUSDTicks, ttsPricing.CostInUSDTicks)
+	}
+
+	sttPricing, ok := audit.EstimateOfficialSTTCost(3.45, false)
+	if !ok {
+		t.Fatal("STT pricing unavailable")
+	}
+	sttResult, err := service.executeVoice(ctx, "req-priced-stt", limitedKey, sttModel, audit.OperationSTT, modeldomain.CapabilitySTT, true, audit.PricingResult{}, func(account.Provider) bool {
+		return true
+	}, func(context.Context, account.Provider, account.Credential, string) (voiceExecutionResult, error) {
+		return voiceExecutionResult{response: jsonVoiceResponse(http.StatusOK, map[string]any{"text": "hello"}), pricing: sttPricing}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sttResult.Finalize(Usage{}, "", "")
+	_ = sttResult.Body.Close()
+
+	settledKey, err = keyRepo.Get(ctx, limitedKey.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBilled := ttsPricing.CostInUSDTicks + sttPricing.CostInUSDTicks
+	if settledKey.BilledUsageUSDTicks != wantBilled || settledKey.ReservedUsageUSDTicks != 0 {
+		t.Fatalf("voice billing = billed %d reserved %d, want billed %d reserved 0", settledKey.BilledUsageUSDTicks, settledKey.ReservedUsageUSDTicks, wantBilled)
+	}
+	audits, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 || len(audits) != 2 {
+		t.Fatalf("voice audits = %d/%d, want 2/2", len(audits), total)
+	}
+	if audits[0].RequestID != "req-priced-stt" || audits[0].PricingModel != sttPricing.Model || audits[0].EstimatedCostInUSDTicks != sttPricing.CostInUSDTicks {
+		t.Fatalf("STT audit = %#v", audits[0])
+	}
+	if audits[1].RequestID != "req-priced-tts" || audits[1].PricingModel != ttsPricing.Model || audits[1].EstimatedCostInUSDTicks != ttsPricing.CostInUSDTicks {
+		t.Fatalf("TTS audit = %#v", audits[1])
+	}
+
+	cappedKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "voice-capped-key", Prefix: "voice-capped", SecretHash: strings.Repeat("b", 64), EncryptedSecret: "encrypted",
+		Enabled: true, BillingLimitUSDTicks: ttsPricing.CostInUSDTicks - 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed := false
+	_, err = service.executeVoice(ctx, "req-capped-tts", cappedKey, ttsModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, ttsPricing, func(account.Provider) bool {
+		return true
+	}, func(context.Context, account.Provider, account.Credential, string) (voiceExecutionResult, error) {
+		executed = true
+		return voiceExecutionResult{response: jsonVoiceResponse(http.StatusOK, map[string]any{"ok": true}), pricing: ttsPricing}, nil
+	})
+	if !errors.Is(err, clientkeyapp.ErrBillingLimit) {
+		t.Fatalf("capped TTS error = %v, want billing limit", err)
+	}
+	if executed {
+		t.Fatal("TTS reached upstream after exact reservation exceeded the key limit")
 	}
 }
 

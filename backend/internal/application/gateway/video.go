@@ -40,27 +40,97 @@ func VideoInputFileReference(fileID string) string {
 }
 
 type VideoInput struct {
-	RequestID     string
-	ClientKey     clientkey.Key
-	PublicModel   string
-	Prompt        string
-	Duration      int
-	AspectRatio   string
-	Resolution    string
+	RequestID   string
+	ClientKey   clientkey.Key
+	PublicModel string
+	// Operation defaults to generate when empty.
+	Operation   provider.VideoOperation
+	Prompt      string
+	Duration    int
+	AspectRatio string
+	Resolution  string
+	// ImageURL is the optional first-frame image (official "image").
+	ImageURL string
+	// ReferenceURLs are style/content references (official "reference_images").
 	ReferenceURLs []string
+	// ReferenceAudios are preset voice_ids for reference-to-video.
+	ReferenceAudios []string
+	// VideoURL is required for edit/extend (official "video").
+	VideoURL string
 }
 
 func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job, error) {
 	if s.mediaJobs == nil || s.mediaQueue == nil {
 		return media.Job{}, fmt.Errorf("视频任务服务未配置")
 	}
-	if len(input.Prompt) > 100000 || (len(input.Prompt) == 0 && len(input.ReferenceURLs) == 0) {
-		return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
+	operation := input.Operation
+	if operation == "" {
+		operation = provider.VideoOperationGenerate
 	}
-	if err := s.validateVideoInputReferences(ctx, input.ReferenceURLs); err != nil {
+	switch operation {
+	case provider.VideoOperationGenerate, provider.VideoOperationEdit, provider.VideoOperationExtend:
+	default:
+		return media.Job{}, fmt.Errorf("不支持的视频操作")
+	}
+	if len(input.Prompt) > 100000 {
+		return media.Job{}, fmt.Errorf("prompt 过长")
+	}
+	if operation == provider.VideoOperationGenerate {
+		hasImage := strings.TrimSpace(input.ImageURL) != ""
+		hasRefs := len(input.ReferenceURLs) > 0
+		hasRefAudio := len(input.ReferenceAudios) > 0
+		if hasImage && (hasRefs || hasRefAudio) {
+			return media.Job{}, fmt.Errorf("image 不能与 reference_images/reference_audios 同时使用")
+		}
+		if hasRefs || hasRefAudio {
+			if len(input.Prompt) == 0 {
+				return media.Job{}, fmt.Errorf("参考图/参考音频视频必须提供 prompt")
+			}
+			if resolution := strings.ToLower(strings.TrimSpace(input.Resolution)); resolution == "1080p" {
+				return media.Job{}, fmt.Errorf("参考图视频 resolution 最高 720p")
+			}
+		}
+		if len(input.Prompt) == 0 && !hasImage && !hasRefs && !hasRefAudio {
+			return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
+		}
+		if strings.TrimSpace(input.VideoURL) != "" {
+			return media.Job{}, fmt.Errorf("视频生成不支持 video 输入")
+		}
+		if err := validateVideoReferenceAudios(input.ReferenceAudios); err != nil {
+			return media.Job{}, err
+		}
+	} else {
+		if strings.TrimSpace(input.Prompt) == "" {
+			return media.Job{}, fmt.Errorf("视频编辑/延长必须提供 prompt")
+		}
+		if strings.TrimSpace(input.VideoURL) == "" {
+			return media.Job{}, fmt.Errorf("视频编辑/延长必须提供 video")
+		}
+		if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 || len(input.ReferenceAudios) > 0 {
+			return media.Job{}, fmt.Errorf("视频编辑/延长不支持 image、reference_images 或 reference_audios")
+		}
+		if operation == provider.VideoOperationEdit && input.Duration != 0 {
+			return media.Job{}, fmt.Errorf("视频编辑不支持 duration")
+		}
+		if operation == provider.VideoOperationExtend {
+			if input.Duration == 0 {
+				input.Duration = 6
+			}
+			if input.Duration < 2 || input.Duration > 10 {
+				return media.Job{}, fmt.Errorf("视频延长 duration 必须在 2 到 10 秒之间")
+			}
+		}
+	}
+	allRefs := videoInputReferences(input.ImageURL, input.ReferenceURLs)
+	if err := s.validateVideoInputReferences(ctx, allRefs, "image"); err != nil {
 		return media.Job{}, err
 	}
-	inputJSON, err := encodeVideoInput(input.ReferenceURLs)
+	if videoURL := strings.TrimSpace(input.VideoURL); videoURL != "" {
+		if err := s.validateVideoInputReferences(ctx, []string{videoURL}, "video"); err != nil {
+			return media.Job{}, err
+		}
+	}
+	inputJSON, err := encodeVideoInputFull(operation, input.ImageURL, input.ReferenceURLs, input.ReferenceAudios, input.VideoURL)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -68,19 +138,28 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, ErrModelNotFound
 	}
-	route, err := s.selectMediaRoute(routes, input.ClientKey, model.CapabilityVideo, func(providerValue account.Provider) bool {
+	routes, err = routesForVideoOperation(routes, operation)
+	if err != nil {
+		return media.Job{}, err
+	}
+	route, selection, err := s.selectSchedulableMediaRouteWithQuotaMode(ctx, routes, input.ClientKey, model.CapabilityVideo, true, func(providerValue account.Provider) bool {
 		_, ok := s.providers.Videos(providerValue)
 		return ok
+	}, func(route model.Route) string {
+		return videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), input.Resolution)
 	})
 	if err != nil {
+		return media.Job{}, err
+	}
+	if err := validateVideoRouteParameters(operation, route.UpstreamModel, input.Resolution, len(input.ReferenceURLs) > 0); err != nil {
 		return media.Job{}, err
 	}
 	if err := s.checkLedgerReady(); err != nil {
 		return media.Job{}, err
 	}
+	pricing, priced := resolveVideoPricing(operation, route.UpstreamModel, input.Resolution, input.Duration, len(allRefs))
 	externalModel := model.ExternalPublicID(route.Provider, route.PublicID)
-	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
-	lease, err := s.selector.AcquireForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", nil, false, input.ClientKey.AccountScope())
+	lease, err := selection.Acquire(ctx, nil, false)
 	if err != nil {
 		return media.Job{}, fmt.Errorf("%w: %w", ErrNoAvailableAccount, err)
 	}
@@ -95,12 +174,12 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		ID: "video_" + token, RequestID: input.RequestID,
 		ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
 		AccountID: accountID, AccountName: lease.Credential.Name,
-		Provider: string(route.Provider), Model: externalModel, ModelRouteID: route.ID, UpstreamModel: model.DisplayUpstreamModel(route.Provider, route.UpstreamModel), Prompt: input.Prompt,
+		Provider: string(route.Provider), Model: externalModel, ModelRouteID: route.ID, UpstreamModel: model.DisplayUpstreamModel(route.Provider, route.UpstreamModel), Operation: operation, Prompt: input.Prompt,
 		Seconds: input.Duration, Size: input.AspectRatio, Quality: input.Resolution,
-		Status: media.StatusQueued, Progress: 0, InputJSON: inputJSON, InputImageCount: len(input.ReferenceURLs), CreatedAt: now, UpdatedAt: now,
+		Status: media.StatusQueued, Progress: 0, InputJSON: inputJSON, InputImageCount: len(allRefs), CreatedAt: now, UpdatedAt: now,
 	}
 	reserved := false
-	if pricing, ok := audit.EstimateOfficialVideoCost(externalModel, input.Resolution, input.Duration); ok {
+	if priced {
 		reserved, err = s.clientKeys.ReserveBilling(ctx, input.ClientKey, "video_usage_"+job.ID, pricing.CostInUSDTicks, mediaBillingReservationTTL)
 		if err != nil {
 			return media.Job{}, err
@@ -116,6 +195,42 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		s.logger.Warn("video_job_queue_full", "job_id", job.ID)
 	}
 	return job, nil
+}
+
+func validateVideoRouteParameters(operation provider.VideoOperation, upstreamModel, resolution string, hasReferences bool) error {
+	if operation != provider.VideoOperationGenerate || !strings.EqualFold(strings.TrimSpace(resolution), "1080p") {
+		return nil
+	}
+	if strings.TrimSpace(upstreamModel) != "grok-imagine-video-1.5" {
+		return fmt.Errorf("%w: %s 不支持 1080p", ErrVideoOperationUnsupported, upstreamModel)
+	}
+	if hasReferences {
+		return fmt.Errorf("%w: reference_images 模式最高支持 720p", ErrVideoOperationUnsupported)
+	}
+	return nil
+}
+
+func routesForVideoOperation(routes []model.Route, operation provider.VideoOperation) ([]model.Route, error) {
+	if operation == provider.VideoOperationGenerate {
+		return routes, nil
+	}
+	compatible := make([]model.Route, 0, len(routes))
+	for _, candidate := range routes {
+		if candidate.Provider == account.ProviderConsole && strings.TrimSpace(candidate.UpstreamModel) == "grok-imagine-video" {
+			compatible = append(compatible, candidate)
+		}
+	}
+	if len(compatible) == 0 {
+		return nil, ErrVideoOperationUnsupported
+	}
+	return compatible, nil
+}
+
+func resolveVideoPricing(operation provider.VideoOperation, upstreamModel, resolution string, duration, inputImages int) (audit.PricingResult, bool) {
+	if operation == provider.VideoOperationGenerate {
+		return audit.EstimateOfficialVideoCost(upstreamModel, resolution, duration, inputImages)
+	}
+	return audit.PricingResult{}, false
 }
 
 func (s *Service) GetVideo(ctx context.Context, id string, key clientkey.Key) (media.Job, error) {
@@ -311,7 +426,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	defer releaseInputSlot()
 	// 视频任务创建时已持久化账号归属；恢复只能重新获取原账号，禁止因后续
 	// 轮询或结果处理失败切换到其他账号。
-	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+	quotaMode := videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), job.Quality)
+	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
 	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.ID, route.UpstreamModel, quotaMode, true)
 	if err != nil {
 		if parent.Err() != nil {
@@ -333,15 +449,30 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		s.failVideoJob(parent, job, "provider_unavailable", ErrNoAvailableAccount)
 		return
 	}
-	referenceURLs, err := s.resolveVideoInputReferences(ctx, inputReferences)
+	operation := provider.VideoOperation(job.Operation)
+	if operation == "" {
+		operation = decodeVideoOperation(job.InputJSON)
+	}
+	imageURL, referenceURLs, referenceAudios, videoURL, err := s.resolveVideoJobInputs(ctx, operation, job.InputJSON)
 	if err != nil {
 		s.failVideoJob(parent, job, "input_unavailable", err)
 		return
 	}
 	lastProgress := job.Progress
+	duration := job.Seconds
+	aspectRatio := job.Size
+	resolution := job.Quality
+	switch operation {
+	case provider.VideoOperationEdit:
+		duration, aspectRatio, resolution = 0, "", ""
+	case provider.VideoOperationExtend:
+		aspectRatio, resolution = "", ""
+	}
 	result, err := adapter.GenerateVideo(ctx, provider.VideoRequest{
-		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Prompt: job.Prompt, Duration: job.Seconds, AspectRatio: job.Size, Resolution: job.Quality,
-		ReferenceURLs: referenceURLs,
+		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Model: route.UpstreamModel,
+		Operation: operation,
+		Prompt:    job.Prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
+		ImageURL: imageURL, ReferenceURLs: referenceURLs, ReferenceAudios: referenceAudios, VideoURL: videoURL,
 		Progress: func(value int) {
 			value = min(99, max(1, value))
 			if value-lastProgress < 5 {
@@ -433,24 +564,40 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		return
 	}
 	s.selector.MarkSuccess(context.Background(), lease.Credential)
-	if lease.QuotaMode != "" && lease.QuotaMode != "weekly" {
+	refreshMode := lease.QuotaMode
+	decrementMode := lease.QuotaMode
+	if quotaRefreshGroup != "" {
+		refreshMode = quotaRefreshGroup
+		decrementMode = quotaMode
+	}
+	if decrementMode != "" && decrementMode != "weekly" {
 		quotaCtx, quotaCancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
-		updated, quotaErr := s.accounts.DecrementQuota(quotaCtx, job.AccountID, lease.QuotaMode, 1)
+		updated, quotaErr := s.accounts.DecrementQuota(quotaCtx, job.AccountID, decrementMode, 1)
 		quotaCancel()
 		if quotaErr != nil {
-			s.logger.Warn("video_quota_decrement_failed", "provider", route.Provider, "account_id", job.AccountID, "mode", lease.QuotaMode, "error", quotaErr)
+			s.logger.Warn("video_quota_decrement_failed", "provider", route.Provider, "account_id", job.AccountID, "mode", decrementMode, "error", quotaErr)
 		} else if updated {
-			s.selector.ConsumeQuota(route.Provider, job.AccountID, lease.QuotaMode, 1)
+			s.selector.ConsumeQuota(route.Provider, job.AccountID, decrementMode, 1)
 		}
 	}
 	if err := s.recordVideoAudit(context.Background(), job, time.Since(startedAt).Milliseconds()); err != nil {
 		s.logger.Error("video_usage_record_failed", "job_id", job.ID, "event_id", "video_usage_"+job.ID, "error", err)
 	}
-	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
-		s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
+	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && refreshMode != "" {
+		s.accounts.QueueQuotaRefresh(job.AccountID, refreshMode)
 	}
 	// 输入回收放在账号状态、计费和审计收尾之后，存储抖动不得延迟关键终态逻辑。
 	s.releaseVideoInputs(job)
+}
+
+func videoQuotaMode(providerValue account.Provider, catalogMode, resolution string) string {
+	if providerValue == account.ProviderWeb && catalogMode == account.QuotaModeWebVideo {
+		resolution = strings.ToLower(strings.TrimSpace(resolution))
+		if resolution == "" || resolution == "720p" {
+			return account.QuotaModeWebVideo720p
+		}
+	}
+	return catalogMode
 }
 
 func (s *Service) acquireVideoInputSlot(ctx context.Context, references []string) (func(), error) {
@@ -473,7 +620,7 @@ func (s *Service) acquireVideoInputSlot(ctx context.Context, references []string
 	}
 }
 
-func (s *Service) validateVideoInputReferences(ctx context.Context, references []string) error {
+func (s *Service) validateVideoInputReferences(ctx context.Context, references []string, expectedKind string) error {
 	estimatedBytes := videoInputJSONBaseBytes
 	for _, reference := range references {
 		fileID, local := media.ParseInputReference(reference)
@@ -486,11 +633,14 @@ func (s *Service) validateVideoInputReferences(ctx context.Context, references [
 		if s.mediaAssets == nil || !local {
 			return ErrVideoInputUnavailable
 		}
-		asset, body, err := s.mediaAssets.OpenInputImage(ctx, fileID)
+		asset, body, err := s.mediaAssets.OpenInputAsset(ctx, fileID)
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrVideoInputUnavailable, err)
 		}
 		_ = body.Close()
+		if asset.Kind != expectedKind {
+			return fmt.Errorf("%w: file_id 必须引用%s", ErrVideoInputUnavailable, expectedKind)
+		}
 		if !addVideoReferenceBytes(&estimatedBytes, materializedVideoReferenceBytes(asset.MIMEType, asset.SizeBytes)) {
 			return ErrVideoInputTooLarge
 		}
@@ -498,7 +648,38 @@ func (s *Service) validateVideoInputReferences(ctx context.Context, references [
 	return nil
 }
 
-func (s *Service) resolveVideoInputReferences(ctx context.Context, references []string) ([]string, error) {
+func (s *Service) resolveVideoInputParts(ctx context.Context, inputJSON string) (string, []string, error) {
+	imageURL, referenceURLs := decodeVideoInputParts(inputJSON)
+	all := videoInputReferences(imageURL, referenceURLs)
+	resolved, err := s.resolveVideoInputReferences(ctx, all, "image")
+	if err != nil {
+		return "", nil, err
+	}
+	// Map resolved URLs back while preserving empty/non-empty slots by original order.
+	next := 0
+	take := func(original string) string {
+		original = strings.TrimSpace(original)
+		if original == "" {
+			return ""
+		}
+		if next >= len(resolved) {
+			return original
+		}
+		value := resolved[next]
+		next++
+		return value
+	}
+	outImage := take(imageURL)
+	outRefs := make([]string, 0, len(referenceURLs))
+	for _, raw := range referenceURLs {
+		if value := take(raw); value != "" {
+			outRefs = append(outRefs, value)
+		}
+	}
+	return outImage, outRefs, nil
+}
+
+func (s *Service) resolveVideoInputReferences(ctx context.Context, references []string, expectedKind string) ([]string, error) {
 	resolved := make([]string, 0, len(references))
 	estimatedBytes := videoInputJSONBaseBytes
 	for _, reference := range references {
@@ -513,9 +694,13 @@ func (s *Service) resolveVideoInputReferences(ctx context.Context, references []
 		if s.mediaAssets == nil || !local {
 			return nil, ErrVideoInputUnavailable
 		}
-		asset, body, err := s.mediaAssets.OpenInputImage(ctx, fileID)
+		asset, body, err := s.mediaAssets.OpenInputAsset(ctx, fileID)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrVideoInputUnavailable, err)
+		}
+		if asset.Kind != expectedKind {
+			_ = body.Close()
+			return nil, fmt.Errorf("%w: file_id 必须引用%s", ErrVideoInputUnavailable, expectedKind)
 		}
 		data, readErr := io.ReadAll(io.LimitReader(body, media.MaxInputJSONBytes+1))
 		closeErr := body.Close()
@@ -649,10 +834,14 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 		MediaInputImages: int64(job.InputImageCount),
 		DurationMS:       durationMS, CreatedAt: createdAt,
 	}
-	if job.Status == media.StatusCompleted {
+	if job.Status == media.StatusCompleted && job.Seconds > 0 {
 		record.MediaOutputSeconds = int64(max(0, job.Seconds))
 	}
-	if pricing, ok := audit.EstimateOfficialVideoCost(job.Model, job.Quality, job.Seconds); ok && job.Status == media.StatusCompleted {
+	operation := provider.VideoOperation(job.Operation)
+	if operation == "" {
+		operation = provider.VideoOperationGenerate
+	}
+	if pricing, ok := audit.EstimateOfficialVideoCost(job.UpstreamModel, job.Quality, job.Seconds, job.InputImageCount); ok && job.Status == media.StatusCompleted && operation == provider.VideoOperationGenerate {
 		record.EstimatedCostInUSDTicks = pricing.CostInUSDTicks
 		record.PricingModel = pricing.Model
 		record.PricingVersion = audit.OfficialPricingAsOf
@@ -671,8 +860,44 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 	return s.mediaJobs.MarkMediaJobUsageRecorded(markCtx, job.ID, time.Now().UTC())
 }
 
-func encodeVideoInput(referenceURLs []string) (string, error) {
-	data, err := json.Marshal(map[string][]string{"image_urls": referenceURLs})
+func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
+	return encodeVideoInputFull(provider.VideoOperationGenerate, imageURL, referenceURLs, nil, "")
+}
+
+func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, referenceURLs []string, referenceAudios []string, videoURL string) (string, error) {
+	payload := map[string]any{}
+	if operation == "" {
+		operation = provider.VideoOperationGenerate
+	}
+	if operation != provider.VideoOperationGenerate {
+		payload["operation"] = string(operation)
+	}
+	if value := strings.TrimSpace(imageURL); value != "" {
+		payload["image_url"] = value
+	}
+	refs := make([]string, 0, len(referenceURLs))
+	for _, raw := range referenceURLs {
+		if value := strings.TrimSpace(raw); value != "" {
+			refs = append(refs, value)
+		}
+	}
+	if len(refs) > 0 {
+		payload["reference_urls"] = refs
+	}
+	audios := normalizeVideoReferenceAudios(referenceAudios)
+	if len(audios) > 0 {
+		payload["reference_audios"] = audios
+	}
+	if value := strings.TrimSpace(videoURL); value != "" {
+		payload["video_url"] = value
+	}
+	// Keep a combined image_urls field for older readers/tools that only
+	// understand the pre-split shape. New workers prefer image_url/reference_urls.
+	combined := videoInputReferences(imageURL, referenceURLs)
+	if len(combined) > 0 {
+		payload["image_urls"] = combined
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("编码视频输入: %w", err)
 	}
@@ -683,9 +908,133 @@ func encodeVideoInput(referenceURLs []string) (string, error) {
 }
 
 func decodeVideoInput(value string) []string {
-	var input map[string][]string
+	imageURL, refs, videoURL := decodeVideoInputFull(value)
+	values := videoInputReferences(imageURL, refs)
+	if v := strings.TrimSpace(videoURL); v != "" {
+		values = append(values, v)
+	}
+	return values
+}
+
+func decodeVideoInputParts(value string) (string, []string) {
+	imageURL, refs, _ := decodeVideoInputFull(value)
+	return imageURL, refs
+}
+
+func decodeVideoInputFull(value string) (string, []string, string) {
+	imageURL, refs, _, videoURL := decodeVideoInputDetailed(value)
+	return imageURL, refs, videoURL
+}
+
+func decodeVideoInputDetailed(value string) (string, []string, []string, string) {
+	var input struct {
+		Operation       string   `json:"operation"`
+		ImageURL        string   `json:"image_url"`
+		ReferenceURLs   []string `json:"reference_urls"`
+		ReferenceAudios []string `json:"reference_audios"`
+		ImageURLs       []string `json:"image_urls"`
+		VideoURL        string   `json:"video_url"`
+	}
 	_ = json.Unmarshal([]byte(value), &input)
-	return input["image_urls"]
+	videoURL := strings.TrimSpace(input.VideoURL)
+	audios := normalizeVideoReferenceAudios(input.ReferenceAudios)
+	if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 || len(audios) > 0 || videoURL != "" || strings.TrimSpace(input.Operation) != "" {
+		refs := make([]string, 0, len(input.ReferenceURLs))
+		for _, raw := range input.ReferenceURLs {
+			if v := strings.TrimSpace(raw); v != "" {
+				refs = append(refs, v)
+			}
+		}
+		return strings.TrimSpace(input.ImageURL), refs, audios, videoURL
+	}
+	// Legacy jobs stored a flat image_urls list. Preserve historical mapping:
+	// one URL was treated as the first-frame image; multiple URLs were references.
+	legacy := make([]string, 0, len(input.ImageURLs))
+	for _, raw := range input.ImageURLs {
+		if v := strings.TrimSpace(raw); v != "" {
+			legacy = append(legacy, v)
+		}
+	}
+	switch len(legacy) {
+	case 0:
+		return "", nil, nil, ""
+	case 1:
+		return legacy[0], nil, nil, ""
+	default:
+		return "", legacy, nil, ""
+	}
+}
+
+func decodeVideoOperation(value string) provider.VideoOperation {
+	var input struct {
+		Operation string `json:"operation"`
+	}
+	_ = json.Unmarshal([]byte(value), &input)
+	switch provider.VideoOperation(strings.TrimSpace(input.Operation)) {
+	case provider.VideoOperationEdit:
+		return provider.VideoOperationEdit
+	case provider.VideoOperationExtend:
+		return provider.VideoOperationExtend
+	default:
+		return provider.VideoOperationGenerate
+	}
+}
+
+func (s *Service) resolveVideoJobInputs(ctx context.Context, operation provider.VideoOperation, inputJSON string) (string, []string, []string, string, error) {
+	_, _, referenceAudios, videoURL := decodeVideoInputDetailed(inputJSON)
+	resolvedImage, resolvedRefs, err := s.resolveVideoInputParts(ctx, inputJSON)
+	if err != nil {
+		return "", nil, nil, "", err
+	}
+	if strings.TrimSpace(videoURL) == "" {
+		return resolvedImage, resolvedRefs, referenceAudios, "", nil
+	}
+	if operation == provider.VideoOperationGenerate {
+		return "", nil, nil, "", ErrVideoInputUnavailable
+	}
+	resolvedVideos, err := s.resolveVideoInputReferences(ctx, []string{videoURL}, "video")
+	if err != nil {
+		return "", nil, nil, "", err
+	}
+	if len(resolvedVideos) == 0 {
+		return "", nil, nil, "", ErrVideoInputUnavailable
+	}
+	return resolvedImage, resolvedRefs, referenceAudios, resolvedVideos[0], nil
+}
+
+func validateVideoReferenceAudios(values []string) error {
+	if len(values) > 3 {
+		return fmt.Errorf("reference_audios 最多 3 个")
+	}
+	for _, raw := range values {
+		if strings.TrimSpace(raw) == "" {
+			return fmt.Errorf("reference_audios.voice_id 不能为空")
+		}
+	}
+	return nil
+}
+
+func normalizeVideoReferenceAudios(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		if value := strings.TrimSpace(raw); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func videoInputReferences(imageURL string, referenceURLs []string) []string {
+	values := make([]string, 0, 1+len(referenceURLs))
+	if v := strings.TrimSpace(imageURL); v != "" {
+		values = append(values, v)
+	}
+	for _, raw := range referenceURLs {
+		if v := strings.TrimSpace(raw); v != "" {
+			values = append(values, v)
+		}
+	}
+	return values
 }
 
 func (s *Service) failVideoJob(ctx context.Context, job media.Job, code string, err error) {
@@ -716,7 +1065,7 @@ func (s *Service) releaseVideoInputs(job media.Job) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.mediaAssets.ReleaseInputImages(ctx, references); err != nil {
+	if err := s.mediaAssets.ReleaseInputAssets(ctx, references); err != nil {
 		logger := s.logger
 		if logger == nil {
 			logger = slog.Default()

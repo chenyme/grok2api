@@ -138,7 +138,7 @@ The Gateway routes requests through the Provider Registry. Account Sync refreshe
 | Routing | Model discovery, Provider pinning, sticky sessions, quota/concurrency guards, and bounded failover |
 | Sessions | Stored responses, compact, prompt-cache affinity, and optional reasoning replay |
 | Media | Image generation/editing, video jobs, local archiving, and URL/Base64/SSE output |
-| Egress | HTTP/SOCKS/Resin, subscriptions, probes, proxy pools, allocation, fallback, and FlareSolverr |
+| Egress | HTTP/SOCKS/Resin and Trojan/VLESS/Shadowsocks/VMess tunnels, subscriptions, probes, proxy pools, allocation, fallback, and FlareSolverr |
 | Operations | Dashboard, model routes, client keys, audits, runtime settings, and media libraries |
 
 ### Provider boundaries
@@ -147,9 +147,9 @@ The Gateway routes requests through the Provider Registry. Account Sync refreshe
 | :-- | :-- | :-- | :-- |
 | Grok Build | OAuth / Device OAuth | Discovered per account | Responses, Chat, Messages, compact, stored responses, paid-account video |
 | Grok Web | SSO | Built-in, filtered by tier | Responses, Chat, Messages, stored responses, images, image editing, video |
-| Grok Console | SSO | Built-in | Stateless Responses, Chat, Messages, images, image editing, video |
+| Grok Console | SSO | Built-in | Stateless Responses, Chat, Messages, images, image editing, video, TTS, STT, Realtime |
 
-Each Provider keeps its own credentials, quota, health, cooldown, concurrency, and model capabilities. Failover stays within the selected Provider.
+Each Provider keeps its own credentials, quota, health, cooldown, concurrency, and model capabilities. Account retries stay within one route; when one public model ID intentionally aggregates multiple routes, the gateway may select another schedulable route without mixing Provider state.
 
 ## Quick start
 
@@ -258,13 +258,13 @@ Web uses a built-in catalog filtered by account tier; higher tiers inherit lower
 | `grok-chat-expert` | Conversation | Super | Chat Completions, Responses, Messages |
 | `grok-chat-heavy` | Conversation | Heavy | Chat Completions, Responses, Messages |
 | `grok-imagine-image-lite` | Image | Basic | Images Generations |
-| `grok-imagine-image-quality-lite` | Image | Super | Images Generations |
+| `grok-imagine-image-quality-lite` | Image | Basic | Images Generations |
 | `grok-imagine-image-edit` | Image Edit | Super | Images Edits |
 | `grok-imagine-video` | Video | Super | Videos |
 
 ### Grok Console
 
-Console uses the catalog built into the current release. Conversation forwarding is stateless, while image and video models use the standard xAI resource APIs.
+Console uses the catalog built into the current release. Conversation forwarding is stateless, while image, video, and voice use the standard xAI resource APIs.
 
 | Model | Type | Gateway surfaces |
 | :-- | :-- | :-- |
@@ -276,7 +276,11 @@ Console uses the catalog built into the current release. Conversation forwarding
 | `grok-build-0.1` | Conversation | Chat Completions, Responses, Messages |
 | `grok-imagine-image` | Image, Image Edit | Images Generations, Images Edits |
 | `grok-imagine-image-quality` | Image, Image Edit | Images Generations, Images Edits |
+| `grok-imagine-image-2.0` | Image, Image Edit | Images Generations, Images Edits |
 | `grok-imagine-video` | Video | Videos |
+| `grok-imagine-video-1.5` | Video | Video generation, including Free Console accounts |
+| `grok-voice-latest`, `grok-voice-think-fast-2.0`, `grok-voice-think-fast-1.0` | Voice | TTS and Realtime WebSocket proxy |
+| `grok-stt` | Voice | STT and OpenAI-compatible audio transcriptions |
 
 Generation and editing capabilities for the same Console image model are grouped into one logical model row; no separate `-edit` model copy is required.
 
@@ -309,9 +313,14 @@ Authorization: Bearer g2a_xxx_xxx
 | `POST` | `/v1/messages` | Anthropic Messages JSON/SSE |
 | `POST` | `/v1/images/generations`, `/v1/images/edits` | Generate or edit images |
 | `POST`, `GET` | `/v1/videos/*` | Create and inspect video jobs |
+| `POST` | `/v1/tts`, `/v1/audio/speech`, `/v1/audio/tasks` | Synthesize speech |
+| `POST` | `/v1/stt`, `/v1/audio/transcriptions` | Transcribe audio |
+| `GET` | `/v1/stt`, `/v1/realtime` | Proxy voice WebSocket sessions |
 | `GET` | `/v1/media/images/{asset_id}`, `/v1/media/videos/{asset_id}` | Read archived media |
 
 Stored responses and compact depend on the selected Provider. The signed-in admin console provides live examples at `/docs`; Swagger is available only when `server.swaggerEnabled: true`.
+
+`/v1/audio/transcriptions` supports `json` (default), `verbose_json`, and `text`. Video edit/extension routes must resolve to Console `grok-imagine-video`; custom public model names remain supported. Monetary billing is applied only when the gateway can reliably measure the official pricing unit: TTS is reserved and settled from its input character count, while REST and streaming STT are settled from the actual audio duration returned by a successful response. Because STT duration is known only after completion, concurrent requests may briefly take a billing-limited key beyond its spend limit. Realtime, video edits/extensions, and custom routes without a recognized official price are currently audited as unpriced; they remain callable and do not consume the spend limit.
 
 Client keys support model allowlists and optional RPM, concurrency, spend, and expiry limits.
 
@@ -330,13 +339,16 @@ curl http://127.0.0.1:8000/v1/responses \
 
 Egress nodes are scoped to Build, Web, Console, or Web assets. The admin console supports:
 
-- HTTP, HTTPS, SOCKS4/4A, SOCKS5/5H, and Resin
+- HTTP, HTTPS, SOCKS4/4A, SOCKS5/5H, Resin, Trojan, VLESS, Shadowsocks, and VMess
+- TCP, WebSocket, and TLS tunnel transports; unsupported variants are rejected during import
 - Subscription and text/Base64 import
 - Batch probes, filtering, deletion, assignment, and balancing
 - Fallback per scope: none, direct, or a fixed node
 - Proxy-pool mode without global cooldown after one connection failure
 - Immediate recovery probes after fixed-proxy transport failures, with per-node coalescing and bounded waiting for fast retry
 - Optional [Egress Quality Guard](./tools/egress-quality-guard/README.md) for active per-node model probes, guarded quarantine, and recovery; enable it with the built-in `quality-guard` Compose profile
+
+Hysteria and TUIC are not supported yet. FlareSolverr accepts only HTTP/SOCKS proxy URLs, so automatic clearance refresh cannot use a tunnel share URL directly.
 
 To enable the guard, add a `qualityGuard` section to `config.yaml`, then start
 the profile. The main service creates and reuses a non-exportable system probe
@@ -377,7 +389,12 @@ For managed Web/Console Cloudflare Clearance:
 docker compose --profile flaresolverr up -d
 ```
 
-Then select `FlareSolverr` under **Runtime Settings → Media & Network → Clearance** and use `http://flaresolverr:8191`.
+Then use `http://flaresolverr:8191` under **Runtime Settings → Media & Network → Clearance** and select one of the managed modes:
+
+- `FlareSolverr` proactively refreshes stale fixed-egress Clearance on the configured schedule.
+- `On demand` keeps the last successful Clearance regardless of age and solves again only after an upstream rejection explicitly invalidates it. Scheduled refresh does not launch a browser in this mode.
+
+`Manual` never invokes FlareSolverr. The on-demand mode can make the first request without a managed Clearance; if Cloudflare rejects it, the next lease performs one deduplicated solve.
 
 The egress layer retries only connection failures known to occur before request submission. It does not replay submitted generation requests, authentication failures, exhausted quotas, or upstream rate limits.
 

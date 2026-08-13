@@ -101,7 +101,7 @@ func validatePreparedAudit(value preparedAudit) error {
 	if !auditStringAllowed(row.Provider, "grok_build", "grok_web", "grok_console") {
 		return errors.New("provider is invalid")
 	}
-	if !auditStringAllowed(row.Operation, "responses", "compaction", "chat", "messages", "image", "image_edit", "video") {
+	if !auditStringAllowed(row.Operation, "responses", "compaction", "chat", "messages", "image", "image_edit", "video", "tts", "stt", "realtime", "voice") {
 		return errors.New("operation is invalid")
 	}
 	if !auditStringAllowed(row.UsageSource, "upstream", "estimated", "none") {
