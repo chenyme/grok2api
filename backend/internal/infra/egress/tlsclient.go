@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	tlsclient "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
 	"github.com/bogdanfinn/websocket"
+	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 )
 
 type browserClient struct{ inner tlsclient.HttpClient }
@@ -62,7 +64,19 @@ func newBrowserClient(proxyURL, userAgent string) (*browserClient, error) {
 		tlsclient.WithNotFollowRedirects(),
 	}
 	if proxyURL != "" {
-		options = append(options, tlsclient.WithProxyUrl(proxyURL))
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("解析浏览器出口代理: %w", err)
+		}
+		if tunnelproxy.IsSupportedScheme(parsed.Scheme) {
+			dialer, err := tunnelproxy.NewDialer(proxyURL)
+			if err != nil {
+				return nil, fmt.Errorf("创建浏览器隧道代理: %w", err)
+			}
+			options = append(options, tlsclient.WithDialContext(dialer.DialContext))
+		} else {
+			options = append(options, tlsclient.WithProxyUrl(proxyURL))
+		}
 	}
 	client, err := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(), options...)
 	if err != nil {

@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -21,20 +22,45 @@ func TestSanitizeCloudflareCookiesDropsControlsAndNonCloudflareValues(t *testing
 }
 
 func TestNormalizeProxyURLValidatesStructure(t *testing.T) {
+	vmess := "vmess://" + base64.RawStdEncoding.EncodeToString([]byte(`{"v":"2","ps":"node","add":"proxy.example","port":"443","id":"123e4567-e89b-12d3-a456-426614174000","aid":"0","scy":"auto","net":"ws","tls":"tls","sni":"edge.example","host":"edge.example","path":"/ws"}`))
 	for _, raw := range []string{
 		"http://user:password@127.0.0.1:8080", "https://proxy.example:8443",
 		"socks4://127.0.0.1:1080", "socks4a://proxy.example:1080",
 		"socks5://user:password@127.0.0.1:1080", "socks5h://user:password@proxy.example:1080",
+		"trojan://password@proxy.example:443?security=tls&sni=edge.example#remark",
+		"vless://123e4567-e89b-12d3-a456-426614174000@proxy.example:443?encryption=none&security=tls&sni=edge.example#remark",
+		"ss://YWVzLTEyOC1nY206c2VjcmV0@proxy.example:8388#remark",
+		vmess,
 	} {
 		value, err := NormalizeProxyURL(raw)
 		if err != nil || value == "" {
 			t.Fatalf("valid proxy %q = %q, err = %v", raw, value, err)
 		}
 	}
-	for _, invalid := range []string{"file:///tmp/proxy", "https://", "http://proxy.example/path", "http://proxy.example\r\nX-Leak: yes"} {
+	for _, invalid := range []string{
+		"file:///tmp/proxy", "https://", "http://proxy.example/path", "http://proxy.example\r\nX-Leak: yes",
+		"vless://uuid@127.0.0.1:443?encryption=none&flow=xtls-rprx-vision#remark",
+		"ss://base64#remark", "vmess://base64#remark", "hysteria://127.0.0.1:443",
+		"hysteria2://127.0.0.1:443", "tuic://user:pass@127.0.0.1:443", "tuicv5://user:pass@127.0.0.1:443",
+	} {
 		if _, err := NormalizeProxyURL(invalid); err == nil {
 			t.Fatalf("invalid proxy accepted: %q", invalid)
 		}
+	}
+}
+
+func TestNormalizeProxyURLStripsTunnelRemarks(t *testing.T) {
+	base := "trojan://password@proxy.example:443?security=tls&sni=edge.example"
+	one, err := NormalizeProxyURL(base + "#one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := NormalizeProxyURL(base + "#two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one != two || strings.Contains(one, "#") {
+		t.Fatalf("normalized tunnel identities = %q and %q", one, two)
 	}
 }
 
