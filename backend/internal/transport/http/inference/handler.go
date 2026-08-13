@@ -132,6 +132,7 @@ type messagesRequest struct {
 type imageGenerationRequest struct {
 	Model          string          `json:"model"`
 	Prompt         string          `json:"prompt"`
+	Messages       json.RawMessage `json:"messages"`
 	Count          *int            `json:"n"`
 	PartialImages  *int            `json:"partial_images"`
 	Size           string          `json:"size"`
@@ -408,7 +409,22 @@ func (h *Handler) generateImage(c *gin.Context) {
 		return
 	}
 	var request imageGenerationRequest
-	if decodeSingleJSON(c.Request.Body, &request, false) != nil || strings.TrimSpace(request.Model) == "" || strings.TrimSpace(request.Prompt) == "" {
+	if decodeSingleJSON(c.Request.Body, &request, false) != nil {
+		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片请求缺少有效 model 或 prompt")
+		return
+	}
+	model := strings.TrimSpace(request.Model)
+	prompt := strings.TrimSpace(request.Prompt)
+	chatStyle := hasJSONValue(request.Messages)
+	if prompt == "" {
+		var err error
+		prompt, err = extractVideoPromptFromMessages(request.Messages)
+		if err != nil {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片生成 messages 无效: "+err.Error())
+			return
+		}
+	}
+	if model == "" || prompt == "" {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片请求缺少有效 model 或 prompt")
 		return
 	}
@@ -424,7 +440,7 @@ func (h *Handler) generateImage(c *gin.Context) {
 		}
 		count = *request.Count
 	}
-	if request.Stream && count != 1 {
+	if request.Stream && count != 1 && !chatStyle {
 		writeImageGenerationUserError(c, "unsupported_parameter", "input", "Streaming is only supported with n=1.")
 		return
 	}
@@ -449,17 +465,128 @@ func (h *Handler) generateImage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	result, err := h.gateway.GenerateImage(c.Request.Context(), gateway.ImageGenerationInput{
-		RequestID: requestID, ClientKey: clientKey, PublicModel: request.Model, Prompt: request.Prompt,
+	created := time.Now().Unix()
+	if chatStyle && request.Stream {
+		beginChatCompletionStream(c)
+		writeChatCompletionChunk(c.Writer, requestID, model, created, "图片生成已开始。\n", nil)
+	}
+	responseFormat := request.ResponseFormat
+	streamUpstream := request.Stream
+	if chatStyle {
+		responseFormat = "url"
+		streamUpstream = false
+		partialImages = 0
+	}
+	imageInput := gateway.ImageGenerationInput{
+		RequestID: requestID, ClientKey: clientKey, PublicModel: model, Prompt: prompt,
 		Count: count, Size: request.Size, AspectRatio: request.AspectRatio,
-		Resolution: request.Resolution, Quality: quality, ResponseFormat: request.ResponseFormat,
-		Streaming: request.Stream, PartialImages: partialImages,
-	})
+		Resolution: request.Resolution, Quality: quality, ResponseFormat: responseFormat,
+		Streaming: streamUpstream, PartialImages: partialImages,
+	}
+	result, err := h.generateImageWithChatHeartbeat(c, imageInput, requestID, model, created, chatStyle && request.Stream)
 	if err != nil {
+		if chatStyle && request.Stream {
+			finishChatCompletionStream(c.Writer, requestID, model, created, "图片生成失败，请稍后重试。")
+			return
+		}
 		writeGatewayError(c, err)
 		return
 	}
+	if chatStyle {
+		urls, readErr := readImageChatResult(result)
+		if readErr != nil {
+			if request.Stream {
+				finishChatCompletionStream(c.Writer, requestID, model, created, "图片生成失败，请稍后重试。")
+				return
+			}
+			writeOpenAIError(c, http.StatusBadGateway, "image_generation_failed", "图片生成失败，请稍后重试")
+			return
+		}
+		content := imageChatCompletionContent(urls)
+		if request.Stream {
+			finishChatCompletionStream(c.Writer, requestID, model, created, content)
+			return
+		}
+		writeChatCompletion(c, requestID, model, created, content)
+		return
+	}
 	h.writeResult(c, result, request.Stream, streamProtocolImage)
+}
+
+func (h *Handler) generateImageWithChatHeartbeat(c *gin.Context, input gateway.ImageGenerationInput, id, model string, created int64, heartbeat bool) (*gateway.Result, error) {
+	if !heartbeat {
+		return h.gateway.GenerateImage(c.Request.Context(), input)
+	}
+	type outcome struct {
+		result *gateway.Result
+		err    error
+	}
+	completed := make(chan outcome, 1)
+	go func() {
+		result, err := h.gateway.GenerateImage(c.Request.Context(), input)
+		completed <- outcome{result: result, err: err}
+	}()
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case value := <-completed:
+			return value.result, value.err
+		case <-ticker.C:
+			writeChatCompletionChunk(c.Writer, id, model, created, "图片仍在生成。\n", nil)
+		case <-c.Request.Context().Done():
+			return nil, c.Request.Context().Err()
+		}
+	}
+}
+
+func readImageChatResult(result *gateway.Result) ([]string, error) {
+	usage := gateway.Usage{}
+	responseID := ""
+	errorCode := ""
+	defer result.Body.Close()
+	defer func() { result.Finalize(usage, responseID, errorCode) }()
+	body, err := io.ReadAll(io.LimitReader(result.Body, maxJSONResponseTransferBytes+1))
+	if err != nil || len(body) > maxJSONResponseTransferBytes {
+		errorCode = "image_response_invalid"
+		return nil, errors.New("图片响应读取失败")
+	}
+	metadata := extractMetadata(body)
+	usage, responseID = metadata.Usage, metadata.ResponseID
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		errorCode = "upstream_error"
+		return nil, errors.New("图片上游响应失败")
+	}
+	var payload struct {
+		Data []struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		errorCode = "image_response_invalid"
+		return nil, errors.New("图片响应格式无效")
+	}
+	urls := make([]string, 0, len(payload.Data))
+	for _, item := range payload.Data {
+		value := strings.TrimSpace(item.URL)
+		if value != "" {
+			urls = append(urls, value)
+		}
+	}
+	if len(urls) == 0 {
+		errorCode = "image_response_invalid"
+		return nil, errors.New("图片响应没有媒体地址")
+	}
+	return urls, nil
+}
+
+func imageChatCompletionContent(urls []string) string {
+	var content strings.Builder
+	content.WriteString("图片生成完成。")
+	for index, value := range urls {
+		fmt.Fprintf(&content, "\n\n![生成图片 %d](%s)\n[下载原图 %d](%s)", index+1, value, index+1, value)
+	}
+	return content.String()
 }
 
 func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
@@ -961,67 +1088,105 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		return
 	}
 	if hasJSONValue(request.Messages) {
-		h.writeVideoChatAccepted(c, job.ID, model, request.Stream != nil && *request.Stream)
+		h.writeVideoChatResult(c, job, clientKey, model, request.Stream != nil && *request.Stream)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
 }
 
-func (h *Handler) writeVideoChatAccepted(c *gin.Context, jobID, model string, stream bool) {
+func (h *Handler) writeVideoChatResult(c *gin.Context, job mediadomain.Job, clientKey clientkeydomain.Key, model string, stream bool) {
 	created := time.Now().Unix()
-	content := fmt.Sprintf(
-		"视频生成任务已提交。\n任务 ID: %s\n状态查询: %s\n视频地址: %s",
-		jobID,
-		h.videoStatusURL(jobID),
-		h.videoContentURL(jobID),
-	)
-	if !stream {
-		c.JSON(http.StatusOK, gin.H{
-			"id":      jobID,
-			"object":  "chat.completion",
-			"created": created,
-			"model":   model,
-			"choices": []gin.H{{
-				"index":         0,
-				"message":       gin.H{"role": "assistant", "content": content},
-				"finish_reason": "stop",
-			}},
-		})
+	if stream {
+		beginChatCompletionStream(c)
+		writeChatCompletionChunk(c.Writer, job.ID, model, created, "视频生成已开始。\n", nil)
+	}
+	lastProgress := -1
+	lastProgressSentAt := time.Time{}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		current, err := h.gateway.GetVideo(c.Request.Context(), job.ID, clientKey)
+		if err != nil {
+			h.finishVideoChat(c, job.ID, model, created, stream, "视频生成状态读取失败，请稍后重试。")
+			return
+		}
+		switch current.Status {
+		case mediadomain.StatusCompleted:
+			if current.ResultAssetID == "" {
+				h.finishVideoChat(c, job.ID, model, created, stream, "视频已生成，但媒体归档尚未完成，请稍后重试。")
+				return
+			}
+			mediaURL := h.videoAssetURL(current.ResultAssetID)
+			content := fmt.Sprintf("视频生成完成。\n\n<video controls src=\"%s\"></video>\n\n[下载视频](%s)", mediaURL, mediaURL)
+			h.finishVideoChat(c, job.ID, model, created, stream, content)
+			return
+		case mediadomain.StatusFailed:
+			message := "视频生成失败，请稍后重试。"
+			if strings.TrimSpace(current.ErrorMessage) != "" {
+				message = "视频生成失败：" + strings.TrimSpace(current.ErrorMessage)
+			}
+			h.finishVideoChat(c, job.ID, model, created, stream, message)
+			return
+		default:
+			progress := min(99, max(0, current.Progress))
+			if stream && (progress != lastProgress || time.Since(lastProgressSentAt) >= 15*time.Second) {
+				prefix := "视频生成进度"
+				if progress == lastProgress {
+					prefix = "视频仍在生成"
+				}
+				writeChatCompletionChunk(c.Writer, job.ID, model, created, fmt.Sprintf("%s：%d%%\n", prefix, progress), nil)
+				lastProgress = progress
+				lastProgressSentAt = time.Now()
+			}
+		}
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (h *Handler) finishVideoChat(c *gin.Context, id, model string, created int64, stream bool, content string) {
+	if stream {
+		finishChatCompletionStream(c.Writer, id, model, created, content)
 		return
 	}
+	writeChatCompletion(c, id, model, created, content)
+}
 
+func beginChatCompletionStream(c *gin.Context) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
-	writeVideoChatChunk(c.Writer, gin.H{
-		"id":      jobID,
-		"object":  "chat.completion.chunk",
-		"created": created,
-		"model":   model,
-		"choices": []gin.H{{
-			"index":         0,
-			"delta":         gin.H{"role": "assistant", "content": content},
-			"finish_reason": nil,
-		}},
-	})
-	writeVideoChatChunk(c.Writer, gin.H{
-		"id":      jobID,
-		"object":  "chat.completion.chunk",
-		"created": created,
-		"model":   model,
-		"choices": []gin.H{{
-			"index":         0,
-			"delta":         gin.H{},
-			"finish_reason": "stop",
-		}},
-	})
-	_, _ = c.Writer.WriteString("data: [DONE]\n\n")
-	c.Writer.Flush()
 }
 
-func writeVideoChatChunk(writer gin.ResponseWriter, chunk gin.H) {
+func writeChatCompletion(c *gin.Context, id, model string, created int64, content string) {
+	c.JSON(http.StatusOK, gin.H{
+		"id": id, "object": "chat.completion", "created": created, "model": model,
+		"choices": []gin.H{{"index": 0, "message": gin.H{"role": "assistant", "content": content}, "finish_reason": "stop"}},
+	})
+}
+
+func finishChatCompletionStream(writer gin.ResponseWriter, id, model string, created int64, content string) {
+	writeChatCompletionChunk(writer, id, model, created, content, nil)
+	finishReason := "stop"
+	writeChatCompletionChunk(writer, id, model, created, "", &finishReason)
+	_, _ = writer.WriteString("data: [DONE]\n\n")
+	writer.Flush()
+}
+
+func writeChatCompletionChunk(writer gin.ResponseWriter, id, model string, created int64, content string, finishReason *string) {
+	delta := gin.H{}
+	if content != "" {
+		delta = gin.H{"role": "assistant", "content": content}
+	}
+	chunk := gin.H{
+		"id": id, "object": "chat.completion.chunk", "created": created, "model": model,
+		"choices": []gin.H{{"index": 0, "delta": delta, "finish_reason": finishReason}},
+	}
 	data, err := json.Marshal(chunk)
 	if err != nil {
 		return
@@ -1110,6 +1275,18 @@ func (h *Handler) videoContentURL(jobID string) string {
 
 func (h *Handler) videoStatusURL(jobID string) string {
 	return h.videoURL(jobID, "")
+}
+
+func (h *Handler) videoAssetURL(assetID string) string {
+	path := "/v1/media/videos/" + url.PathEscape(assetID) + ".mp4"
+	baseURL := h.publicAPIBaseURL
+	if h.publicBaseURL != nil {
+		baseURL = strings.TrimRight(strings.TrimSpace(h.publicBaseURL()), "/")
+	}
+	if baseURL == "" {
+		return path
+	}
+	return baseURL + path
 }
 
 func (h *Handler) videoURL(jobID, suffix string) string {

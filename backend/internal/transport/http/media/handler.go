@@ -83,7 +83,8 @@ func (h *Handler) getImage(c *gin.Context) {
 }
 
 func (h *Handler) getVideo(c *gin.Context) {
-	asset, body, err := h.service.OpenVideo(c.Request.Context(), c.Param("assetId"))
+	assetID := strings.TrimSuffix(c.Param("assetId"), ".mp4")
+	asset, body, err := h.service.OpenVideo(c.Request.Context(), assetID)
 	if errors.Is(err, mediaapp.ErrAssetNotFound) {
 		c.Status(http.StatusNotFound)
 		return
@@ -99,7 +100,7 @@ func (h *Handler) getVideo(c *gin.Context) {
 		return
 	}
 	c.Header("Content-Type", asset.MIMEType)
-	c.Header("Content-Disposition", `inline; filename="`+asset.ID+`"`)
+	c.Header("Content-Disposition", `inline; filename="`+asset.ID+`.mp4"`)
 	c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	c.Header("ETag", `"`+asset.SHA256+`"`)
 	c.Header("X-Content-Type-Options", "nosniff")

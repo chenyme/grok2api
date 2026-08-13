@@ -235,13 +235,14 @@ func TestVideoContentURLFollowsRuntimePublicAPIBase(t *testing.T) {
 	}
 }
 
-func TestWriteVideoChatAcceptedReturnsChatCompletion(t *testing.T) {
+func TestWriteChatCompletionReturnsMediaMessage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
 	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com")
+	content := "视频生成完成。\n\n[下载视频](" + handler.videoAssetURL("vid_request_1") + ")"
 
-	handler.writeVideoChatAccepted(context, "video_request_1", "grok-imagine-video", false)
+	writeChatCompletion(context, "video_request_1", "grok-imagine-video", 123, content)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -262,25 +263,24 @@ func TestWriteVideoChatAcceptedReturnsChatCompletion(t *testing.T) {
 	if response.Object != "chat.completion" || len(response.Choices) != 1 || response.Choices[0].Message.Role != "assistant" || response.Choices[0].FinishReason != "stop" {
 		t.Fatalf("response=%#v", response)
 	}
-	content := response.Choices[0].Message.Content
+	responseContent := response.Choices[0].Message.Content
 	for _, want := range []string{
-		"video_request_1",
-		"https://api.example.com/v1/videos/video_request_1",
-		"https://api.example.com/v1/videos/video_request_1/content",
+		"https://api.example.com/v1/media/videos/vid_request_1.mp4",
+		"下载视频",
 	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("content %q does not contain %q", content, want)
+		if !strings.Contains(responseContent, want) {
+			t.Fatalf("content %q does not contain %q", responseContent, want)
 		}
 	}
 }
 
-func TestWriteVideoChatAcceptedReturnsChatCompletionStream(t *testing.T) {
+func TestFinishChatCompletionStreamReturnsMediaMessage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com")
-
-	handler.writeVideoChatAccepted(context, "video_request_2", "grok-imagine-video", true)
+	beginChatCompletionStream(context)
+	writeChatCompletionChunk(context.Writer, "video_request_2", "grok-imagine-video", 123, "视频生成进度：42%\n", nil)
+	finishChatCompletionStream(context.Writer, "video_request_2", "grok-imagine-video", 123, "视频生成完成。\n\n[下载视频](https://api.example.com/v1/media/videos/vid_request_2.mp4)")
 
 	if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("status=%d content-type=%q", recorder.Code, recorder.Header().Get("Content-Type"))
@@ -290,12 +290,45 @@ func TestWriteVideoChatAcceptedReturnsChatCompletionStream(t *testing.T) {
 		`"object":"chat.completion.chunk"`,
 		`"role":"assistant"`,
 		`"finish_reason":"stop"`,
-		"https://api.example.com/v1/videos/video_request_2/content",
+		"视频生成进度：42%",
+		"https://api.example.com/v1/media/videos/vid_request_2.mp4",
 		"data: [DONE]\n\n",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("stream %q does not contain %q", body, want)
 		}
+	}
+}
+
+func TestImageChatCompletionContentRendersEveryImage(t *testing.T) {
+	content := imageChatCompletionContent([]string{
+		"https://api.example.com/v1/media/images/img_one",
+		"https://api.example.com/v1/media/images/img_two",
+	})
+	for _, want := range []string{
+		"图片生成完成",
+		"![生成图片 1](https://api.example.com/v1/media/images/img_one)",
+		"![生成图片 2](https://api.example.com/v1/media/images/img_two)",
+		"[下载原图 2](https://api.example.com/v1/media/images/img_two)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("content %q does not contain %q", content, want)
+		}
+	}
+}
+
+func TestReadImageChatResultReturnsPublicURLsAndFinalizes(t *testing.T) {
+	finalized := 0
+	result := &gateway.Result{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"created":123,"data":[{"url":"https://api.example.com/v1/media/images/img_one"}]}`)),
+		Finalize: func(gateway.Usage, string, string) {
+			finalized++
+		},
+	}
+	urls, err := readImageChatResult(result)
+	if err != nil || len(urls) != 1 || urls[0] != "https://api.example.com/v1/media/images/img_one" || finalized != 1 {
+		t.Fatalf("urls=%#v err=%v finalized=%d", urls, err, finalized)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +112,11 @@ func TestPublicVideoAssetSupportsGetHeadAndRange(t *testing.T) {
 	router.ServeHTTP(partial, rangeRequest)
 	if partial.Code != http.StatusPartialContent || partial.Body.Len() != 4 || partial.Header().Get("Content-Range") == "" {
 		t.Fatalf("Range status=%d size=%d headers=%#v", partial.Code, partial.Body.Len(), partial.Header())
+	}
+	suffixed := httptest.NewRecorder()
+	router.ServeHTTP(suffixed, httptest.NewRequest(http.MethodGet, path+".mp4", nil))
+	if suffixed.Code != http.StatusOK || suffixed.Body.Len() != len(payload) || !strings.Contains(suffixed.Header().Get("Content-Disposition"), asset.ID+".mp4") {
+		t.Fatalf("suffixed GET status=%d size=%d headers=%#v", suffixed.Code, suffixed.Body.Len(), suffixed.Header())
 	}
 }
 
