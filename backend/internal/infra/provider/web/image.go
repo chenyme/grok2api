@@ -470,9 +470,9 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 	return "", fmt.Errorf("Grok Web Lite 图片签名刷新失败")
 }
 
-func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provider.ResponseResourceRequest, input openAIRequest, normalized normalizedChatInput, spec ModelSpec) (*provider.Response, error) {
+func (a *Adapter) forwardImageChatCompletion(ctx context.Context, request provider.ResponseResourceRequest, input openAIRequest, normalized normalizedChatInput, spec ModelSpec) (*provider.Response, error) {
 	if len(normalized.Attachments) > 0 {
-		return invalidImageRequest("grok-imagine-image-lite 只支持纯文本生图；附件请使用对应的图片编辑或对话模型")
+		return invalidImageRequest("文生图模型只接受当前用户消息中的纯文本；图生图请使用 grok-imagine-image-edit 和 /v1/images/edits")
 	}
 	count := 1
 	format := "url"
@@ -490,12 +490,15 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 	if format != "url" && format != "b64_json" {
 		return invalidImageRequest("image_config.response_format 必须是 url 或 b64_json")
 	}
+	if spec.ProtocolModel != "imagine-lite" {
+		return a.forwardQualityImageChatCompletion(ctx, request, input, normalized, count, format)
+	}
 	responseID := newWebID("resp")
 	streaming := input.Stream || request.Streaming
 	if streaming {
 		reader, writer := io.Pipe()
 		streamCtx, cancel := context.WithCancel(ctx)
-		go a.streamLiteChatImages(streamCtx, writer, request.Credential, spec, responseID, input.Model, normalized.Prompt, count, format)
+		go a.streamLiteChatImages(streamCtx, writer, request.Credential, spec, responseID, input.Model, request.Operation, normalized.Prompt, count, format)
 		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: &cancelBody{ReadCloser: reader, cancel: cancel}, QuotaUnits: count}, nil
 	}
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(normalized.Prompt)}
@@ -517,7 +520,7 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 		}
 		parsed.appendText(liteImageMarkdown(item))
 	}
-	payload := buildOpenAIResult("chat", responseID, input.Model, parsed, false)
+	payload := buildOpenAIResult(request.Operation, responseID, input.Model, parsed, false)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -525,9 +528,9 @@ func (a *Adapter) forwardLiteChatCompletion(ctx context.Context, request provide
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(data)), QuotaUnits: count}, nil
 }
 
-func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWriter, credential account.Credential, spec ModelSpec, responseID, model, prompt string, count int, format string) {
+func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWriter, credential account.Credential, spec ModelSpec, responseID, model, operation, prompt string, count int, format string) {
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(prompt)}
-	writeStreamStart(writer, "chat", responseID, model, parsed.InputTokens)
+	writeStreamStart(writer, operation, responseID, model, parsed.InputTokens)
 	for range count {
 		rawURL, err := a.generateLiteImageURL(ctx, credential, spec, prompt)
 		if err != nil {
@@ -544,14 +547,69 @@ func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWrite
 			delta = "\n\n" + delta
 		}
 		parsed.appendText(delta)
-		if err := writeStreamDelta(writer, "chat", responseID, model, "text", delta); err != nil {
+		if err := writeStreamDelta(writer, operation, responseID, model, "text", delta); err != nil {
 			_ = writer.CloseWithError(err)
 			return
 		}
 	}
-	payload := buildOpenAIResult("chat", responseID, model, parsed, false)
-	writeStreamDone(writer, "chat", responseID, model, parsed, payload)
+	payload := buildOpenAIResult(operation, responseID, model, parsed, false)
+	writeStreamDone(writer, operation, responseID, model, parsed, payload)
 	_ = writer.Close()
+}
+
+func (a *Adapter) forwardQualityImageChatCompletion(ctx context.Context, request provider.ResponseResourceRequest, input openAIRequest, normalized normalizedChatInput, count int, format string) (*provider.Response, error) {
+	aspectRatio := ""
+	resolution := ""
+	if input.ImageConfig != nil {
+		aspectRatio = input.ImageConfig.AspectRatio
+		resolution = input.ImageConfig.Resolution
+	}
+	generated, err := a.GenerateImage(ctx, provider.ImageGenerationRequest{
+		Credential: request.Credential, Model: request.Model, Prompt: normalized.Prompt,
+		Count: count, AspectRatio: aspectRatio, Resolution: resolution, ResponseFormat: format,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if generated.StatusCode < http.StatusOK || generated.StatusCode >= http.StatusMultipleChoices {
+		return generated, nil
+	}
+	defer generated.Body.Close()
+	var payload struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(generated.Body).Decode(&payload); err != nil {
+		return nil, provider.NewMediaPostProcessingError(provider.MediaPostProcessingStorage, fmt.Errorf("图片生成兼容响应解析失败: %w", err))
+	}
+	parsed := parsedChat{ResponseID: newWebID("resp"), InputTokens: estimateTokens(normalized.Prompt)}
+	for _, item := range payload.Data {
+		markdown := liteImageMarkdown(item)
+		if markdown == "" {
+			continue
+		}
+		if parsed.Text.Len() > 0 {
+			parsed.appendText("\n\n")
+		}
+		parsed.appendText(markdown)
+	}
+	if parsed.Text.Len() == 0 {
+		return nil, fmt.Errorf("图片生成兼容响应中没有图片")
+	}
+	result := buildOpenAIResult(request.Operation, parsed.ResponseID, input.Model, parsed, false)
+	if input.Stream || request.Streaming {
+		var stream bytes.Buffer
+		writeStreamStart(&stream, request.Operation, parsed.ResponseID, input.Model, parsed.InputTokens)
+		if err := writeStreamDelta(&stream, request.Operation, parsed.ResponseID, input.Model, "text", parsed.Text.String()); err != nil {
+			return nil, err
+		}
+		writeStreamDone(&stream, request.Operation, parsed.ResponseID, input.Model, parsed, result)
+		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: io.NopCloser(bytes.NewReader(stream.Bytes())), QuotaUnits: generated.QuotaUnits}, nil
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(data)), QuotaUnits: generated.QuotaUnits}, nil
 }
 
 func liteImageMarkdown(item map[string]any) string {

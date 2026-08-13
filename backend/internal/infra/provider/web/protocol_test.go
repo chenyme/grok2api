@@ -143,6 +143,78 @@ func TestNormalizeOpenAIInputSeparatesTextAndImages(t *testing.T) {
 	}
 }
 
+func TestNormalizeLatestImageInputIgnoresHistoricalAssistantImage(t *testing.T) {
+	historical, _ := json.Marshal([]any{
+		map[string]any{"type": "text", "text": "first result"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/first.png"}},
+	})
+	latest, _ := json.Marshal("生成另一张蓝色的图片")
+	value, err := normalizeLatestImageInput(openAIRequest{Messages: []chatMessage{
+		{Role: "user", Content: json.RawMessage(`"生成第一张图片"`)},
+		{Role: "assistant", Content: historical},
+		{Role: "user", Content: latest},
+	}}, conversation.OperationChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Prompt != "生成另一张蓝色的图片" || len(value.Attachments) != 0 {
+		t.Fatalf("normalized latest image input = %#v", value)
+	}
+}
+
+func TestNormalizeLatestResponsesImageInputIgnoresHistory(t *testing.T) {
+	input, _ := json.Marshal([]any{
+		map[string]any{"type": "message", "role": "assistant", "content": []any{
+			map[string]any{"type": "output_text", "text": "![image](https://example.com/first.png)"},
+			map[string]any{"type": "input_image", "image_url": "https://example.com/first.png"},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": "generate a different image"},
+		}},
+	})
+	value, err := normalizeLatestImageInput(openAIRequest{Input: input}, conversation.OperationResponses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Prompt != "generate a different image" || len(value.Attachments) != 0 {
+		t.Fatalf("normalized latest responses input = %#v", value)
+	}
+}
+
+func TestImageChatRejectsOnlyCurrentTurnAttachment(t *testing.T) {
+	content, _ := json.Marshal([]any{
+		map[string]any{"type": "text", "text": "make it blue"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/input.png"}},
+	})
+	response, err := (&Adapter{}).ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Method: http.MethodPost, Model: "grok-imagine-image", Operation: conversation.OperationChat,
+		Body: []byte(fmt.Sprintf(`{"model":"grok-imagine-image-lite","messages":[{"role":"user","content":%s}]}`, content)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "/v1/images/edits") {
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+}
+
+func TestQualityImageResponsesUsesImageCompatibilityValidation(t *testing.T) {
+	response, err := (&Adapter{}).ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Method: http.MethodPost, Model: "grok-imagine-image-quality", Operation: conversation.OperationResponses,
+		Body: []byte(`{"model":"grok-imagine-image-quality-lite","input":[{"role":"user","content":[{"type":"input_text","text":"draw"}]}],"image_config":{"n":0}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "image_config.n") || strings.Contains(string(body), "模型不支持文本对话") {
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+}
+
 func TestNormalizeResponsesInputImage(t *testing.T) {
 	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	input, _ := json.Marshal([]any{map[string]any{
