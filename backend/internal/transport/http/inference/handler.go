@@ -462,14 +462,13 @@ func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
 		writeOpenAIError(c, http.StatusBadGateway, "media_too_large", "上游媒体超过 2 GiB 安全上限")
 		return
 	}
-	setSafeMediaResponseHeaders(c, contentType, result.Header)
+	setSafeMediaResponseHeaders(c, result.Header)
 	if contentLengthErr == nil && contentLength >= 0 {
 		c.Header("Content-Length", strconv.FormatInt(contentLength, 10))
 	} else {
 		c.Header("Trailer", mediaTransferErrorTrailer)
 	}
-	c.Status(result.StatusCode)
-	if err := copyMedia(responseDeadlineWriter{ResponseWriter: c.Writer}, result.Body, maxMediaResponseTransferBytes); err != nil {
+	if err := writeMediaBody(c, result.Body, contentType, result.StatusCode, maxMediaResponseTransferBytes); err != nil {
 		if errors.Is(err, errResponseTransferLimit) {
 			errorCode = "response_too_large"
 		} else {
@@ -504,8 +503,7 @@ func normalizeMediaResponseContentType(value string) (string, bool) {
 	return "", false
 }
 
-func setSafeMediaResponseHeaders(c *gin.Context, contentType string, upstream http.Header) {
-	c.Header("Content-Type", contentType)
+func setSafeMediaResponseHeaders(c *gin.Context, upstream http.Header) {
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Security-Policy", "default-src 'none'; sandbox")
@@ -517,15 +515,6 @@ func setSafeMediaResponseHeaders(c *gin.Context, contentType string, upstream ht
 	}
 }
 
-type responseDeadlineWriter struct{ http.ResponseWriter }
-
-func (w responseDeadlineWriter) Write(payload []byte) (int, error) {
-	if err := setResponseWriteDeadline(w.ResponseWriter); err != nil {
-		return 0, err
-	}
-	return w.ResponseWriter.Write(payload)
-}
-
 func setResponseWriteDeadline(writer http.ResponseWriter) error {
 	err := http.NewResponseController(writer).SetWriteDeadline(time.Now().Add(responseWriteTimeout))
 	if errors.Is(err, http.ErrNotSupported) {
@@ -534,7 +523,11 @@ func setResponseWriteDeadline(writer http.ResponseWriter) error {
 	return err
 }
 
-func copyMedia(writer io.Writer, source io.Reader, limit int64) error {
+// writeMediaBody binds the validated non-HTML content type before emitting the
+// response body, so no caller can stream media bytes without their MIME context.
+func writeMediaBody(c *gin.Context, source io.Reader, contentType string, statusCode int, limit int64) error {
+	c.Header("Content-Type", contentType)
+	c.Status(statusCode)
 	buffer := make([]byte, 64<<10)
 	var transferred int64
 	for {
@@ -548,7 +541,10 @@ func copyMedia(writer io.Writer, source io.Reader, limit int64) error {
 			if int64(writeSize) > remaining {
 				writeSize = int(remaining)
 			}
-			written, writeErr := writer.Write(buffer[:writeSize])
+			if err := setResponseWriteDeadline(c.Writer); err != nil {
+				return err
+			}
+			written, writeErr := c.Writer.Write(buffer[:writeSize])
 			transferred += int64(written)
 			if writeErr != nil {
 				return writeErr
@@ -951,7 +947,6 @@ func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size 
 		writeOpenAIError(c, http.StatusBadGateway, "invalid_media_type", "上游视频服务返回了不受支持的内容类型")
 		return
 	}
-	c.Header("Content-Type", contentType)
 	c.Header("Content-Disposition", "inline")
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
@@ -962,8 +957,7 @@ func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size 
 	} else {
 		c.Header("Trailer", mediaTransferErrorTrailer)
 	}
-	c.Status(http.StatusOK)
-	if err := copyMedia(responseDeadlineWriter{ResponseWriter: c.Writer}, body, maxMediaResponseTransferBytes); err != nil && size < 0 {
+	if err := writeMediaBody(c, body, contentType, http.StatusOK, maxMediaResponseTransferBytes); err != nil && size < 0 {
 		errorCode := "stream_interrupted"
 		if errors.Is(err, errResponseTransferLimit) {
 			errorCode = "response_too_large"

@@ -1078,24 +1078,29 @@ func TestCopyJSONForwardsBodyBeyondMetadataInspectionLimit(t *testing.T) {
 
 func TestCopyMediaRejectsUnknownLengthOverflowWithoutWritingPastLimit(t *testing.T) {
 	payload := bytes.Repeat([]byte("v"), 33)
-	var destination bytes.Buffer
-	err := copyMedia(&destination, bytes.NewReader(payload), 32)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	err := writeMediaBody(context, bytes.NewReader(payload), "video/mp4", http.StatusOK, 32)
 	if !errors.Is(err, errResponseTransferLimit) {
 		t.Fatalf("copy error = %v", err)
 	}
-	if destination.Len() != 32 {
-		t.Fatalf("forwarded media size = %d", destination.Len())
+	if recorder.Body.Len() != 32 {
+		t.Fatalf("forwarded media size = %d", recorder.Body.Len())
 	}
 }
 
 func TestCopyMediaAllowsExactLimit(t *testing.T) {
 	payload := bytes.Repeat([]byte("v"), 32)
-	var destination bytes.Buffer
-	if err := copyMedia(&destination, bytes.NewReader(payload), 32); err != nil {
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	if err := writeMediaBody(context, bytes.NewReader(payload), "video/mp4", http.StatusOK, 32); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(destination.Bytes(), payload) {
-		t.Fatalf("forwarded media = %q", destination.Bytes())
+	if !bytes.Equal(recorder.Body.Bytes(), payload) {
+		t.Fatalf("forwarded media = %q", recorder.Body.Bytes())
+	}
+	if recorder.Header().Get("Content-Type") != "video/mp4" {
+		t.Fatalf("content type = %q", recorder.Header().Get("Content-Type"))
 	}
 }
 
