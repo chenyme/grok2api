@@ -128,7 +128,9 @@ func TestVideoGenerationAcceptsChatMessagesAsPrompt(t *testing.T) {
 		{name: "text content parts", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":[{"type":"text","text":"animate"},{"type":"input_text","text":"ocean waves"}]}]}`},
 		{name: "last user message", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"first"},{"role":"assistant","content":"reply"},{"role":"user","content":"final prompt"}]}`},
 		{name: "chat stream flag", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"animate ocean waves"}],"stream":true}`},
+		{name: "chat sampling metadata", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"animate ocean waves"}],"stream":true,"temperature":0.7,"top_p":0.9,"max_tokens":256,"presence_penalty":0,"frequency_penalty":0,"stop":["DONE"],"seed":42,"logprobs":false,"top_logprobs":2,"tools":[],"tool_choice":"none","parallel_tool_calls":false,"response_format":{"type":"text"},"reasoning_effort":"medium"}`},
 		{name: "explicit prompt takes precedence", body: `{"model":"grok-imagine-video","prompt":"explicit","messages":{"not":"an array"}}`},
+		{name: "legacy structured parameters", body: `{"model":"grok-imagine-video","prompt":"animate ocean waves","duration":4,"aspect_ratio":"1:1","resolution":"480p"}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(test.body))
@@ -176,6 +178,27 @@ func TestExtractVideoPromptFromMessagesUsesOnlyLastUserText(t *testing.T) {
 	prompt, err := extractVideoPromptFromMessages(raw)
 	if err != nil || prompt != "new prompt\nsecond line" {
 		t.Fatalf("prompt=%q err=%v", prompt, err)
+	}
+}
+
+func TestMergeVideoOptionHintsNeverOverridesExplicitValues(t *testing.T) {
+	inferredDuration := 12
+	inferredAspectRatio := "9:16"
+	inferredResolution := "1080p"
+	duration, hasDuration, aspectRatio, hasAspectRatio, resolution, hasResolution := mergeVideoOptionHints(
+		6, true, "4:3", true, "480p", true,
+		gateway.VideoOptionHints{Duration: &inferredDuration, AspectRatio: &inferredAspectRatio, Resolution: &inferredResolution},
+	)
+	if duration != 6 || !hasDuration || aspectRatio != "4:3" || !hasAspectRatio || resolution != "480p" || !hasResolution {
+		t.Fatalf("explicit values overwritten: %d %t %s %t %s %t", duration, hasDuration, aspectRatio, hasAspectRatio, resolution, hasResolution)
+	}
+
+	duration, hasDuration, aspectRatio, hasAspectRatio, resolution, hasResolution = mergeVideoOptionHints(
+		0, false, "", false, "", false,
+		gateway.VideoOptionHints{Duration: &inferredDuration, AspectRatio: &inferredAspectRatio, Resolution: &inferredResolution},
+	)
+	if duration != 12 || !hasDuration || aspectRatio != "9:16" || !hasAspectRatio || resolution != "1080p" || !hasResolution {
+		t.Fatalf("missing values not filled: %d %t %s %t %s %t", duration, hasDuration, aspectRatio, hasAspectRatio, resolution, hasResolution)
 	}
 }
 

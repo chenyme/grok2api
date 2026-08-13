@@ -174,20 +174,45 @@ type videoGenerationAudio struct {
 }
 
 type videoGenerationRequest struct {
-	Model           string                 `json:"model"`
-	Prompt          string                 `json:"prompt"`
-	Messages        json.RawMessage        `json:"messages"`
-	Stream          *bool                  `json:"stream"`
-	User            *string                `json:"user"`
-	Duration        json.RawMessage        `json:"duration"`
-	AspectRatio     string                 `json:"aspect_ratio"`
-	Resolution      string                 `json:"resolution"`
-	Image           *videoGenerationImage  `json:"image"`
-	ReferenceImages []videoGenerationImage `json:"reference_images"`
-	ReferenceAudios []videoGenerationAudio `json:"reference_audios"`
-	Video           *videoGenerationImage  `json:"video"`
-	Output          json.RawMessage        `json:"output"`
-	StorageOptions  json.RawMessage        `json:"storage_options"`
+	Model               string                 `json:"model"`
+	Prompt              string                 `json:"prompt"`
+	Messages            json.RawMessage        `json:"messages"`
+	Stream              *bool                  `json:"stream"`
+	Temperature         *float64               `json:"temperature"`
+	TopP                *float64               `json:"top_p"`
+	MaxTokens           *int                   `json:"max_tokens"`
+	MaxCompletionTokens *int                   `json:"max_completion_tokens"`
+	PresencePenalty     *float64               `json:"presence_penalty"`
+	FrequencyPenalty    *float64               `json:"frequency_penalty"`
+	Stop                json.RawMessage        `json:"stop"`
+	Seed                *int64                 `json:"seed"`
+	Logprobs            *bool                  `json:"logprobs"`
+	TopLogprobs         *int                   `json:"top_logprobs"`
+	Tools               json.RawMessage        `json:"tools"`
+	ToolChoice          json.RawMessage        `json:"tool_choice"`
+	ParallelToolCalls   *bool                  `json:"parallel_tool_calls"`
+	ResponseFormat      json.RawMessage        `json:"response_format"`
+	ReasoningEffort     string                 `json:"reasoning_effort"`
+	LogitBias           json.RawMessage        `json:"logit_bias"`
+	Metadata            json.RawMessage        `json:"metadata"`
+	Modalities          json.RawMessage        `json:"modalities"`
+	Count               *int                   `json:"n"`
+	Prediction          json.RawMessage        `json:"prediction"`
+	ServiceTier         string                 `json:"service_tier"`
+	Store               *bool                  `json:"store"`
+	StreamOptions       json.RawMessage        `json:"stream_options"`
+	Verbosity           string                 `json:"verbosity"`
+	WebSearchOptions    json.RawMessage        `json:"web_search_options"`
+	User                *string                `json:"user"`
+	Duration            json.RawMessage        `json:"duration"`
+	AspectRatio         string                 `json:"aspect_ratio"`
+	Resolution          string                 `json:"resolution"`
+	Image               *videoGenerationImage  `json:"image"`
+	ReferenceImages     []videoGenerationImage `json:"reference_images"`
+	ReferenceAudios     []videoGenerationAudio `json:"reference_audios"`
+	Video               *videoGenerationImage  `json:"video"`
+	Output              json.RawMessage        `json:"output"`
+	StorageOptions      json.RawMessage        `json:"storage_options"`
 }
 
 type modelListItem struct {
@@ -751,33 +776,37 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	}
 
 	duration := 0
+	hasDuration := false
 	aspectRatio := ""
+	hasAspectRatio := false
 	resolution := ""
+	hasResolution := false
 	imageURL := ""
 	referenceURLs := []string{}
 	referenceAudios := []string{}
+	hasReferenceMode := false
 	videoURL := ""
 
 	if operation == gatewayVideoOperationGenerate {
 		var err error
-		duration, err = parseVideoDuration(request.Duration)
+		duration, hasDuration, err = parseOptionalVideoInteger(request.Duration)
 		if err != nil {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", err.Error())
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "duration 必须是整数或整数字符串")
+			return
+		}
+		if hasDuration && (duration < 1 || duration > 15) {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "duration 必须在 1 到 15 秒之间")
 			return
 		}
 		aspectRatio = strings.TrimSpace(request.AspectRatio)
-		if aspectRatio == "" {
-			aspectRatio = "16:9"
-		}
-		if !validVideoAspectRatio(aspectRatio) {
+		hasAspectRatio = aspectRatio != ""
+		if hasAspectRatio && !validVideoAspectRatio(aspectRatio) {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "aspect_ratio 必须是 1:1、16:9、9:16、4:3、3:4、3:2 或 2:3")
 			return
 		}
 		resolution = strings.ToLower(strings.TrimSpace(request.Resolution))
-		if resolution == "" {
-			resolution = "720p"
-		}
-		if resolution != "480p" && resolution != "720p" && resolution != "1080p" {
+		hasResolution = resolution != ""
+		if hasResolution && resolution != "480p" && resolution != "720p" && resolution != "1080p" {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "resolution 必须是 480p、720p 或 1080p")
 			return
 		}
@@ -817,13 +846,13 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_images 不能超过 %d 张", mediadomain.MaxInputImages))
 			return
 		}
-		hasReferenceMode := len(referenceURLs) > 0 || len(referenceAudios) > 0
+		hasReferenceMode = len(referenceURLs) > 0 || len(referenceAudios) > 0
 		if hasReferenceMode {
 			if prompt == "" {
 				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "参考图/参考音频视频必须提供 prompt")
 				return
 			}
-			if resolution == "1080p" {
+			if hasResolution && resolution == "1080p" {
 				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "参考图视频 resolution 最高 720p")
 				return
 			}
@@ -886,6 +915,32 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	if !ok {
 		return
 	}
+	if operation == gatewayVideoOperationGenerate {
+		if prompt != "" && (!hasDuration || !hasAspectRatio || !hasResolution) {
+			hints, inferErr := h.gateway.InferVideoOptions(c.Request.Context(), gateway.VideoOptionParseInput{
+				RequestID: requestID, ClientKey: clientKey, Prompt: prompt,
+				NeedDuration: !hasDuration, NeedAspectRatio: !hasAspectRatio, NeedResolution: !hasResolution,
+			})
+			if inferErr == nil {
+				duration, hasDuration, aspectRatio, hasAspectRatio, resolution, hasResolution = mergeVideoOptionHints(
+					duration, hasDuration, aspectRatio, hasAspectRatio, resolution, hasResolution, hints,
+				)
+			}
+		}
+		if !hasDuration {
+			duration = 8
+		}
+		if !hasAspectRatio {
+			aspectRatio = "16:9"
+		}
+		if !hasResolution {
+			resolution = "720p"
+		}
+		if hasReferenceMode && resolution == "1080p" {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "参考图视频 resolution 最高 720p")
+			return
+		}
+	}
 	var op provider.VideoOperation
 	switch operation {
 	case gatewayVideoOperationEdit:
@@ -906,6 +961,22 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
+}
+
+func mergeVideoOptionHints(duration int, hasDuration bool, aspectRatio string, hasAspectRatio bool, resolution string, hasResolution bool, hints gateway.VideoOptionHints) (int, bool, string, bool, string, bool) {
+	if !hasDuration && hints.Duration != nil {
+		duration = *hints.Duration
+		hasDuration = true
+	}
+	if !hasAspectRatio && hints.AspectRatio != nil {
+		aspectRatio = *hints.AspectRatio
+		hasAspectRatio = true
+	}
+	if !hasResolution && hints.Resolution != nil {
+		resolution = *hints.Resolution
+		hasResolution = true
+	}
+	return duration, hasDuration, aspectRatio, hasAspectRatio, resolution, hasResolution
 }
 
 func extractVideoPromptFromMessages(raw json.RawMessage) (string, error) {
