@@ -229,11 +229,38 @@ func normalizeConsoleTools(payload map[string]any) bool {
 			if enabled, ok := tool["enable_image_understanding"].(bool); ok {
 				clean["enable_image_understanding"] = enabled
 			}
+			// Forward the image-search toggle (enable_image_search) so clients
+			// can explicitly enable/disable it; absent when not requested.
+			if enabled, ok := tool["enable_image_search"].(bool); ok {
+				clean["enable_image_search"] = enabled
+			}
 			result = append(result, clean)
 		case "x_search":
 			clean := map[string]any{"type": "x_search", "enable_video_understanding": true}
 			if enabled, ok := tool["enable_video_understanding"].(bool); ok {
 				clean["enable_video_understanding"] = enabled
+			}
+			// Forward the X-search time bounds (from_date/to_date, YYYY-MM-DD).
+			// Invalid formats and empty strings are dropped; if from_date is
+			// later than to_date both are dropped to avoid an upstream 400.
+			for _, field := range []string{"from_date", "to_date"} {
+				text, ok := tool[field].(string)
+				if !ok || text == "" {
+					continue
+				}
+				if date, err := time.Parse("2006-01-02", text); err == nil && date.Format("2006-01-02") == text {
+					clean[field] = text
+				}
+			}
+			from, hasFrom := clean["from_date"].(string)
+			to, hasTo := clean["to_date"].(string)
+			if hasFrom && hasTo {
+				fromDate, _ := time.Parse("2006-01-02", from)
+				toDate, _ := time.Parse("2006-01-02", to)
+				if fromDate.After(toDate) {
+					delete(clean, "from_date")
+					delete(clean, "to_date")
+				}
 			}
 			result = append(result, clean)
 		case "function":
