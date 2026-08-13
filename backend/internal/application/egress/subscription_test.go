@@ -76,6 +76,30 @@ func TestParseProxySubscriptionRejectsNoUsableEntries(t *testing.T) {
 	}
 }
 
+func TestParseProxySubscriptionImportsSupportedTunnelSchemes(t *testing.T) {
+	vmess := "vmess://" + base64.RawStdEncoding.EncodeToString([]byte(`{"v":"2","ps":"node","add":"proxy.example","port":"443","id":"123e4567-e89b-12d3-a456-426614174000","aid":"0","scy":"auto","net":"tcp"}`))
+	entries, skipped, err := parseProxySubscription(strings.Join([]string{
+		"http://proxy.example:8080",
+		"trojan://password@proxy.example:443#remark",
+		"vless://123e4567-e89b-12d3-a456-426614174000@proxy.example:443?encryption=none#remark",
+		"ss://YWVzLTEyOC1nY206c2VjcmV0@proxy.example:8388#remark",
+		vmess,
+		"hysteria2://proxy.example:443",
+		"tuic://user:pass@proxy.example:443",
+	}, "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 5 || skipped != 2 || entries[0].ProxyURL != "http://proxy.example:8080" {
+		t.Fatalf("entries=%#v skipped=%d", entries, skipped)
+	}
+	for _, entry := range entries[1:] {
+		if strings.Contains(entry.ProxyURL, "#") {
+			t.Fatalf("subscription remark was retained: %q", entry.ProxyURL)
+		}
+	}
+}
+
 func TestIsPublicAddressRejectsNonPublicRanges(t *testing.T) {
 	for _, raw := range []string{
 		"0.0.0.1", "10.0.0.1", "100.64.0.1", "127.0.0.1", "169.254.10.1",

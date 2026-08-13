@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	application "github.com/chenyme/grok2api/backend/internal/application/egress"
 	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
@@ -120,6 +122,39 @@ func TestNewBuildClientUsesStandardTransportForEveryProxyFamily(t *testing.T) {
 func TestNewBuildClientRejectsUnsupportedProxyScheme(t *testing.T) {
 	if _, err := newBuildClient("ftp://proxy.example:21", 5*time.Minute); err == nil {
 		t.Fatal("unsupported proxy scheme was accepted")
+	}
+}
+
+func TestValidatedProxySchemesCreateBuildAndBrowserClients(t *testing.T) {
+	vmess := "vmess://" + base64.RawStdEncoding.EncodeToString([]byte(`{"v":"2","add":"proxy.example","port":"443","id":"123e4567-e89b-12d3-a456-426614174000","aid":"0","scy":"auto","net":"tcp"}`))
+	for _, raw := range []string{
+		"http://user:password@127.0.0.1:8080",
+		"https://proxy.example:8443",
+		"socks4://127.0.0.1:1080",
+		"socks4a://proxy.example:1080",
+		"socks5://user:password@127.0.0.1:1080",
+		"socks5h://user:password@proxy.example:1080",
+		"trojan://password@proxy.example:443?security=tls&sni=edge.example",
+		"vless://123e4567-e89b-12d3-a456-426614174000@proxy.example:443?encryption=none&security=tls&sni=edge.example",
+		"ss://YWVzLTEyOC1nY206c2VjcmV0@proxy.example:8388",
+		vmess,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			normalized, err := application.NormalizeProxyURL(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			build, err := newBuildClient(normalized, 5*time.Minute)
+			if err != nil {
+				t.Fatalf("build client: %v", err)
+			}
+			build.CloseIdleConnections()
+			browser, err := newBrowserClient(normalized, DefaultUserAgent)
+			if err != nil {
+				t.Fatalf("browser client: %v", err)
+			}
+			browser.CloseIdleConnections()
+		})
 	}
 }
 
