@@ -115,6 +115,13 @@ func (a *Adapter) QuotaMode(upstreamModel string) string {
 	return ""
 }
 
+func (a *Adapter) QuotaRefreshGroup(upstreamModel string) string {
+	if spec, ok := Resolve(upstreamModel); ok && account.IsWebImagineQuotaMode(spec.Mode) {
+		return account.QuotaGroupWebImagine
+	}
+	return ""
+}
+
 func (a *Adapter) TierOrder(upstreamModel string) []account.WebTier {
 	spec, ok := Resolve(upstreamModel)
 	if !ok {

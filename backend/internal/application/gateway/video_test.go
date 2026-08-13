@@ -21,6 +21,24 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
+func TestVideoQuotaModeUsesWeb720pProduct(t *testing.T) {
+	tests := []struct {
+		provider   account.Provider
+		resolution string
+		want       string
+	}{
+		{account.ProviderWeb, "", account.QuotaModeWebVideo720p},
+		{account.ProviderWeb, "720p", account.QuotaModeWebVideo720p},
+		{account.ProviderWeb, "480p", account.QuotaModeWebVideo},
+		{account.ProviderConsole, "720p", account.QuotaModeWebVideo},
+	}
+	for _, test := range tests {
+		if got := videoQuotaMode(test.provider, account.QuotaModeWebVideo, test.resolution); got != test.want {
+			t.Fatalf("videoQuotaMode(%s, %q) = %q, want %q", test.provider, test.resolution, got, test.want)
+		}
+	}
+}
+
 func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
 	completedAt := time.Now().UTC()
 	repository := &videoUsageRepository{job: media.Job{

@@ -142,9 +142,11 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	route, selection, err := s.selectSchedulableMediaRoute(ctx, routes, input.ClientKey, model.CapabilityVideo, true, func(providerValue account.Provider) bool {
+	route, selection, err := s.selectSchedulableMediaRouteWithQuotaMode(ctx, routes, input.ClientKey, model.CapabilityVideo, true, func(providerValue account.Provider) bool {
 		_, ok := s.providers.Videos(providerValue)
 		return ok
+	}, func(route model.Route) string {
+		return videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), input.Resolution)
 	})
 	if err != nil {
 		return media.Job{}, err
@@ -424,7 +426,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	defer releaseInputSlot()
 	// 视频任务创建时已持久化账号归属；恢复只能重新获取原账号，禁止因后续
 	// 轮询或结果处理失败切换到其他账号。
-	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+	quotaMode := videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), job.Quality)
+	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
 	lease, err := s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.ID, route.UpstreamModel, quotaMode, true)
 	if err != nil {
 		if parent.Err() != nil {
@@ -561,24 +564,40 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		return
 	}
 	s.selector.MarkSuccess(context.Background(), lease.Credential)
-	if lease.QuotaMode != "" && lease.QuotaMode != "weekly" {
+	refreshMode := lease.QuotaMode
+	decrementMode := lease.QuotaMode
+	if quotaRefreshGroup != "" {
+		refreshMode = quotaRefreshGroup
+		decrementMode = quotaMode
+	}
+	if decrementMode != "" && decrementMode != "weekly" {
 		quotaCtx, quotaCancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
-		updated, quotaErr := s.accounts.DecrementQuota(quotaCtx, job.AccountID, lease.QuotaMode, 1)
+		updated, quotaErr := s.accounts.DecrementQuota(quotaCtx, job.AccountID, decrementMode, 1)
 		quotaCancel()
 		if quotaErr != nil {
-			s.logger.Warn("video_quota_decrement_failed", "provider", route.Provider, "account_id", job.AccountID, "mode", lease.QuotaMode, "error", quotaErr)
+			s.logger.Warn("video_quota_decrement_failed", "provider", route.Provider, "account_id", job.AccountID, "mode", decrementMode, "error", quotaErr)
 		} else if updated {
-			s.selector.ConsumeQuota(route.Provider, job.AccountID, lease.QuotaMode, 1)
+			s.selector.ConsumeQuota(route.Provider, job.AccountID, decrementMode, 1)
 		}
 	}
 	if err := s.recordVideoAudit(context.Background(), job, time.Since(startedAt).Milliseconds()); err != nil {
 		s.logger.Error("video_usage_record_failed", "job_id", job.ID, "event_id", "video_usage_"+job.ID, "error", err)
 	}
-	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
-		s.accounts.QueueQuotaRefresh(job.AccountID, lease.QuotaMode)
+	if quotaKind, _ := s.providers.QuotaKind(route.Provider); quotaKind == provider.QuotaRemoteWindow && refreshMode != "" {
+		s.accounts.QueueQuotaRefresh(job.AccountID, refreshMode)
 	}
 	// 输入回收放在账号状态、计费和审计收尾之后，存储抖动不得延迟关键终态逻辑。
 	s.releaseVideoInputs(job)
+}
+
+func videoQuotaMode(providerValue account.Provider, catalogMode, resolution string) string {
+	if providerValue == account.ProviderWeb && catalogMode == account.QuotaModeWebVideo {
+		resolution = strings.ToLower(strings.TrimSpace(resolution))
+		if resolution == "" || resolution == "720p" {
+			return account.QuotaModeWebVideo720p
+		}
+	}
+	return catalogMode
 }
 
 func (s *Service) acquireVideoInputSlot(ctx context.Context, references []string) (func(), error) {

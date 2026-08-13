@@ -290,6 +290,17 @@ type QuotaSnapshot struct {
 	SyncedAt time.Time
 }
 
+// QuotaGroupSnapshot is an authoritative snapshot for a group of quota modes
+// returned by one upstream request. Modes lists the complete local scope so
+// callers can atomically remove products that the upstream explicitly reports
+// as unavailable without touching unrelated quota windows.
+type QuotaGroupSnapshot struct {
+	Group    string
+	Modes    []string
+	Windows  []account.QuotaWindow
+	SyncedAt time.Time
+}
+
 type ImageGenerationRequest struct {
 	Credential     account.Credential
 	Model          string
@@ -545,6 +556,20 @@ type QuotaAdapter interface {
 	Adapter
 	SyncQuota(ctx context.Context, credential account.Credential) (QuotaSnapshot, error)
 	SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error)
+}
+
+// QuotaGroupAdapter is optional. It is used when one upstream endpoint returns
+// several related quota products as one authoritative response.
+type QuotaGroupAdapter interface {
+	Adapter
+	SyncQuotaGroup(ctx context.Context, credential account.Credential, group string) (QuotaGroupSnapshot, error)
+}
+
+// QuotaRefreshMetadataAdapter maps a model to an internal refresh group. The
+// group is scheduling metadata, not a routable quota mode.
+type QuotaRefreshMetadataAdapter interface {
+	Adapter
+	QuotaRefreshGroup(upstreamModel string) string
 }
 
 // WebAccountSettingsAdapter defines upstream profile-setting capabilities for Grok Web SSO accounts.
@@ -960,6 +985,15 @@ func (r *Registry) Quota(value account.Provider) (QuotaAdapter, bool) {
 	return result, ok
 }
 
+func (r *Registry) QuotaGroup(value account.Provider) (QuotaGroupAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(QuotaGroupAdapter)
+	return result, ok
+}
+
 // WebAccountSettings returns the Grok Web-specific account profile settings capability.
 func (r *Registry) WebAccountSettings() (WebAccountSettingsAdapter, bool) {
 	adapter, ok := r.Get(account.ProviderWeb)
@@ -980,6 +1014,18 @@ func (r *Registry) QuotaMode(value account.Provider, upstreamModel string) strin
 		return ""
 	}
 	return metadata.QuotaMode(upstreamModel)
+}
+
+func (r *Registry) QuotaRefreshGroup(value account.Provider, upstreamModel string) string {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return ""
+	}
+	metadata, ok := adapter.(QuotaRefreshMetadataAdapter)
+	if !ok {
+		return ""
+	}
+	return metadata.QuotaRefreshGroup(upstreamModel)
 }
 
 func (r *Registry) TierOrder(value account.Provider, upstreamModel string) []account.WebTier {

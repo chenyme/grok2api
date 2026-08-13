@@ -642,7 +642,10 @@ func (r *AccountRepository) getRoutingQuotaWindows(ctx context.Context, provider
 		return result, nil
 	}
 	modes := make([]string, 0, 2)
-	if provider == account.ProviderWeb {
+	// Paid Web chat routes are governed by the shared weekly pool. Imagine
+	// products have independent authoritative windows and must not be hidden by
+	// a weekly row merely because the same account also has paid chat access.
+	if provider == account.ProviderWeb && !account.IsWebImagineQuotaMode(quotaMode) {
 		modes = append(modes, "weekly")
 	}
 	if quotaMode != "" {
@@ -2305,7 +2308,7 @@ func (r *AccountRepository) GetQuotaWindows(ctx context.Context, accountIDs []ui
 }
 
 func (r *AccountRepository) SaveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error {
-	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, false)
+	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, false, nil)
 	if err == nil {
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
 	}
@@ -2313,14 +2316,48 @@ func (r *AccountRepository) SaveQuotaWindows(ctx context.Context, accountID uint
 }
 
 func (r *AccountRepository) ReplaceQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error {
-	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, true)
+	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, true, nil)
 	if err == nil {
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
 	}
 	return err
 }
 
-func (r *AccountRepository) saveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow, replace bool) error {
+func (r *AccountRepository) ReplaceQuotaWindowGroup(ctx context.Context, accountID uint64, syncedAt time.Time, modes []string, values []account.QuotaWindow) error {
+	allowed := make(map[string]struct{}, len(modes))
+	cleanModes := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		mode = strings.TrimSpace(mode)
+		if mode == "" {
+			return repository.ErrConflict
+		}
+		if _, exists := allowed[mode]; !exists {
+			allowed[mode] = struct{}{}
+			cleanModes = append(cleanModes, mode)
+		}
+	}
+	if accountID == 0 || len(cleanModes) == 0 {
+		return repository.ErrConflict
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		mode := strings.TrimSpace(value.Mode)
+		if _, ok := allowed[mode]; !ok {
+			return repository.ErrConflict
+		}
+		if _, duplicate := seen[mode]; duplicate {
+			return repository.ErrConflict
+		}
+		seen[mode] = struct{}{}
+	}
+	err := r.saveQuotaWindows(ctx, accountID, "", syncedAt, values, false, cleanModes)
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
+	}
+	return err
+}
+
+func (r *AccountRepository) saveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow, replace bool, replaceModes []string) error {
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if tier != "" {
 			profile := webAccountProfileModel{AccountID: accountID, Tier: string(tier), SyncedAt: &syncedAt}
@@ -2330,6 +2367,10 @@ func (r *AccountRepository) saveQuotaWindows(ctx context.Context, accountID uint
 		}
 		if replace {
 			if err := tx.Where("account_id = ?", accountID).Delete(&quotaWindowModel{}).Error; err != nil {
+				return err
+			}
+		} else if len(replaceModes) > 0 {
+			if err := tx.Where("account_id = ? AND mode IN ?", accountID, replaceModes).Delete(&quotaWindowModel{}).Error; err != nil {
 				return err
 			}
 		}
