@@ -12,6 +12,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const mediaJobInputMetadataPendingIndex = "CREATE INDEX IF NOT EXISTS idx_media_jobs_input_metadata_pending ON media_jobs(id) WHERE input_image_count IS NULL"
@@ -129,6 +130,7 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	hadProviderScope := hadClientKeys && db.Migrator().HasColumn(&clientKeyModel{}, "ProviderScopeMask")
 	hadTierScope := hadClientKeys && db.Migrator().HasColumn(&clientKeyModel{}, "TierScopeMask")
 	hadLegacyAccountPool := hadClientKeys && db.Migrator().HasColumn("client_keys", "account_pool")
+	hadGlobalSubscriptionProxy := db.Migrator().HasTable("egress_operations_config") && db.Migrator().HasColumn("egress_operations_config", "encrypted_subscription_proxy_url")
 	// all 作用域会让 Build 与 Web 共用 UA、健康度和冷却状态，升级时直接移除旧节点。
 	if db.Migrator().HasTable(&egressNodeModel{}) {
 		if err := db.Where("scope = ?", "all").Delete(&egressNodeModel{}).Error; err != nil {
@@ -148,6 +150,11 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	}
 	if migrateErr != nil {
 		return fmt.Errorf("初始化数据库表: %w", migrateErr)
+	}
+	if hadGlobalSubscriptionProxy {
+		if err := d.migratePerSourceSubscriptionProxy(ctx); err != nil {
+			return fmt.Errorf("迁移代理订阅拉取代理: %w", err)
+		}
 	}
 	if err := d.migrateClientKeyAccountScopes(ctx, hadLegacyAccountPool, !hadProviderScope, !hadTierScope); err != nil {
 		return fmt.Errorf("迁移客户端 Key 调用范围: %w", err)
@@ -220,6 +227,43 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 		return fmt.Errorf("迁移模型 Provider 命名空间: %w", err)
 	}
 	return nil
+}
+
+func (d *Database) migratePerSourceSubscriptionProxy(ctx context.Context) error {
+	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var legacy struct {
+			EncryptedProxyURL  string `gorm:"column:encrypted_subscription_proxy_url"`
+			MigrationCompleted bool   `gorm:"column:subscription_proxy_migration_completed"`
+		}
+		err := tx.Table("egress_operations_config").
+			Select("encrypted_subscription_proxy_url", "subscription_proxy_migration_completed").
+			Where("id = ?", 1).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Take(&legacy).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if legacy.MigrationCompleted {
+			return nil
+		}
+		if strings.TrimSpace(legacy.EncryptedProxyURL) != "" {
+			if err := tx.Model(&egressSubscriptionSourceModel{}).Where("encrypted_proxy_url = ''").Updates(map[string]any{
+				"encrypted_proxy_url": legacy.EncryptedProxyURL,
+				"next_sync_at":        nil,
+				"last_sync_error":     "",
+			}).Error; err != nil {
+				return err
+			}
+		}
+		// Keep the encrypted legacy value for still-running old replicas and a
+		// rollback window. The marker prevents subsequent startups from applying
+		// it to sources that were later configured for direct fetching.
+		return tx.Table("egress_operations_config").Where("id = ?", 1).
+			Update("subscription_proxy_migration_completed", true).Error
+	})
 }
 
 // migrateClientKeyAccountScopes translates the short-lived account_pool

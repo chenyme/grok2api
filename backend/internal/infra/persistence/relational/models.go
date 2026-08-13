@@ -478,6 +478,7 @@ type egressSubscriptionSourceModel struct {
 	Scope                  string `gorm:"size:32;not null;check:chk_egress_subscription_sources_scope,scope IN ('grok_build','grok_web','grok_console','grok_web_asset','grok_console_asset')"`
 	Enabled                bool   `gorm:"not null;default:true"`
 	EncryptedURL           string `gorm:"type:text;not null;default:'';check:chk_egress_subscription_sources_url,length(encrypted_url) <= 65536"`
+	EncryptedProxyURL      string `gorm:"type:text;not null;default:'';check:chk_egress_subscription_sources_proxy_url,length(encrypted_proxy_url) <= 65536"`
 	RefreshIntervalSeconds int    `gorm:"not null;default:900;check:chk_egress_subscription_sources_refresh,refresh_interval_seconds BETWEEN 60 AND 86400"`
 	DefaultAccountCapacity int    `gorm:"not null;default:0;check:chk_egress_subscription_sources_capacity,default_account_capacity BETWEEN 0 AND 100000"`
 	LastSyncedAt           *time.Time
@@ -533,24 +534,24 @@ type egressNodeModel struct {
 func (egressNodeModel) TableName() string { return "egress_nodes" }
 
 type egressOperationsConfigModel struct {
-	ID                            uint64    `gorm:"primaryKey;check:chk_egress_operations_config_id,id = 1"`
-	ProbeProvider                 string    `gorm:"size:16;not null;default:cloudflare;check:chk_egress_operations_config_probe_provider,probe_provider IN ('ipinfo','cloudflare')"`
-	ProbeIntervalSeconds          int       `gorm:"not null;default:900;check:chk_egress_operations_config_probe_interval,probe_interval_seconds BETWEEN 60 AND 86400"`
-	AutoAssignEnabled             bool      `gorm:"not null;default:false"`
-	AutoBalanceEnabled            bool      `gorm:"not null;default:false"`
-	AssignmentIntervalSeconds     int       `gorm:"not null;default:300;check:chk_egress_operations_config_assignment_interval,assignment_interval_seconds BETWEEN 60 AND 86400"`
-	EncryptedSubscriptionProxyURL string    `gorm:"type:text;not null;default:'';check:chk_egress_operations_config_subscription_proxy,length(encrypted_subscription_proxy_url) <= 65536"`
-	BuildFallbackMode             string    `gorm:"size:16;not null;default:none"`
-	BuildFallbackNodeID           uint64    `gorm:"not null;default:0"`
-	WebFallbackMode               string    `gorm:"size:16;not null;default:none"`
-	WebFallbackNodeID             uint64    `gorm:"not null;default:0"`
-	ConsoleFallbackMode           string    `gorm:"size:16;not null;default:none"`
-	ConsoleFallbackNodeID         uint64    `gorm:"not null;default:0"`
-	WebAssetFallbackMode          string    `gorm:"size:16;not null;default:none"`
-	WebAssetFallbackNodeID        uint64    `gorm:"not null;default:0"`
-	ConsoleAssetFallbackMode      string    `gorm:"size:16;not null;default:none"`
-	ConsoleAssetFallbackNodeID    uint64    `gorm:"not null;default:0"`
-	UpdatedAt                     time.Time `gorm:"not null"`
+	ID                                  uint64    `gorm:"primaryKey;check:chk_egress_operations_config_id,id = 1"`
+	ProbeProvider                       string    `gorm:"size:16;not null;default:cloudflare;check:chk_egress_operations_config_probe_provider,probe_provider IN ('ipinfo','cloudflare')"`
+	ProbeIntervalSeconds                int       `gorm:"not null;default:900;check:chk_egress_operations_config_probe_interval,probe_interval_seconds BETWEEN 60 AND 86400"`
+	AutoAssignEnabled                   bool      `gorm:"not null;default:false"`
+	AutoBalanceEnabled                  bool      `gorm:"not null;default:false"`
+	AssignmentIntervalSeconds           int       `gorm:"not null;default:300;check:chk_egress_operations_config_assignment_interval,assignment_interval_seconds BETWEEN 60 AND 86400"`
+	SubscriptionProxyMigrationCompleted bool      `gorm:"not null;default:false"`
+	BuildFallbackMode                   string    `gorm:"size:16;not null;default:none"`
+	BuildFallbackNodeID                 uint64    `gorm:"not null;default:0"`
+	WebFallbackMode                     string    `gorm:"size:16;not null;default:none"`
+	WebFallbackNodeID                   uint64    `gorm:"not null;default:0"`
+	ConsoleFallbackMode                 string    `gorm:"size:16;not null;default:none"`
+	ConsoleFallbackNodeID               uint64    `gorm:"not null;default:0"`
+	WebAssetFallbackMode                string    `gorm:"size:16;not null;default:none"`
+	WebAssetFallbackNodeID              uint64    `gorm:"not null;default:0"`
+	ConsoleAssetFallbackMode            string    `gorm:"size:16;not null;default:none"`
+	ConsoleAssetFallbackNodeID          uint64    `gorm:"not null;default:0"`
+	UpdatedAt                           time.Time `gorm:"not null"`
 }
 
 func (egressOperationsConfigModel) TableName() string { return "egress_operations_config" }

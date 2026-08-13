@@ -376,7 +376,7 @@ function validProxyURL(value: string): boolean {
   }
 }
 
-/** Subscription fetch proxies are global and must never use per-account lease placeholders. */
+/** Subscription fetch proxies must never use per-account lease placeholders. */
 export function validSubscriptionProxyURL(value: string): boolean {
   return !value.includes("{account}") && validProxyURL(value);
 }
