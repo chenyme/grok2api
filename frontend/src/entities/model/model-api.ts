@@ -1,6 +1,7 @@
 import type { ModelRouteDTO, ModelRouteGroupDTO } from "@/entities/model/types";
-import { apiRequest, type PaginatedDTO } from "@/shared/api/client";
+import { ApiError, apiEventStream, apiRequest, type PaginatedDTO } from "@/shared/api/client";
 import { createObjectDecoder, createPaginatedDecoder, decodeBooleanResult, decodeCountResult, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isString } from "@/shared/api/decoder";
+import { i18n } from "@/shared/i18n";
 import type { SortOrder } from "@/shared/lib/table-sort";
 
 export type ListModelsInput = {
@@ -76,8 +77,48 @@ export function listModelGroups(input: ListModelsInput): Promise<PaginatedDTO<Mo
   return apiRequest(`/api/admin/v1/models/groups?${query}`, {}, decodeModelGroupPage);
 }
 
-export function syncModels(): Promise<{ synced: number }> {
-  return apiRequest("/api/admin/v1/models/sync", { method: "POST" }, decodeCountResult<{ synced: number }>("synced"));
+type ModelSyncEventDTO = {
+  synced?: number;
+  completed?: number;
+  total?: number;
+  code?: string;
+  message?: string;
+};
+
+const decodeModelSyncEvent = createObjectDecoder<ModelSyncEventDTO>("model sync event", {
+  synced: isOptional(isNumber),
+  completed: isOptional(isNumber),
+  total: isOptional(isNumber),
+  code: isOptional(isString),
+  message: isOptional(isString),
+});
+
+export type ModelSyncProgressDTO = { completed: number; total: number };
+
+export async function syncModels(onProgress?: (progress: ModelSyncProgressDTO) => void): Promise<{ synced: number }> {
+  let result: { synced: number } | undefined;
+  await apiEventStream("/api/admin/v1/models/sync", {
+    method: "POST",
+    headers: { Accept: "text/event-stream" },
+  }, decodeModelSyncEvent, ({ event, data }) => {
+    if (event === "progress" && typeof data.completed === "number" && typeof data.total === "number" && data.total > 0) {
+      onProgress?.({ completed: Math.min(Math.max(0, data.completed), data.total), total: data.total });
+      return;
+    }
+    if (event === "complete" && typeof data.synced === "number") {
+      result = { synced: data.synced };
+      return;
+    }
+    if (event === "error") {
+      const code = data.code ?? "modelSyncFailed";
+      const message = i18n.exists(`apiErrors.${code}`) ? i18n.t(`apiErrors.${code}`) : (data.message ?? i18n.t("apiErrors.requestFailed"));
+      throw new ApiError(502, code, message);
+    }
+  });
+  if (!result) {
+    throw new ApiError(502, "invalidResponse", i18n.t("apiErrors.invalidResponse"));
+  }
+  return result;
 }
 
 export type ModelAccountOptionDTO = { id: string; name: string };

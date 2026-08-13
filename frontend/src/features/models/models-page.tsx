@@ -34,6 +34,8 @@ import { cn } from "@/shared/lib/cn";
 import { formatDateTime } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
+const modelSyncToastID = "model-sync-progress";
+
 export function ModelsPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -135,14 +137,21 @@ export function ModelsPage() {
   });
 
   const syncMutation = useMutation({
-    mutationFn: syncModels,
+    mutationFn: () => syncModels((progress) => {
+      toast.loading(t("models.syncingProgress", progress), { id: modelSyncToastID });
+    }),
+    onMutate: () => {
+      toast.loading(t("models.syncing"), { id: modelSyncToastID });
+    },
     onSuccess: (result) => {
       setSelected(new Set());
       setPage(1);
       void queryClient.invalidateQueries({ queryKey: ["models"] });
-      toast.success(t("models.synced", { count: result.synced }));
+      toast.success(t("models.synced", { count: result.synced }), { id: modelSyncToastID });
     },
-    onError: showError,
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : t("errors.generic"), { id: modelSyncToastID });
+    },
   });
 
   function showError(error: unknown): void {
