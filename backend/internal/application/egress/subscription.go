@@ -368,7 +368,7 @@ func parseProxySubscription(value string) ([]subscriptionEntry, int, error) {
 			return entries, decodedSkipped, nil
 		}
 	}
-	return nil, skipped, errors.New("订阅中没有可用的 HTTP 或 SOCKS 代理")
+	return nil, skipped, errors.New("订阅中没有可用的代理节点")
 }
 
 func parseProxyLines(value string) ([]subscriptionEntry, int) {

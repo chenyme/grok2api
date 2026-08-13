@@ -42,6 +42,8 @@ type Config struct {
 	CanonicalProxyURL string
 }
 
+const tunnelHandshakeTimeout = 10 * time.Second
+
 func IsSupportedScheme(scheme string) bool {
 	switch strings.ToLower(strings.TrimSpace(scheme)) {
 	case "trojan", "vless", "ss", "vmess":
@@ -113,9 +115,11 @@ func parseUserInfoProxy(value string) (Config, error) {
 		return Config{}, fmt.Errorf("暂不支持 VLESS flow %q", flow)
 	}
 	if scheme == "vless" {
-		if _, err := uuid.Parse(credential); err != nil {
+		parsedUUID, err := uuid.Parse(credential)
+		if err != nil {
 			return Config{}, errors.New("VLESS UUID 无效")
 		}
+		credential = parsedUUID.String()
 		if encryption := strings.ToLower(strings.TrimSpace(query.Get("encryption"))); encryption != "" && encryption != "none" {
 			return Config{}, errors.New("VLESS encryption 必须为 none")
 		}
@@ -153,24 +157,46 @@ func parseUserInfoProxy(value string) (Config, error) {
 	if transport == "tcp" && (query.Get("path") != "" || query.Get("host") != "") {
 		return Config{}, errors.New("TCP 隧道不能包含 WebSocket host/path")
 	}
-	parsed.Scheme = scheme
-	parsed.Host = server
-	parsed.User = url.User(credential)
-	parsed.Path = ""
-	parsed.RawPath = ""
-	parsed.Fragment = ""
-	parsed.RawFragment = ""
-	parsed.RawQuery = query.Encode()
 	config := Config{
 		Scheme: scheme, Server: server, Credential: credential, Transport: transport,
 		TLS: tlsEnabled, ServerName: serverName, Insecure: insecure,
 		ALPN: splitList(query.Get("alpn")), WebSocketHost: wsHost, WebSocketPath: wsPath,
-		CanonicalProxyURL: parsed.String(),
 	}
+	config.CanonicalProxyURL = canonicalUserInfoProxyURL(config)
 	if err := validateConfig(config); err != nil {
 		return Config{}, fmt.Errorf("创建 %s 隧道配置: %w", strings.ToUpper(scheme), err)
 	}
 	return config, nil
+}
+
+func canonicalUserInfoProxyURL(config Config) string {
+	query := make(url.Values)
+	query.Set("type", config.Transport)
+	if config.TLS {
+		query.Set("security", "tls")
+	} else {
+		query.Set("security", "none")
+	}
+	if config.Scheme == "vless" {
+		query.Set("encryption", "none")
+	}
+	query.Set("sni", config.ServerName)
+	if config.Insecure {
+		query.Set("allowInsecure", "1")
+	}
+	if len(config.ALPN) != 0 {
+		query.Set("alpn", strings.Join(config.ALPN, ","))
+	}
+	if config.Transport == "ws" {
+		query.Set("host", config.WebSocketHost)
+		query.Set("path", config.WebSocketPath)
+	}
+	return (&url.URL{
+		Scheme:   config.Scheme,
+		User:     url.User(config.Credential),
+		Host:     config.Server,
+		RawQuery: query.Encode(),
+	}).String()
 }
 
 func parseShadowsocks(value string) (Config, error) {
@@ -279,10 +305,11 @@ func parseVMess(value string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("VMess %w", err)
 	}
-	userID := jsonString(raw, "id")
-	if _, err := uuid.Parse(userID); err != nil {
+	parsedUUID, err := uuid.Parse(jsonString(raw, "id"))
+	if err != nil {
 		return Config{}, errors.New("VMess UUID 无效")
 	}
+	userID := parsedUUID.String()
 	alterID, err := strconv.Atoi(firstNonEmpty(jsonString(raw, "aid"), "0"))
 	if err != nil || alterID < 0 || alterID > 65535 {
 		return Config{}, errors.New("VMess alterId 无效")
@@ -316,6 +343,8 @@ func parseVMess(value string) (Config, error) {
 	path := jsonString(raw, "path")
 	if path == "" {
 		path = "/"
+	} else if !strings.HasPrefix(path, "/") {
+		path = "/" + path
 	}
 	if transport == "tcp" && (jsonString(raw, "path") != "" || jsonString(raw, "host") != "") {
 		return Config{}, errors.New("VMess TCP 隧道不能包含 WebSocket host/path")
@@ -438,7 +467,7 @@ func buildProxy(config Config) (netapi.Proxy, error) {
 	case "vless":
 		protocolConfig := &protocol.Vless{}
 		protocolConfig.SetUuid(config.Credential)
-		return vless.NewClient(protocolConfig, current)
+		return newOwnedVLESSProxy(protocolConfig, current)
 	case "vmess":
 		protocolConfig := &protocol.Vmess{}
 		protocolConfig.SetUuid(config.Credential)
@@ -448,6 +477,63 @@ func buildProxy(config Config) (netapi.Proxy, error) {
 	default:
 		return nil, errors.New("不支持的隧道代理协议")
 	}
+}
+
+// ownedVLESSProxy closes the transport connection when the upstream VLESS
+// client fails while writing its initial request. yuhaiin's VLESS client does
+// not transfer the failed connection back to its caller, so ownership must be
+// retained at this boundary to prevent failed retries from leaking sockets.
+type ownedVLESSProxy struct {
+	netapi.EmptyDispatch
+	config *protocol.Vless
+	dialer netapi.Proxy
+}
+
+func newOwnedVLESSProxy(config *protocol.Vless, dialer netapi.Proxy) (netapi.Proxy, error) {
+	if _, err := vless.NewClient(config, dialer); err != nil {
+		return nil, err
+	}
+	return &ownedVLESSProxy{config: config, dialer: dialer}, nil
+}
+
+func (p *ownedVLESSProxy) Conn(ctx context.Context, address netapi.Address) (net.Conn, error) {
+	connection, err := p.dialer.Conn(ctx, address)
+	if err != nil {
+		return nil, err
+	}
+	client, err := vless.NewClient(p.config, &singleConnectionProxy{connection: connection})
+	if err != nil {
+		_ = connection.Close()
+		return nil, err
+	}
+	result, err := client.Conn(ctx, address)
+	if err != nil {
+		_ = connection.Close()
+		return nil, err
+	}
+	return result, nil
+}
+
+func (p *ownedVLESSProxy) PacketConn(ctx context.Context, address netapi.Address) (net.PacketConn, error) {
+	return nil, errors.New("VLESS 隧道不支持 UDP")
+}
+
+type singleConnectionProxy struct {
+	netapi.EmptyDispatch
+	connection net.Conn
+}
+
+func (p *singleConnectionProxy) Conn(context.Context, netapi.Address) (net.Conn, error) {
+	if p.connection == nil {
+		return nil, errors.New("VLESS 底层连接不可用")
+	}
+	connection := p.connection
+	p.connection = nil
+	return connection, nil
+}
+
+func (p *singleConnectionProxy) PacketConn(context.Context, netapi.Address) (net.PacketConn, error) {
+	return nil, errors.New("VLESS 隧道不支持 UDP")
 }
 
 type tlsProxy struct {
@@ -462,7 +548,9 @@ func (p *tlsProxy) Conn(ctx context.Context, address netapi.Address) (net.Conn, 
 		return nil, err
 	}
 	tlsConnection := tls.Client(connection, p.tlsConfig())
-	if err := tlsConnection.HandshakeContext(ctx); err != nil {
+	handshakeCtx, cancel := newTunnelHandshakeContext(ctx)
+	defer cancel()
+	if err := tlsConnection.HandshakeContext(handshakeCtx); err != nil {
 		_ = connection.Close()
 		return nil, fmt.Errorf("隧道 TLS 握手: %w", err)
 	}
@@ -501,7 +589,9 @@ func (p *websocketProxy) Conn(ctx context.Context, address netapi.Address) (net.
 		ForceAttemptHTTP2: false,
 		TLSClientConfig:   websocketTLSConfig(p.config),
 	}
-	connection, _, err := websocket.Dial(ctx, endpoint, &websocket.DialOptions{
+	handshakeCtx, cancel := newTunnelHandshakeContext(ctx)
+	defer cancel()
+	connection, _, err := websocket.Dial(handshakeCtx, endpoint, &websocket.DialOptions{
 		HTTPClient: &http.Client{Transport: transport},
 		Host:       p.config.WebSocketHost,
 	})
@@ -527,6 +617,10 @@ func (d *serverDialer) Conn(ctx context.Context, _ netapi.Address) (net.Conn, er
 
 func newServerNetDialer() *net.Dialer {
 	return &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+}
+
+func newTunnelHandshakeContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, tunnelHandshakeTimeout)
 }
 
 func websocketTLSConfig(config Config) *tls.Config {
