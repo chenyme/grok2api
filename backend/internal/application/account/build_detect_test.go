@@ -8,7 +8,12 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
@@ -287,4 +292,112 @@ func TestDetectBuildAccountsStreamsInvalidOnlyForAll(t *testing.T) {
 	}
 	_ = okAccount
 	_ = invalidAccount
+}
+
+func TestDetectBuildAccountsSerializesItemObserver(t *testing.T) {
+	const accountCount = 8
+	service := newConcurrentInvalidBuildDetectService(t, accountCount)
+
+	started := make(chan struct{}, accountCount)
+	release := make(chan struct{})
+	var items []BuildDetectItemResult
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, detectErr := service.DetectBuildAccountsWithProgress(context.Background(), nil, true, nil, func(item BuildDetectItemResult) error {
+			started <- struct{}{}
+			<-release
+			items = append(items, item)
+			return nil
+		})
+		errCh <- detectErr
+	}()
+
+	deadline := time.After(2 * time.Second)
+	select {
+	case <-started:
+	case <-deadline:
+		t.Fatal("itemObserver was not invoked")
+	}
+	close(release)
+	if detectErr := <-errCh; detectErr != nil {
+		t.Fatal(detectErr)
+	}
+	if len(items) != accountCount {
+		t.Fatalf("serialized items = %d, want %d", len(items), accountCount)
+	}
+}
+
+func TestDetectBuildAccountsObserverPanicDoesNotDeadlock(t *testing.T) {
+	const accountCount = 8
+	service := newConcurrentInvalidBuildDetectService(t, accountCount)
+
+	type detectResult struct {
+		succeeded int
+		failed    int
+		err       error
+	}
+	var calls atomic.Int64
+	resultCh := make(chan detectResult, 1)
+	go func() {
+		succeeded, failed, err := service.DetectBuildAccountsWithProgress(context.Background(), nil, true, nil, func(BuildDetectItemResult) error {
+			if calls.Add(1) == 1 {
+				panic("item observer panic")
+			}
+			return nil
+		})
+		resultCh <- detectResult{succeeded: succeeded, failed: failed, err: err}
+	}()
+
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.succeeded != 0 || result.failed != accountCount {
+			t.Fatalf("summary succeeded=%d failed=%d, want 0/%d", result.succeeded, result.failed, accountCount)
+		}
+		if got := calls.Load(); got != accountCount {
+			t.Fatalf("observer calls = %d, want %d", got, accountCount)
+		}
+	case <-timer.C:
+		t.Fatal("itemObserver panic deadlocked Build account detection")
+	}
+}
+
+func newConcurrentInvalidBuildDetectService(t *testing.T, accountCount int) *Service {
+	t.Helper()
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "detect-observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := relational.NewAccountRepository(database)
+	for index := range accountCount {
+		if _, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+			Provider: accountdomain.ProviderBuild, Name: "invalid-" + strconv.Itoa(index), UserID: "user-invalid-" + strconv.Itoa(index),
+			SourceKey: "detect-invalid-" + strconv.Itoa(index), EncryptedAccessToken: accessToken,
+			Enabled: true, AuthStatus: accountdomain.AuthStatusActive, RefreshPermanent: true, Priority: 1, MaxConcurrent: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(repo, nil, nil, nil, provider.NewRegistry(detectResponsesAdapter{
+		status: http.StatusUnauthorized,
+	}), cipher, nil)
+	service.SetDetectPool(batch.NewPool(accountCount))
+	return service
 }
