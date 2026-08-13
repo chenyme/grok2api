@@ -445,13 +445,24 @@ func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
 		writeOpenAIError(c, http.StatusServiceUnavailable, clientCode, credentialErrorMessage(clientCode))
 		return
 	}
+	if result.StatusCode < http.StatusOK || (result.StatusCode >= http.StatusMultipleChoices && result.StatusCode < http.StatusBadRequest) {
+		errorCode = "invalid_upstream_status"
+		writeOpenAIError(c, http.StatusBadGateway, "invalid_upstream_response", "上游媒体服务返回了不安全的重定向响应")
+		return
+	}
+	contentType, safeContentType := normalizeMediaResponseContentType(result.Header.Get("Content-Type"))
+	if !safeContentType {
+		errorCode = "unsafe_media_content_type"
+		writeOpenAIError(c, http.StatusBadGateway, "invalid_media_type", "上游媒体服务返回了不受支持的内容类型")
+		return
+	}
 	contentLength, contentLengthErr := strconv.ParseInt(result.Header.Get("Content-Length"), 10, 64)
 	if contentLengthErr == nil && contentLength > maxMediaResponseTransferBytes {
 		errorCode = "response_too_large"
 		writeOpenAIError(c, http.StatusBadGateway, "media_too_large", "上游媒体超过 2 GiB 安全上限")
 		return
 	}
-	copyHeaders(c.Writer.Header(), result.Header)
+	setSafeMediaResponseHeaders(c, contentType, result.Header)
 	if contentLengthErr == nil && contentLength >= 0 {
 		c.Header("Content-Length", strconv.FormatInt(contentLength, 10))
 	} else {
@@ -466,6 +477,42 @@ func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
 		}
 		if contentLengthErr != nil {
 			c.Header(mediaTransferErrorTrailer, errorCode)
+		}
+	}
+}
+
+func normalizeMediaResponseContentType(value string) (string, bool) {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(value))
+	if err != nil {
+		return "", false
+	}
+	mediaType = strings.ToLower(mediaType)
+	switch mediaType {
+	case "application/json":
+		return "application/json; charset=utf-8", true
+	case "text/plain":
+		return "text/plain; charset=utf-8", true
+	case "application/ogg":
+		return mediaType, true
+	}
+	if strings.HasPrefix(mediaType, "audio/") {
+		switch mediaType {
+		case "audio/aac", "audio/flac", "audio/l16", "audio/mpeg", "audio/mp3", "audio/ogg", "audio/opus", "audio/pcm", "audio/wav", "audio/webm", "audio/x-flac", "audio/x-wav":
+			return mediaType, true
+		}
+	}
+	return "", false
+}
+
+func setSafeMediaResponseHeaders(c *gin.Context, contentType string, upstream http.Header) {
+	c.Header("Content-Type", contentType)
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "default-src 'none'; sandbox")
+	c.Header("Referrer-Policy", "no-referrer")
+	for _, name := range []string{"Retry-After", "X-Request-Id"} {
+		if value := strings.TrimSpace(upstream.Get(name)); value != "" {
+			c.Header(name, value)
 		}
 	}
 }
@@ -899,10 +946,17 @@ func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size 
 		writeOpenAIError(c, http.StatusBadGateway, "media_too_large", "上游媒体超过 2 GiB 安全上限")
 		return
 	}
+	contentType, ok := normalizeVideoResponseContentType(contentType)
+	if !ok {
+		writeOpenAIError(c, http.StatusBadGateway, "invalid_media_type", "上游视频服务返回了不受支持的内容类型")
+		return
+	}
 	c.Header("Content-Type", contentType)
 	c.Header("Content-Disposition", "inline")
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "default-src 'none'; sandbox")
+	c.Header("Referrer-Policy", "no-referrer")
 	if size >= 0 {
 		c.Header("Content-Length", strconv.FormatInt(size, 10))
 	} else {
@@ -915,6 +969,19 @@ func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size 
 			errorCode = "response_too_large"
 		}
 		c.Header(mediaTransferErrorTrailer, errorCode)
+	}
+}
+
+func normalizeVideoResponseContentType(value string) (string, bool) {
+	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(value))
+	if err != nil {
+		return "", false
+	}
+	switch strings.ToLower(mediaType) {
+	case "video/mp4", "video/quicktime", "video/webm":
+		return strings.ToLower(mediaType), true
+	default:
+		return "", false
 	}
 }
 

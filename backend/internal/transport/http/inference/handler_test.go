@@ -344,6 +344,85 @@ func TestDirectUpstreamCredentialResponsesAreRewritten(t *testing.T) {
 	}
 }
 
+func TestMediaResultRejectsActiveContentAndRedirects(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	for _, tc := range []struct {
+		name        string
+		status      int
+		contentType string
+		headers     http.Header
+	}{
+		{name: "html", status: http.StatusOK, contentType: "text/html; charset=utf-8"},
+		{name: "svg", status: http.StatusOK, contentType: "image/svg+xml"},
+		{name: "redirect", status: http.StatusFound, contentType: "text/plain", headers: http.Header{"Location": {"javascript:alert(1)"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finalCode := ""
+			header := make(http.Header)
+			for name, values := range tc.headers {
+				header[name] = append([]string(nil), values...)
+			}
+			header.Set("Content-Type", tc.contentType)
+			result := &gateway.Result{
+				StatusCode: tc.status,
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader(`<script id="must-not-reflect">alert(1)</script>`)),
+				Finalize: func(_ gateway.Usage, _, code string) {
+					finalCode = code
+				},
+			}
+			router := gin.New()
+			router.GET("/", func(c *gin.Context) { handler.writeMediaResult(c, result) })
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+			if recorder.Code != http.StatusBadGateway || strings.Contains(recorder.Body.String(), "must-not-reflect") || recorder.Header().Get("Location") != "" || finalCode == "" {
+				t.Fatalf("status=%d headers=%#v body=%s finalize=%q", recorder.Code, recorder.Header(), recorder.Body.String(), finalCode)
+			}
+		})
+	}
+}
+
+func TestMediaResultPinsSafeResponseHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	result := &gateway.Result{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":   {"audio/mpeg; attacker=ignored"},
+			"Content-Length": {"5"},
+			"Set-Cookie":     {"upstream=secret"},
+			"Location":       {"javascript:alert(1)"},
+			"X-Request-Id":   {"upstream-request"},
+		},
+		Body:     io.NopCloser(strings.NewReader("audio")),
+		Finalize: func(gateway.Usage, string, string) {},
+	}
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) { handler.writeMediaResult(c, result) })
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "audio" {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Content-Type") != "audio/mpeg" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" || recorder.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("safe headers = %#v", recorder.Header())
+	}
+	if recorder.Header().Get("Set-Cookie") != "" || recorder.Header().Get("Location") != "" || recorder.Header().Get("X-Request-Id") != "upstream-request" {
+		t.Fatalf("unsafe or missing forwarded headers = %#v", recorder.Header())
+	}
+}
+
+func TestVideoContentRejectsUnsafeContentType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	writeVideoContent(context, strings.NewReader(`<script id="must-not-reflect">alert(1)</script>`), "text/html", -1)
+	if recorder.Code != http.StatusBadGateway || strings.Contains(recorder.Body.String(), "must-not-reflect") {
+		t.Fatalf("status=%d headers=%#v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+}
+
 func TestMessagesEndpointUsesAnthropicContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
