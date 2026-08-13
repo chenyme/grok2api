@@ -336,6 +336,140 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
+	spec, ok := Resolve("grok-4.3")
+	if !ok {
+		t.Fatal("grok-4.3 missing")
+	}
+
+	t.Run("forwards enable_image_search on web_search", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"web_search","enable_image_search":true,"custom":true}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		tools, _ := payload["tools"].([]any)
+		if len(tools) != 1 {
+			t.Fatalf("tools = %#v", tools)
+		}
+		webSearch, _ := tools[0].(map[string]any)
+		if webSearch["type"] != "web_search" || webSearch["enable_image_understanding"] != true {
+			t.Fatalf("web_search defaults = %#v", webSearch)
+		}
+		if webSearch["enable_image_search"] != true {
+			t.Fatalf("enable_image_search not forwarded: %#v", webSearch)
+		}
+		if webSearch["custom"] != nil {
+			t.Fatalf("unknown field custom should be stripped: %#v", webSearch)
+		}
+	})
+
+	t.Run("omits enable_image_search when client does not set it", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"web_search"}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		webSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if _, exists := webSearch["enable_image_search"]; exists {
+			t.Fatalf("enable_image_search should be absent by default: %#v", webSearch)
+		}
+	})
+
+	t.Run("forwards valid x_search from_date and to_date", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","from_date":"2026-07-01","to_date":"2026-07-23","noise":1}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if xSearch["type"] != "x_search" || xSearch["enable_video_understanding"] != true {
+			t.Fatalf("x_search defaults = %#v", xSearch)
+		}
+		if xSearch["from_date"] != "2026-07-01" || xSearch["to_date"] != "2026-07-23" {
+			t.Fatalf("date bounds not forwarded: %#v", xSearch)
+		}
+		if xSearch["noise"] != nil {
+			t.Fatalf("unknown field noise should be stripped: %#v", xSearch)
+		}
+	})
+
+	t.Run("drops invalid date formats", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","from_date":"2026-7-01","to_date":"2026-02-30"}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if xSearch["from_date"] != nil || xSearch["to_date"] != nil {
+			t.Fatalf("invalid dates should be dropped: %#v", xSearch)
+		}
+		if xSearch["type"] != "x_search" || xSearch["enable_video_understanding"] != true {
+			t.Fatalf("x_search defaults should remain: %#v", xSearch)
+		}
+	})
+
+	t.Run("drops inverted date range", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","from_date":"2026-07-24","to_date":"2026-07-23"}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if xSearch["from_date"] != nil || xSearch["to_date"] != nil {
+			t.Fatalf("inverted range should drop both bounds: %#v", xSearch)
+		}
+	})
+
+	t.Run("keeps only from_date when to_date absent", func(t *testing.T) {
+		body, err := normalizeRequest([]byte(`{
+			"model":"grok-4.3",
+			"tools":[{"type":"x_search","from_date":"2026-08-01"}]
+		}`), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		xSearch, _ := payload["tools"].([]any)[0].(map[string]any)
+		if xSearch["from_date"] != "2026-08-01" || xSearch["to_date"] != nil {
+			t.Fatalf("single bound = %#v", xSearch)
+		}
+	})
+}
+
 func TestNormalizeRequestDoesNotInjectToolsForConsoleCatalog(t *testing.T) {
 	for _, spec := range catalog {
 		t.Run(spec.PublicID, func(t *testing.T) {
@@ -1616,9 +1750,11 @@ func TestConsoleVideoPostsReferenceAudios(t *testing.T) {
 	}
 }
 
+// Measured upstream ceiling: 8 references answer 400 "Too many reference images:
+// 8. Maximum allowed is 7." on both grok-imagine-video and grok-imagine-video-1.5.
 func TestConsoleVideoRejectsTooManyReferenceImages(t *testing.T) {
 	adapter, credential := newConsoleTestAdapter(t, "https://console.example")
-	references := make([]string, consoleMaxVideoImages+1)
+	references := make([]string, consoleMaxVideoReferenceImages+1)
 	for i := range references {
 		references[i] = "https://example.com/" + strings.Repeat("x", i+1) + ".png"
 	}
@@ -1632,7 +1768,7 @@ func TestConsoleVideoRejectsTooManyReferenceImages(t *testing.T) {
 
 func TestConsoleVideoRejectsTooManyCombinedImages(t *testing.T) {
 	adapter, credential := newConsoleTestAdapter(t, "https://console.example")
-	references := make([]string, consoleMaxVideoImages)
+	references := make([]string, consoleMaxVideoReferenceImages)
 	for i := range references {
 		references[i] = "https://example.com/" + strings.Repeat("y", i+1) + ".png"
 	}
@@ -1642,6 +1778,51 @@ func TestConsoleVideoRejectsTooManyCombinedImages(t *testing.T) {
 	})
 	if err == nil || !(strings.Contains(err.Error(), "不能与") || strings.Contains(err.Error(), "最多支持")) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// Measured: grok-imagine-video with reference_images and duration=15 answers
+// 400 "Duration 15s exceeds the maximum allowed for reference-to-video, which is
+// 10s." The image field (image-to-video) and grok-imagine-video-1.5 both keep 15s.
+func TestConsoleVideoRejectsLongReferenceDurationOnBaseModel(t *testing.T) {
+	adapter, credential := newConsoleTestAdapter(t, "https://console.example")
+	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Prompt: "animate", Duration: 15,
+		ReferenceURLs: []string{"https://example.com/ref.png"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "最长 10 秒") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+// The same 15s request must stay allowed for grok-imagine-video-1.5.
+func TestConsoleVideo15AllowsLongReferenceDuration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		verifyTestDPoPProof(t, request)
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/videos/generations":
+			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-15s"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/upstream-video-15s":
+			_, _ = writer.Write([]byte(`{"status":"done","progress":100,"video":{"url":"https://vidgen.x.ai/result-15s.mp4"}}`))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	t.Cleanup(server.Close)
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Model: "grok-imagine-video-1.5", Prompt: "animate", Duration: 15,
+		ReferenceURLs: []string{"https://example.com/ref.png"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://vidgen.x.ai/result-15s.mp4" {
+		t.Fatalf("video result = %#v", result)
 	}
 }
 
