@@ -672,7 +672,7 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", label+"缺少有效 model")
 		return
 	}
-	// Personal-only: edit/extension stay on grok-imagine-video (not 1.5).
+	// Edit/extension stay on grok-imagine-video (not 1.5).
 	if operation != gatewayVideoOperationGenerate {
 		if model != "grok-imagine-video" && model != "Console/grok-imagine-video" {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "视频编辑/延长仅支持 grok-imagine-video")

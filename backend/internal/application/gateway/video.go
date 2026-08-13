@@ -142,7 +142,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		return media.Job{}, err
 	}
 	if operation != provider.VideoOperationGenerate {
-		// Personal-only: official edit/extension currently target grok-imagine-video.
+		// Official edit/extension currently target grok-imagine-video (not 1.5).
 		if route.Provider != account.ProviderConsole || strings.TrimSpace(route.UpstreamModel) != "grok-imagine-video" {
 			return media.Job{}, fmt.Errorf("视频编辑/延长仅支持 Console/grok-imagine-video")
 		}
