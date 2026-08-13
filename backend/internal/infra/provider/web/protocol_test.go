@@ -41,30 +41,37 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 		t.Fatalf("catalog size = %d", len(values))
 	}
 	publicIDs := make(map[string]struct{}, len(values))
-	upstreamIDs := make(map[string]struct{}, len(values))
+	routeKeys := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		if _, exists := publicIDs[value.PublicID]; exists {
-			t.Fatalf("duplicate public model: %s", value.PublicID)
+		routeKey := value.PublicID + "|" + string(value.Capability)
+		if _, exists := routeKeys[routeKey]; exists {
+			t.Fatalf("duplicate public model capability: %s", routeKey)
 		}
-		if _, exists := upstreamIDs[value.UpstreamModel]; exists {
-			t.Fatalf("duplicate route upstream model: %s", value.UpstreamModel)
-		}
+		routeKeys[routeKey] = struct{}{}
 		publicIDs[value.PublicID] = struct{}{}
-		upstreamIDs[value.UpstreamModel] = struct{}{}
 	}
 	for _, required := range []string{"grok-chat-fast", "grok-chat-auto", "grok-chat-expert", "grok-chat-heavy", "grok-imagine-image-lite", "grok-imagine-image-quality-lite", "grok-imagine-image-edit", "imagine-x-1", "grok-imagine-video"} {
 		if _, exists := publicIDs[required]; !exists {
 			t.Fatalf("missing supported model: %s", required)
 		}
 	}
-	for _, removed := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
+	for _, required := range []string{
+		"grok-imagine-image-lite|image",
+		"grok-imagine-image-quality-lite|image",
+		"grok-imagine-image-edit|image_edit",
+	} {
+		if _, exists := routeKeys[required]; !exists {
+			t.Fatalf("missing supported route: %s", required)
+		}
+	}
+	for _, removed := range []string{"grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-2.0", "grok-imagine-image-quality-2.0", "grok-imagine-image-speed", "grok-imagine-image-pro"} {
 		if _, exists := publicIDs[removed]; exists {
 			t.Fatalf("obsolete image model remains: %s", removed)
 		}
 	}
 }
 
-func TestWebImageLitePublicNamesPreserveGatewayModels(t *testing.T) {
+func TestWebImagePublicNamesPreserveGatewayModels(t *testing.T) {
 	tests := map[string]string{
 		"grok-imagine-image":         "grok-imagine-image-lite",
 		"grok-imagine-image-quality": "grok-imagine-image-quality-lite",
@@ -74,9 +81,13 @@ func TestWebImageLitePublicNamesPreserveGatewayModels(t *testing.T) {
 		if !ok {
 			t.Fatalf("missing upstream model %s", upstreamModel)
 		}
-		if spec.PublicID != publicID || spec.UpstreamModel != upstreamModel {
+		if spec.PublicID != publicID || spec.UpstreamModel != upstreamModel || spec.Capability != modeldomain.CapabilityImage {
 			t.Fatalf("resolved %s as %#v", upstreamModel, spec)
 		}
+	}
+	spec, ok := Resolve("imagine-image-edit")
+	if !ok || spec.PublicID != "grok-imagine-image-edit" || spec.Capability != modeldomain.CapabilityImageEdit {
+		t.Fatalf("edit upstream resolved as %#v ok=%v", spec, ok)
 	}
 }
 
@@ -1014,7 +1025,7 @@ func TestWebMediaUpstreamDiagnosticLogsStageHeadersWithoutBodyPreview(t *testing
 	}
 }
 
-func TestChatModelsUseLowestSufficientTierFirst(t *testing.T) {
+func TestModelsUseLowestSufficientTierFirst(t *testing.T) {
 	adapter := &Adapter{}
 	tests := []struct {
 		model string
@@ -1024,6 +1035,10 @@ func TestChatModelsUseLowestSufficientTierFirst(t *testing.T) {
 		{model: "grok-chat-auto", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
 		{model: "grok-chat-expert", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
 		{model: "grok-chat-heavy", want: []account.WebTier{account.WebTierHeavy}},
+		{model: "grok-imagine-image", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
+		{model: "grok-imagine-image-quality", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
+		{model: "imagine-image-edit", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
+		{model: "grok-imagine-video", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
 	}
 	for _, test := range tests {
 		got := adapter.TierOrder(test.model)

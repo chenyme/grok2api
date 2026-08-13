@@ -97,6 +97,7 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "n", descriptionKey: "docs.reference.fieldImageCount" },
       { name: "aspect_ratio", descriptionKey: "docs.reference.fieldAspectRatio" },
       { name: "resolution", descriptionKey: "docs.reference.fieldResolution" },
+      { name: "quality", descriptionKey: "docs.reference.fieldQuality" },
       { name: "response_format", descriptionKey: "docs.reference.fieldResponseFormat" },
       { name: "stream", descriptionKey: "docs.reference.fieldImageStream" },
     ],
@@ -112,6 +113,7 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "prompt", required: true, descriptionKey: "docs.reference.fieldPrompt" },
       { name: "image / images", required: true, descriptionKey: "docs.reference.fieldEditImages" },
       { name: "n", descriptionKey: "docs.reference.fieldImageCount" },
+      { name: "quality", descriptionKey: "docs.reference.fieldQuality" },
       { name: "response_format", descriptionKey: "docs.reference.fieldResponseFormat" },
     ],
     noteKeys: ["docs.reference.noteEditJSON", "docs.reference.noteEditSources", "docs.reference.noteImageStorage"],
@@ -129,10 +131,36 @@ const endpoints: Record<string, EndpointDefinition> = {
       { name: "resolution", descriptionKey: "docs.reference.fieldResolution" },
       { name: "image", descriptionKey: "docs.reference.fieldVideoImage" },
       { name: "reference_images", descriptionKey: "docs.reference.fieldReferenceImages" },
+      { name: "reference_audios", descriptionKey: "docs.reference.fieldReferenceAudios" },
     ],
-    noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoStrict"],
+    noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoReference", "docs.reference.noteVideoStrict"],
     request: (model) => ({ model, prompt: "A paper airplane flying over a city", duration: 8, aspect_ratio: "16:9", resolution: "720p" }),
     response: { request_id: "video_example" },
+  },
+  "video/edits": {
+    key: "video/edits", category: "Video", title: "Video edits", method: "POST", path: "/videos/edits",
+    descriptionKey: "docs.endpointVideoEdit", capabilities: ["video"],
+    fields: [
+      { name: "model", required: true, descriptionKey: "docs.reference.fieldModel" },
+      { name: "prompt", required: true, descriptionKey: "docs.reference.fieldVideoEditPrompt" },
+      { name: "video", required: true, descriptionKey: "docs.reference.fieldVideoInput" },
+    ],
+    noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoEditModel", "docs.reference.noteVideoBilling", "docs.reference.noteVideoStrict"],
+    request: () => ({ model: "grok-imagine-video", prompt: "Give the woman a silver necklace", video: { url: "https://example.com/source.mp4" } }),
+    response: { request_id: "video_edit_example" },
+  },
+  "video/extensions": {
+    key: "video/extensions", category: "Video", title: "Video extensions", method: "POST", path: "/videos/extensions",
+    descriptionKey: "docs.endpointVideoExtend", capabilities: ["video"],
+    fields: [
+      { name: "model", required: true, descriptionKey: "docs.reference.fieldModel" },
+      { name: "prompt", required: true, descriptionKey: "docs.reference.fieldVideoExtendPrompt" },
+      { name: "video", required: true, descriptionKey: "docs.reference.fieldVideoInput" },
+      { name: "duration", descriptionKey: "docs.reference.fieldVideoExtendDuration" },
+    ],
+    noteKeys: ["docs.reference.noteVideoAsync", "docs.reference.noteVideoEditModel", "docs.reference.noteVideoBilling", "docs.reference.noteVideoStrict"],
+    request: () => ({ model: "grok-imagine-video", prompt: "The shot pans to an over the shoulder perspective.", duration: 6, video: { url: "https://example.com/source.mp4" } }),
+    response: { request_id: "video_extend_example" },
   },
   "video/get": {
     key: "video/get", category: "Video", title: "Get video", method: "GET", path: "/videos/{request_id}",
@@ -141,6 +169,103 @@ const endpoints: Record<string, EndpointDefinition> = {
     noteKeys: ["docs.reference.noteVideoPolling", "docs.reference.noteVideoStatus"],
     request: () => undefined,
     response: { status: "done", model: "grok-imagine-video", progress: 100, video: { url: "https://example.com/generated.mp4", duration: 8, respect_moderation: true } },
+  },
+  "voice/tts": {
+    key: "voice/tts", category: "Voice", title: "Text to speech", method: "POST", path: "/tts",
+    descriptionKey: "docs.endpointTTS", capabilities: ["tts"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldVoiceModel" },
+      { name: "text", required: true, descriptionKey: "docs.reference.fieldTTSText" },
+      { name: "voice_id", descriptionKey: "docs.reference.fieldVoiceId" },
+      { name: "language", required: true, descriptionKey: "docs.reference.fieldVoiceLanguage" },
+      { name: "output_format", descriptionKey: "docs.reference.fieldTTSOutputFormat" },
+      { name: "speed", descriptionKey: "docs.reference.fieldTTSSpeed" },
+      { name: "with_timestamps", descriptionKey: "docs.reference.fieldTTSTimestamps" },
+    ],
+    noteKeys: ["docs.reference.noteTTSModels", "docs.reference.noteTTSBinary", "docs.reference.noteVoiceBilling"],
+    request: (model) => ({ model, text: "Hello from Grok voice.", voice_id: "eve", language: "en", output_format: { codec: "mp3" } }),
+    response: { content_type: "audio/mpeg", note: "Default responses return raw audio bytes. with_timestamps=true returns a JSON envelope." },
+  },
+  "voice/audio-speech": {
+    key: "voice/audio-speech", category: "Voice", title: "OpenAI speech", method: "POST", path: "/audio/speech",
+    descriptionKey: "docs.endpointAudioSpeech", capabilities: ["tts"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldVoiceModel" },
+      { name: "input", required: true, descriptionKey: "docs.reference.fieldAudioInput" },
+      { name: "voice", descriptionKey: "docs.reference.fieldAudioVoice" },
+      { name: "response_format", descriptionKey: "docs.reference.fieldAudioResponseFormat" },
+      { name: "speed", descriptionKey: "docs.reference.fieldTTSSpeed" },
+      { name: "language", descriptionKey: "docs.reference.fieldVoiceLanguageOptional" },
+    ],
+    noteKeys: ["docs.reference.noteAudioSpeechCompat", "docs.reference.noteTTSModels", "docs.reference.noteTTSBinary", "docs.reference.noteVoiceBilling"],
+    request: (model) => ({ model, input: "Hello from Grok voice.", voice: "alloy", response_format: "mp3", speed: 1.0, language: "en" }),
+    response: { content_type: "audio/mpeg", note: "Returns raw audio bytes compatible with OpenAI speech clients." },
+  },
+  "voice/audio-tasks": {
+    key: "voice/audio-tasks", category: "Voice", title: "OpenAI audio tasks", method: "POST", path: "/audio/tasks",
+    descriptionKey: "docs.endpointAudioTasks", capabilities: ["tts"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldVoiceModel" },
+      { name: "input", required: true, descriptionKey: "docs.reference.fieldAudioInput" },
+      { name: "voice", descriptionKey: "docs.reference.fieldAudioVoice" },
+      { name: "response_format", descriptionKey: "docs.reference.fieldAudioResponseFormat" },
+      { name: "speed", descriptionKey: "docs.reference.fieldTTSSpeed" },
+      { name: "language", descriptionKey: "docs.reference.fieldVoiceLanguageOptional" },
+    ],
+    noteKeys: ["docs.reference.noteAudioTasksCompat", "docs.reference.noteTTSModels", "docs.reference.noteVoiceBilling"],
+    request: (model) => ({ model, input: "Hello from Grok voice.", voice: "alloy", response_format: "mp3", language: "en" }),
+    response: { content_type: "audio/mpeg", note: "Compatibility path that returns raw audio bytes by default." },
+  },
+  "voice/audio-transcriptions": {
+    key: "voice/audio-transcriptions", category: "Voice", title: "OpenAI transcriptions", method: "POST", path: "/audio/transcriptions",
+    descriptionKey: "docs.endpointAudioTranscriptions", capabilities: ["stt"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldSTTModel" },
+      { name: "file", descriptionKey: "docs.reference.fieldSTTFile" },
+      { name: "url", descriptionKey: "docs.reference.fieldSTTUrl" },
+      { name: "language", descriptionKey: "docs.reference.fieldVoiceLanguage" },
+      { name: "response_format", descriptionKey: "docs.reference.fieldSTTResponseFormat" },
+    ],
+    noteKeys: ["docs.reference.noteAudioTranscriptionsCompat", "docs.reference.noteSTTInput", "docs.reference.noteSTTModels", "docs.reference.noteVoiceBilling"],
+    request: (model) => ({ model, url: "https://example.com/sample.wav", language: "en" }),
+    response: { text: "Hello from Grok voice." },
+  },
+  "voice/voices": {
+    key: "voice/voices", category: "Voice", title: "List voices", method: "GET", path: "/tts/voices",
+    descriptionKey: "docs.endpointTTSVoices", capabilities: ["tts"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldVoiceModelQuery" },
+    ],
+    noteKeys: ["docs.reference.noteTTSVoices"],
+    request: () => undefined,
+    response: { voices: [{ voice_id: "eve", name: "Eve", language: "en" }, { voice_id: "ara", name: "Ara", language: "en" }] },
+  },
+  "voice/stt": {
+    key: "voice/stt", category: "Voice", title: "Speech to text", method: "POST", path: "/stt",
+    descriptionKey: "docs.endpointSTT", capabilities: ["stt"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldSTTModel" },
+      { name: "file", descriptionKey: "docs.reference.fieldSTTFile" },
+      { name: "url", descriptionKey: "docs.reference.fieldSTTUrl" },
+      { name: "language", descriptionKey: "docs.reference.fieldVoiceLanguage" },
+      { name: "format", descriptionKey: "docs.reference.fieldSTTFormat" },
+      { name: "diarize", descriptionKey: "docs.reference.fieldSTTDiarize" },
+      { name: "keyterm", descriptionKey: "docs.reference.fieldSTTKeyterm" },
+    ],
+    noteKeys: ["docs.reference.noteSTTInput", "docs.reference.noteSTTStream", "docs.reference.noteSTTModels", "docs.reference.noteVoiceBilling"],
+    request: (model) => ({ model, url: "https://example.com/sample.wav", language: "en", format: true }),
+    response: { text: "Hello from Grok voice.", language: "en", duration: 1.84, words: [{ text: "Hello", start: 0.0, end: 0.42 }] },
+  },
+  "voice/realtime": {
+    key: "voice/realtime", category: "Voice", title: "Realtime websocket", method: "GET", path: "/realtime",
+    descriptionKey: "docs.endpointRealtime", capabilities: ["realtime"],
+    fields: [
+      { name: "model", descriptionKey: "docs.reference.fieldRealtimeModelQuery" },
+      { name: "Upgrade", required: true, descriptionKey: "docs.reference.fieldWSUpgrade" },
+    ],
+    noteKeys: ["docs.reference.noteRealtimeEvents", "docs.reference.noteRealtimeProxy", "docs.reference.noteRealtimeAuth", "docs.reference.noteVoiceBilling"],
+    request: () => undefined,
+    response: { type: "session.created", session: { model: "grok-voice-latest" } },
   },
 };
 
@@ -235,12 +360,22 @@ function withExampleModel(response: Record<string, unknown>, model: string): Rec
 function fallbackModel(key: string): string {
   if (key.startsWith("image/")) return key === "image/edits" ? "grok-imagine-image-edit" : "grok-imagine-image-lite";
   if (key.startsWith("video/")) return "grok-imagine-video";
+  if (key.startsWith("voice/")) {
+    if (key === "voice/stt" || key === "voice/audio-transcriptions") return "grok-stt";
+    return "grok-voice-latest";
+  }
   return "your-enabled-model";
 }
 
 function createExamples(definition: EndpointDefinition, baseUrl: string, model: string): Record<ExampleLanguage, string> {
   const request = definition.request(model);
-  const url = `${baseUrl}${definition.path.replace("{request_id}", "video_example")}`;
+  const path = definition.path
+    .replace("{request_id}", "video_example");
+  const url = definition.key === "voice/realtime"
+    ? `${baseUrl}${path}?model=${encodeURIComponent(model)}`
+    : definition.key === "voice/voices"
+      ? `${baseUrl}${path}?model=${encodeURIComponent(model)}`
+      : `${baseUrl}${path}`;
   const messageHeaders = definition.key === "chat/messages";
   const curlHeaders = messageHeaders
     ? [
