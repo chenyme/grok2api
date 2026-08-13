@@ -8,7 +8,11 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
+
+	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
@@ -287,4 +291,67 @@ func TestDetectBuildAccountsStreamsInvalidOnlyForAll(t *testing.T) {
 	}
 	_ = okAccount
 	_ = invalidAccount
+}
+
+func TestDetectBuildAccountsSerializesItemObserver(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "detect-observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessToken, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := relational.NewAccountRepository(database)
+	const accountCount = 8
+	for index := range accountCount {
+		if _, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+			Provider: accountdomain.ProviderBuild, Name: "invalid-" + strconv.Itoa(index), UserID: "user-invalid-" + strconv.Itoa(index),
+			SourceKey: "detect-invalid-" + strconv.Itoa(index), EncryptedAccessToken: accessToken,
+			Enabled: true, AuthStatus: accountdomain.AuthStatusActive, RefreshPermanent: true, Priority: 1, MaxConcurrent: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service := NewService(repo, nil, nil, nil, provider.NewRegistry(detectResponsesAdapter{
+		status: http.StatusUnauthorized,
+	}), cipher, nil)
+	service.SetDetectPool(batch.NewPool(accountCount))
+
+	started := make(chan struct{}, accountCount)
+	release := make(chan struct{})
+	var items []BuildDetectItemResult
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, detectErr := service.DetectBuildAccountsWithProgress(ctx, nil, true, nil, func(item BuildDetectItemResult) error {
+			started <- struct{}{}
+			<-release
+			items = append(items, item)
+			return nil
+		})
+		errCh <- detectErr
+	}()
+
+	deadline := time.After(2 * time.Second)
+	select {
+	case <-started:
+	case <-deadline:
+		t.Fatal("itemObserver was not invoked")
+	}
+	close(release)
+	if detectErr := <-errCh; detectErr != nil {
+		t.Fatal(detectErr)
+	}
+	if len(items) != accountCount {
+		t.Fatalf("serialized items = %d, want %d", len(items), accountCount)
+	}
 }

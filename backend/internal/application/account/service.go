@@ -3684,7 +3684,7 @@ func (s *Service) BatchRefreshBilling(ctx context.Context, ids []uint64) (int, i
 
 // DetectBuildAccountsWithProgress 对指定或全部 Grok Build 账号发起探测请求；all 与 ids 必须且只能提供一个。
 // 该方法同时上报批量进度与单账号明细。
-// itemObserver 在每个账号完成后调用：选中检测会推送全部结果，全量检测仅推送已确认失效账号。
+// itemObserver 在每个账号完成后串行调用：选中检测会推送全部结果，全量检测仅推送已确认失效账号。
 func (s *Service) DetectBuildAccountsWithProgress(ctx context.Context, ids []uint64, all bool, progress BatchProgressObserver, itemObserver BuildDetectItemObserver) (int, int, error) {
 	if all == (len(ids) > 0) {
 		return 0, 0, invalidInput("必须明确选择全部账号或提供非空账号 ID")
@@ -3725,7 +3725,10 @@ func (s *Service) DetectBuildAccountsWithProgress(ctx context.Context, ids []uin
 	summary, err := batch.ForEachObserved(runCtx, ids, batch.Options{Workers: pool.Limit(), Pool: pool}, func(workCtx context.Context, id uint64) (BuildDetectItemResult, error) {
 		item := s.detectBuildAccount(workCtx, id)
 		if itemObserver != nil && (selectedMode || item.Outcome == BuildDetectOutcomeInvalid) {
-			if notifyErr := itemObserver(item); notifyErr != nil {
+			progressMu.Lock()
+			notifyErr := itemObserver(item)
+			progressMu.Unlock()
+			if notifyErr != nil {
 				return item, notifyErr
 			}
 		}
