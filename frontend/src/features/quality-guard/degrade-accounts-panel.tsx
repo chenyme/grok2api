@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Gauge, PowerOff, RefreshCw, Search, Users } from "lucide-react";
+import { AlertTriangle, Gauge, Power, PowerOff, RefreshCw, Search, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -21,7 +21,7 @@ const MUTE_TOAST_ID = "quality-guard-degrade-mute";
 export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; hardTPS?: number }) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
-  const [window, setWindow] = useState<DegradeWindow>("24h");
+  const [period, setPeriod] = useState<DegradeWindow>("24h");
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<"all" | "on" | "off">("all");
   const [cls, setCls] = useState<"all" | DegradeClass>("all");
@@ -29,16 +29,18 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
 
   const query = useQuery({
-    queryKey: ["quality-guard-degrade-accounts", window, softTPS, hardTPS],
-    queryFn: () => getDegradeAccounts({ window, softTPS, hardTPS }),
+    queryKey: ["quality-guard-degrade-accounts", period, softTPS, hardTPS],
+    queryFn: () => getDegradeAccounts({ window: period, softTPS, hardTPS }),
     refetchInterval: 15_000,
   });
 
   const data = query.data;
   const rows = useMemo(() => filterAccounts(data, { search, status, cls, hitsMin }), [data, search, status, cls, hitsMin]);
-  const selectable = rows.filter((account) => account.enabled);
-  const selectedEnabled = selectable.filter((account) => selected.has(account.id));
-  const allSelected = selectable.length > 0 && selectedEnabled.length === selectable.length;
+  const selectable = rows;
+  const selectedRows = selectable.filter((account) => selected.has(account.id));
+  const selectedEnabled = selectedRows.filter((account) => account.enabled);
+  const selectedMuted = selectedRows.filter((account) => !account.enabled);
+  const allSelected = selectable.length > 0 && selectedRows.length === selectable.length;
 
   const muteMutation = useMutation({
     mutationFn: (ids: string[]) => updateAccountsEnabled(ids, false, "grok_build"),
@@ -51,6 +53,18 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : t("qualityGuard.degrade.muteFailed"), { id: MUTE_TOAST_ID }),
   });
+  const unmuteMutation = useMutation({
+    mutationFn: (ids: string[]) => updateAccountsEnabled(ids, true, "grok_build"),
+    onMutate: () => toast.loading(t("qualityGuard.degrade.unmuting"), { id: MUTE_TOAST_ID }),
+    onSuccess: (_, ids) => {
+      setSelected(new Set());
+      void queryClient.invalidateQueries({ queryKey: ["quality-guard-degrade-accounts"] });
+      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      toast.success(t("qualityGuard.degrade.unmuted", { count: ids.length }), { id: MUTE_TOAST_ID });
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : t("qualityGuard.degrade.unmuteFailed"), { id: MUTE_TOAST_ID }),
+  });
+  const busy = muteMutation.isPending || unmuteMutation.isPending;
 
   const toggleAll = (checked: boolean) => {
     setSelected((current) => {
@@ -75,7 +89,7 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
         <Metric icon={Gauge} label={t("qualityGuard.degrade.maxTPS")} value={Math.round(data.totals.maxTPS).toString()} detail={t("qualityGuard.degrade.maxTPSHelp")} tone={data.totals.maxTPS >= data.thresholds.hardTPS ? "bad" : undefined} />
       </section>
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.4fr)_minmax(260px,0.8fr)]">
+      <div className="grid items-stretch gap-3 xl:grid-cols-[minmax(0,1.4fr)_minmax(260px,0.8fr)]">
         <SeriesChart series={data.series} empty={t("qualityGuard.degrade.noHits")} title={t("qualityGuard.degrade.series")} />
         <NodeList nodes={data.nodes} empty={t("qualityGuard.degrade.noNodes")} title={t("qualityGuard.degrade.nodes")} />
       </div>
@@ -95,15 +109,21 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input className="h-8 w-44 pl-8" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("qualityGuard.degrade.search")} />
             </div>
-            <FilterSelect value={window} onChange={(value) => { setSelected(new Set()); setWindow(value as DegradeWindow); }} items={[["1h", t("qualityGuard.degrade.windows.1h")], ["6h", t("qualityGuard.degrade.windows.6h")], ["24h", t("qualityGuard.degrade.windows.24h")], ["7d", t("qualityGuard.degrade.windows.7d")]]} />
+            <FilterSelect value={period} onChange={(value) => { setSelected(new Set()); setPeriod(value as DegradeWindow); }} items={[["1h", t("qualityGuard.degrade.windows.1h")], ["6h", t("qualityGuard.degrade.windows.6h")], ["24h", t("qualityGuard.degrade.windows.24h")], ["7d", t("qualityGuard.degrade.windows.7d")]]} />
             <FilterSelect value={status} onChange={(value) => setStatus(value as "all" | "on" | "off")} items={[["all", t("qualityGuard.degrade.statusAll")], ["on", t("qualityGuard.degrade.statusOn")], ["off", t("qualityGuard.degrade.statusOff")]]} />
             <FilterSelect value={cls} onChange={(value) => setCls(value as "all" | DegradeClass)} items={[["all", t("qualityGuard.degrade.classAll")], ["buffered_burst", "burst"], ["soft_tps", "soft"], ["hard_tps", "hard"]]} />
             <FilterSelect value={String(hitsMin)} onChange={(value) => setHitsMin(Number(value))} items={[["1", t("qualityGuard.degrade.hitsAll")], ["2", t("qualityGuard.degrade.hitsMin", { count: 2 })], ["3", t("qualityGuard.degrade.hitsMin", { count: 3 })], ["5", t("qualityGuard.degrade.hitsMin", { count: 5 })], ["10", t("qualityGuard.degrade.hitsMin", { count: 10 })]]} />
-            <Button type="button" variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={selectedEnabled.length === 0 || muteMutation.isPending} onClick={() => {
+            <Button type="button" variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={selectedEnabled.length === 0 || busy} onClick={() => {
               if (!window.confirm(t("qualityGuard.degrade.muteConfirm", { count: selectedEnabled.length }))) return;
               muteMutation.mutate(selectedEnabled.map((account) => account.id));
             }}>
               <PowerOff />{selectedEnabled.length ? t("qualityGuard.degrade.muteSelectedCount", { count: selectedEnabled.length }) : t("qualityGuard.degrade.muteSelected")}
+            </Button>
+            <Button type="button" variant="secondary" size="sm" disabled={selectedMuted.length === 0 || busy} onClick={() => {
+              if (!window.confirm(t("qualityGuard.degrade.unmuteConfirm", { count: selectedMuted.length }))) return;
+              unmuteMutation.mutate(selectedMuted.map((account) => account.id));
+            }}>
+              <Power />{selectedMuted.length ? t("qualityGuard.degrade.unmuteSelectedCount", { count: selectedMuted.length }) : t("qualityGuard.degrade.unmuteSelected")}
             </Button>
             <Button type="button" variant="ghost" size="icon" className="size-8" onClick={() => void query.refetch()} disabled={query.isFetching} aria-label={t("common.refresh")}>
               <RefreshCw className={cn("size-4", query.isFetching && "animate-spin")} />
@@ -114,7 +134,7 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
           <Table className="min-w-[920px]">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-10 px-3"><Checkbox checked={allSelected ? true : selectedEnabled.length > 0 ? "indeterminate" : false} disabled={selectable.length === 0} onCheckedChange={(checked) => toggleAll(checked === true)} aria-label={t("common.selectPage")} /></TableHead>
+                <TableHead className="w-10 px-3"><Checkbox checked={allSelected ? true : selectedRows.length > 0 ? "indeterminate" : false} disabled={selectable.length === 0} onCheckedChange={(checked) => toggleAll(checked === true)} aria-label={t("common.selectPage")} /></TableHead>
                 <TableHead>{t("qualityGuard.degrade.account")}</TableHead>
                 <TableHead>{t("qualityGuard.degrade.status")}</TableHead>
                 <TableHead className="text-right">{t("qualityGuard.degrade.hitCount")}</TableHead>
@@ -128,20 +148,31 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
               {rows.length === 0 ? (
                 <TableRow><TableCell colSpan={8}><EmptyState message={t("qualityGuard.degrade.noAccounts")} /></TableCell></TableRow>
               ) : rows.map((account) => (
-                <TableRow key={account.id}>
-                  <TableCell className="px-3"><Checkbox checked={selected.has(account.id)} disabled={!account.enabled} onCheckedChange={(checked) => setSelected((current) => {
+                <TableRow key={account.id} className="cursor-pointer" onClick={() => {
+                  setSelected((current) => {
                     const next = new Set(current);
-                    if (checked === true) next.add(account.id);
-                    else next.delete(account.id);
+                    if (next.has(account.id)) next.delete(account.id);
+                    else next.add(account.id);
                     return next;
-                  })} /></TableCell>
+                  });
+                }}>
+                  <TableCell className="px-3" onClick={(event) => event.stopPropagation()}>
+                    <label className="flex size-8 cursor-pointer items-center justify-center">
+                      <Checkbox checked={selected.has(account.id)} onCheckedChange={(checked) => setSelected((current) => {
+                        const next = new Set(current);
+                        if (checked === true) next.add(account.id);
+                        else next.delete(account.id);
+                        return next;
+                      })} />
+                    </label>
+                  </TableCell>
                   <TableCell>
                     <div className="font-mono text-xs text-muted-foreground">#{account.id}</div>
                     <div className="text-sm">{account.email || account.name || "-"}</div>
                   </TableCell>
-                  <TableCell>
-                    {account.enabled ? <Badge variant="outline" className="text-destructive">{t("qualityGuard.degrade.scheduling")}</Badge> : <Badge variant="outline" className="text-emerald-600 dark:text-emerald-400">{t("qualityGuard.degrade.mutedStatus")}</Badge>}
-                    {account.bfs ? <Badge variant="outline" className="ml-1 text-muted-foreground">bfs {account.bfs}</Badge> : null}
+                  <TableCell className="whitespace-nowrap">
+                    {account.enabled ? <Badge variant="outline" className="whitespace-nowrap text-destructive">{t("qualityGuard.degrade.scheduling")}</Badge> : <Badge variant="outline" className="whitespace-nowrap text-emerald-600 dark:text-emerald-400">{t("qualityGuard.degrade.mutedStatus")}</Badge>}
+                    {account.bfs ? <Badge variant="outline" className="ml-1 whitespace-nowrap text-muted-foreground">bfs {account.bfs}</Badge> : null}
                   </TableCell>
                   <TableCell className="text-right font-mono tabular-nums">{account.hits}</TableCell>
                   <TableCell className={cn("text-right font-mono tabular-nums", account.maxTPS >= data.thresholds.hardTPS ? "text-destructive" : account.maxTPS >= data.thresholds.softTPS ? "text-amber-600 dark:text-amber-400" : "")}>{account.maxTPS}</TableCell>
@@ -225,27 +256,44 @@ function Metric({ icon: Icon, label, value, detail, tone }: { icon: typeof Alert
 
 function SeriesChart({ series, empty, title }: { series: DegradeSummaryDTO["series"]; empty: string; title: string }) {
   const max = Math.max(1, ...series.map((item) => item.count));
+  const labelStep = series.length > 12 ? Math.ceil(series.length / 8) : 1;
   return (
-    <section className="overflow-hidden rounded-lg bg-card">
-      <div className="border-b px-4 py-4 sm:px-5"><h2 className="text-sm font-medium">{title}</h2></div>
-      <div className="flex h-36 items-end gap-1 px-4 pb-3 sm:px-5">
-        {series.length === 0 ? <p className="self-center text-xs text-muted-foreground">{empty}</p> : series.map((item) => (
-          <div key={item.label} className="flex min-w-0 flex-1 flex-col justify-end" title={`${item.label}: ${item.count}`}>
-            <div className={cn("w-full rounded-t-sm", item.severe > 0 && item.severe >= item.count * 0.5 ? "bg-destructive" : "bg-amber-500/80")} style={{ height: `${Math.max(2, Math.round(item.count / max * 100))}%` }} />
-            <div className="mt-1 truncate text-center text-[9px] text-muted-foreground">{item.label}</div>
-          </div>
-        ))}
+    <section className="flex h-full min-h-64 flex-col overflow-hidden rounded-lg bg-card">
+      <div className="shrink-0 border-b px-4 py-4 sm:px-5"><h2 className="text-sm font-medium">{title}</h2></div>
+      <div className="flex min-h-0 flex-1 items-stretch gap-1 px-4 pb-3 pt-2 sm:px-5">
+        {series.length === 0 ? <p className="self-center text-xs text-muted-foreground">{empty}</p> : series.map((item, index) => {
+          const height = item.count <= 0 ? 0 : Math.max(6, Math.round((item.count / max) * 100));
+          const showLabel = index % labelStep === 0 || index === series.length - 1;
+          return (
+            <div key={`${item.label}-${index}`} className="flex min-w-0 flex-1 flex-col" title={`${item.label}: ${item.count}`}>
+              <div className="relative min-h-0 flex-1">
+                <div
+                  className={cn("absolute inset-x-0 bottom-0 rounded-t-sm", item.severe > 0 && item.severe >= item.count * 0.5 ? "bg-destructive" : "bg-amber-500")}
+                  style={{ height: `${height}%` }}
+                />
+              </div>
+              <div className="mt-1 h-4 text-center text-[10px] tabular-nums text-muted-foreground">
+                {showLabel ? shortSeriesLabel(item.label) : ""}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
 }
 
+function shortSeriesLabel(label: string) {
+  const hour = label.match(/(\d{1,2})(?::\d{2})?$/);
+  return hour ? hour[1].padStart(2, "0") : label;
+}
+
 function NodeList({ nodes, empty, title }: { nodes: DegradeSummaryDTO["nodes"]; empty: string; title: string }) {
   const max = Math.max(1, ...nodes.map((node) => node.hits));
   return (
-    <section className="overflow-hidden rounded-lg bg-card">
-      <div className="border-b px-4 py-4 sm:px-5"><h2 className="text-sm font-medium">{title}</h2></div>
-      <div className="space-y-2 p-4 sm:p-5">
+    <section className="flex h-full min-h-64 flex-col overflow-hidden rounded-lg bg-card">
+      <div className="shrink-0 border-b px-4 py-4 sm:px-5"><h2 className="text-sm font-medium">{title}</h2></div>
+      <div className="min-h-0 flex-1 space-y-2 overflow-auto p-4 sm:p-5">
         {nodes.length === 0 ? <p className="text-xs text-muted-foreground">{empty}</p> : nodes.map((node) => (
           <div key={node.name} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 text-xs">
             <div>
