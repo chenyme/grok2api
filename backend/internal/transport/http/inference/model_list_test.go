@@ -128,6 +128,42 @@ func TestNewCodexModelCatalogIncludesRequiredProtocolFields(t *testing.T) {
 	}
 }
 
+func TestCodexCatalogUsesGrok46MetadataForBaseAndXHighAlias(t *testing.T) {
+	items := []modelListItem{
+		{ID: "grok-4.6", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+		{ID: "grok-4.6-xhigh", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+	}
+	models := newCodexModelCatalog(items).Models
+	if len(models) != 2 {
+		t.Fatalf("model count = %d, want 2", len(models))
+	}
+
+	base := models[0]
+	if base.ContextWindow != 500000 || base.MaxContextWindow != 500000 {
+		t.Fatalf("grok-4.6 context window = %d/%d, want 500000/500000", base.ContextWindow, base.MaxContextWindow)
+	}
+	if base.Description != "xAI Grok 4.6 frontier model with reasoning and vision." {
+		t.Fatalf("grok-4.6 description = %q", base.Description)
+	}
+	if len(base.InputModalities) != 2 || base.InputModalities[0] != "text" || base.InputModalities[1] != "image" {
+		t.Fatalf("grok-4.6 input modalities = %#v, want text/image", base.InputModalities)
+	}
+	if base.DefaultReasoningLevel != "medium" || len(base.SupportedReasoningLevels) != 4 || base.SupportedReasoningLevels[3].Effort != "xhigh" {
+		t.Fatalf("grok-4.6 reasoning metadata = default %q, levels %#v", base.DefaultReasoningLevel, base.SupportedReasoningLevels)
+	}
+	if !base.SupportsReasoningSummaryParameter || !base.SupportsReasoningSummaries {
+		t.Fatalf("grok-4.6 reasoning support missing: %#v", base)
+	}
+
+	alias := models[1]
+	if alias.ContextWindow != base.ContextWindow || alias.MaxContextWindow != base.MaxContextWindow || alias.Description != base.Description {
+		t.Fatalf("grok-4.6-xhigh did not inherit base metadata: %#v", alias)
+	}
+	if len(alias.InputModalities) != 2 || alias.DefaultReasoningLevel != "xhigh" || len(alias.SupportedReasoningLevels) != 1 || alias.SupportedReasoningLevels[0].Effort != "xhigh" {
+		t.Fatalf("grok-4.6-xhigh metadata = %#v", alias)
+	}
+}
+
 func TestCodexCatalogMarksConsoleGrok420AsFixedReasoning(t *testing.T) {
 	entry := newCodexModelCatalog([]modelListItem{{
 		ID: "grok-4.20-0309-reasoning", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses,
