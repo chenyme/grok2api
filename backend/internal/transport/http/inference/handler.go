@@ -176,6 +176,7 @@ type videoGenerationAudio struct {
 type videoGenerationRequest struct {
 	Model           string                 `json:"model"`
 	Prompt          string                 `json:"prompt"`
+	Messages        json.RawMessage        `json:"messages"`
 	User            *string                `json:"user"`
 	Duration        json.RawMessage        `json:"duration"`
 	AspectRatio     string                 `json:"aspect_ratio"`
@@ -719,6 +720,14 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	}
 	model := strings.TrimSpace(request.Model)
 	prompt := strings.TrimSpace(request.Prompt)
+	if prompt == "" {
+		var err error
+		prompt, err = extractVideoPromptFromMessages(request.Messages)
+		if err != nil {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", label+" messages 无效: "+err.Error())
+			return
+		}
+	}
 	if model == "" {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", label+"缺少有效 model")
 		return
@@ -896,6 +905,49 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
+}
+
+func extractVideoPromptFromMessages(raw json.RawMessage) (string, error) {
+	if !hasJSONValue(raw) {
+		return "", nil
+	}
+	var messages []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return "", errors.New("必须是消息数组")
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if !strings.EqualFold(strings.TrimSpace(messages[i].Role), "user") {
+			continue
+		}
+		return extractVideoMessageText(messages[i].Content), nil
+	}
+	return "", nil
+}
+
+func extractVideoMessageText(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return strings.TrimSpace(text)
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &parts) != nil {
+		return ""
+	}
+	texts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		partType := strings.ToLower(strings.TrimSpace(part.Type))
+		value := strings.TrimSpace(part.Text)
+		if value != "" && (partType == "text" || partType == "input_text") {
+			texts = append(texts, value)
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 func (h *Handler) getVideo(c *gin.Context) {

@@ -115,6 +115,68 @@ func TestVideoGenerationUsesOfficialXAIEndpointsAndFields(t *testing.T) {
 	}
 }
 
+func TestVideoGenerationAcceptsChatMessagesAsPrompt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	NewHandler(nil, nil, 1<<20).Register(router.Group("/v1"))
+
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "string content", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"animate ocean waves"}]}`},
+		{name: "text content parts", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":[{"type":"text","text":"animate"},{"type":"input_text","text":"ocean waves"}]}]}`},
+		{name: "last user message", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"first"},{"role":"assistant","content":"reply"},{"role":"user","content":"final prompt"}]}`},
+		{name: "explicit prompt takes precedence", body: `{"model":"grok-imagine-video","prompt":"explicit","messages":{"not":"an array"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "invalid messages shape", body: `{"model":"grok-imagine-video","messages":{"role":"user","content":"test"}}`, want: "messages 无效"},
+		{name: "no user text", body: `{"model":"grok-imagine-video","messages":[{"role":"assistant","content":"reply"}]}`, want: "必须提供 prompt"},
+		{name: "unknown top level field remains rejected", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"test"}],"unexpected":true}`, want: "unknown field"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), test.want) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestExtractVideoPromptFromMessagesUsesOnlyLastUserText(t *testing.T) {
+	raw := json.RawMessage(`[
+		{"role":"user","content":"old prompt"},
+		{"role":"assistant","content":"assistant history"},
+		{"role":"user","content":[
+			{"type":"input_text","text":"new prompt"},
+			{"type":"image_url","image_url":{"url":"https://example.com/input.png"}},
+			{"type":"text","text":"second line"}
+		]}
+	]`)
+	prompt, err := extractVideoPromptFromMessages(raw)
+	if err != nil || prompt != "new prompt\nsecond line" {
+		t.Fatalf("prompt=%q err=%v", prompt, err)
+	}
+}
+
 func TestWriteVideoContentRejectsDeclaredOversizeMedia(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
