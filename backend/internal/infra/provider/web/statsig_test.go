@@ -19,6 +19,67 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
 
+func TestStatsigMetaFromHTTPAcceptsIndexNotFoundWithVerification(t *testing.T) {
+	body := []byte(`<html><head><meta name="grok-site―verification" content="meta-value"/></head></html>`)
+	value, err := statsigMetaFromHTTP(http.StatusNotFound, body)
+	if err != nil || value != "meta-value" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+}
+
+func TestStatsigMetaFromHTTPKeepsMissingVerificationErrorOnSuccessStatus(t *testing.T) {
+	if _, err := statsigMetaFromHTTP(http.StatusOK, []byte(`<html><head></head></html>`)); err == nil || !strings.Contains(err.Error(), "缺少 grok-site-verification") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestStatsigMetaFromHTTPPreservesStatusWhenVerificationMissing(t *testing.T) {
+	if _, err := statsigMetaFromHTTP(http.StatusNotFound, []byte(`<html><head></head></html>`)); err == nil || !strings.Contains(err.Error(), "Grok index 返回 404") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFetchStatsigMetaContentFallsBackToRootWhenIndexHasNoVerification(t *testing.T) {
+	var paths []string
+	do := func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		switch request.URL.Path {
+		case "/index":
+			return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`<html><head><meta name="robots" content="noindex"/></head></html>`)), Header: http.Header{}}, nil
+		case "/":
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`<html><head><meta name="grok-site-verification" content="root-meta"/></head></html>`)), Header: http.Header{}}, nil
+		default:
+			t.Fatalf("unexpected path %q", request.URL.Path)
+			return nil, nil
+		}
+	}
+	value, err := fetchStatsigMetaContentWithDo(context.Background(), "https://grok.com", "sso-token", &infraegress.Lease{UserAgent: "test-agent"}, do)
+	if err != nil || value != "root-meta" {
+		t.Fatalf("value=%q err=%v paths=%v", value, err, paths)
+	}
+	if len(paths) != 2 || paths[0] != "/index" || paths[1] != "/" {
+		t.Fatalf("paths=%v", paths)
+	}
+}
+
+func TestFetchStatsigMetaContentDoesNotFallbackWhenIndex404HasVerification(t *testing.T) {
+	var paths []string
+	do := func(request *http.Request) (*http.Response, error) {
+		paths = append(paths, request.URL.Path)
+		if request.URL.Path != "/index" {
+			t.Fatalf("unexpected fallback to %q", request.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusNotFound, Body: io.NopCloser(strings.NewReader(`<html><head><meta name="grok-site―verification" content="index-meta"/></head></html>`)), Header: http.Header{}}, nil
+	}
+	value, err := fetchStatsigMetaContentWithDo(context.Background(), "https://grok.com", "sso-token", &infraegress.Lease{UserAgent: "test-agent"}, do)
+	if err != nil || value != "index-meta" {
+		t.Fatalf("value=%q err=%v", value, err)
+	}
+	if len(paths) != 1 || paths[0] != "/index" {
+		t.Fatalf("paths=%v", paths)
+	}
+}
+
 func TestExtractStatsigMetaContentAcceptsCurrentMetaName(t *testing.T) {
 	for _, name := range []string{"grok-site―verification", "grok-site-verification"} {
 		body := []byte(`<html><head><meta name="` + name + `" content="meta-value"/></head></html>`)
