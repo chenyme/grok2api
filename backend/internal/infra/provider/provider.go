@@ -63,6 +63,85 @@ func ErrorHTTPStatus(err error) (int, bool) {
 	return status, status > 0
 }
 
+// VideoStage identifies which phase of an asynchronous video job failed.
+type VideoStage string
+
+const (
+	VideoStageCreate VideoStage = "create"
+	VideoStagePoll   VideoStage = "poll"
+)
+
+// VideoStageError marks whether a video failure happened before the upstream
+// job was created (safe to switch accounts) or while polling an existing job.
+type VideoStageError struct {
+	Stage  VideoStage
+	Status int
+	Err    error
+}
+
+func (e *VideoStageError) Error() string {
+	if e == nil {
+		return "video request failed"
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	if e.Status > 0 {
+		return fmt.Sprintf("video %s failed with status %d", e.Stage, e.Status)
+	}
+	return fmt.Sprintf("video %s failed", e.Stage)
+}
+
+func (e *VideoStageError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *VideoStageError) HTTPStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	if e.Status > 0 {
+		return e.Status
+	}
+	return ErrorHTTPStatusOrZero(e.Err)
+}
+
+// ErrorHTTPStatusOrZero extracts an upstream status or returns 0.
+func ErrorHTTPStatusOrZero(err error) int {
+	status, ok := ErrorHTTPStatus(err)
+	if !ok {
+		return 0
+	}
+	return status
+}
+
+// VideoErrorStage reports the video phase for an error chain.
+func VideoErrorStage(err error) (VideoStage, bool) {
+	var stageErr *VideoStageError
+	if !errors.As(err, &stageErr) || stageErr == nil || stageErr.Stage == "" {
+		return "", false
+	}
+	return stageErr.Stage, true
+}
+
+// WrapVideoStage annotates err with the video phase and optional HTTP status.
+func WrapVideoStage(stage VideoStage, status int, err error) error {
+	if err == nil {
+		return nil
+	}
+	var existing *VideoStageError
+	if errors.As(err, &existing) {
+		return err
+	}
+	if status <= 0 {
+		status = ErrorHTTPStatusOrZero(err)
+	}
+	return &VideoStageError{Stage: stage, Status: status, Err: err}
+}
+
 // ErrorRetryAfter extracts a positive retry delay from an error chain.
 func ErrorRetryAfter(err error) time.Duration {
 	var retryError RetryAfterError

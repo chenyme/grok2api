@@ -273,6 +273,43 @@ export function SettingsPage() {
                   );
                 }} />
               </SettingsField>
+              <SettingsField controlId="routing-video-max-attempts" label={t("settings.routing.videoMaxAttempts")} description={t("settings.routing.videoMaxAttemptsHelp")} error={form.formState.errors.routing?.videoMaxAttempts?.message}>
+                <Controller control={form.control} name="routing.videoMaxAttempts" render={({ field }) => {
+                  const unlimited = field.value === UNLIMITED_ROUTING_ATTEMPTS;
+                  return (
+                    <div className="flex h-9 items-center gap-3">
+                      <Input
+                        id="routing-video-max-attempts"
+                        ref={field.ref}
+                        name={field.name}
+                        type="number"
+                        min={1}
+                        max={MAX_ROUTING_ATTEMPTS}
+                        disabled={unlimited}
+                        value={unlimited || !Number.isFinite(field.value) || field.value <= 0 ? "" : field.value}
+                        placeholder={t("settingsRoutingAttempts.unlimited")}
+                        onBlur={field.onBlur}
+                        onChange={(event) => field.onChange(event.currentTarget.valueAsNumber)}
+                      />
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{t("settingsRoutingAttempts.unlimited")}</span>
+                        <Switch
+                          id="routing-video-max-attempts-unlimited"
+                          aria-label={t("settingsRoutingAttempts.unlimited")}
+                          checked={unlimited}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              field.onChange(UNLIMITED_ROUTING_ATTEMPTS);
+                              return;
+                            }
+                            field.onChange(limitedRoutingAttemptsRef.current > 0 ? limitedRoutingAttemptsRef.current : 999);
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                }} />
+              </SettingsField>
               <SettingsField controlId="routing-prefer-free-build" label={t("settings.routing.preferFreeBuild")} description={t("settings.routing.preferFreeBuildHelp")}><Controller control={form.control} name="routing.preferFreeBuild" render={({ field }) => <div className="flex h-9 items-center"><Switch id="routing-prefer-free-build" checked={field.value} onCheckedChange={field.onChange} /></div>} /></SettingsField>
               <SettingsField controlId="routing-mark-build-chat-denied-as-reauth" label={t("settings.routing.markBuildChatDeniedAsReauth")} description={t("settings.routing.markBuildChatDeniedAsReauthHelp")}><Controller control={form.control} name="routing.markBuildChatDeniedAsReauth" render={({ field }) => <div className="flex h-9 items-center"><Switch id="routing-mark-build-chat-denied-as-reauth" checked={field.value} onCheckedChange={field.onChange} /></div>} /></SettingsField>
               <SettingsField controlId="routing-account-isolated-connections" label={t("settings.routing.accountIsolatedConnections")} description={t("settings.routing.accountIsolatedConnectionsHelp")}><Controller control={form.control} name="routing.accountIsolatedConnections" render={({ field }) => <div className="flex h-9 items-center"><Switch id="routing-account-isolated-connections" checked={field.value} onCheckedChange={field.onChange} /></div>} /></SettingsField>

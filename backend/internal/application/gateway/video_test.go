@@ -500,3 +500,45 @@ func (r *videoUsageRepository) MarkMediaJobUsageRecorded(_ context.Context, _ st
 	r.job.UsageRecordedAt = &recordedAt
 	return nil
 }
+
+
+func TestResolveVideoAuditStatusCodePrefersUpstream429(t *testing.T) {
+	status429 := http.StatusTooManyRequests
+	job := media.Job{Status: media.StatusFailed, ErrorCode: "generation_failed", ErrorMessage: "Console 媒体上游返回 429: Too many requests"}
+	if got := resolveVideoAuditStatusCode(job, 0, nil); got != http.StatusTooManyRequests {
+		t.Fatalf("message status = %d", got)
+	}
+	if got := resolveVideoAuditStatusCode(job, http.StatusTooManyRequests, nil); got != http.StatusTooManyRequests {
+		t.Fatalf("explicit status = %d", got)
+	}
+	attempts := []audit.Attempt{{UpstreamStatusCode: &status429}}
+	job.ErrorMessage = "wrapped"
+	if got := resolveVideoAuditStatusCode(job, 0, attempts); got != http.StatusTooManyRequests {
+		t.Fatalf("attempt status = %d", got)
+	}
+	job.ErrorCode = "rate_limited"
+	job.ErrorMessage = ""
+	if got := resolveVideoAuditStatusCode(job, 0, nil); got != http.StatusTooManyRequests {
+		t.Fatalf("code status = %d", got)
+	}
+}
+
+func TestVideoAttemptPolicyStandaloneAndUnlimited(t *testing.T) {
+	service := &Service{}
+	service.UpdateMaxAttempts(3)
+	service.UpdateVideoMaxAttempts(0)
+	policy := service.videoAttemptPolicy()
+	if policy.unlimited || policy.limit != 999 {
+		t.Fatalf("legacy zero policy = %#v", policy)
+	}
+	service.UpdateVideoMaxAttempts(-1)
+	policy = service.videoAttemptPolicy()
+	if !policy.unlimited {
+		t.Fatalf("unlimited video policy = %#v", policy)
+	}
+	service.UpdateVideoMaxAttempts(5)
+	policy = service.videoAttemptPolicy()
+	if policy.unlimited || policy.limit != 5 {
+		t.Fatalf("standalone policy = %#v", policy)
+	}
+}
