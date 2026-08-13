@@ -96,6 +96,36 @@ func TestSaveVideoArchivesProviderResultWithoutUploadTicket(t *testing.T) {
 	}
 }
 
+func TestSaveInputVideoIsPrivateExpiringAsset(t *testing.T) {
+	database, objects, _, cleanup := openUploadTestDeps(t)
+	defer cleanup()
+	ctx := context.Background()
+	service := NewService(
+		relational.NewMediaAssetRepository(database), relational.NewMediaJobRepository(database), objects, nil,
+		Config{MaxImageBytes: mediadomain.MaxInputAssetBytes, MaxTotalBytes: 1 << 30, CleanupThresholdPercent: 80, CleanupInterval: time.Minute},
+	)
+	payload := append([]byte{0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'}, bytes.Repeat([]byte{0x04}, 64)...)
+	asset, err := service.SaveInputVideo(ctx, "video/mp4", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mediadomain.IsInputAssetID(asset.ID) || asset.Kind != "video" || asset.ExpiresAt == nil || !asset.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("input asset = %#v", asset)
+	}
+	stored, body, err := service.OpenInputAsset(ctx, asset.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	raw, err := io.ReadAll(body)
+	if err != nil || !bytes.Equal(raw, payload) || stored.ExpiresAt == nil {
+		t.Fatalf("stored = %#v size=%d err=%v", stored, len(raw), err)
+	}
+	if _, _, err := service.OpenVideo(ctx, asset.ID); !errors.Is(err, ErrAssetNotFound) {
+		t.Fatalf("temporary video unexpectedly public: %v", err)
+	}
+}
+
 type bindingTicketRepository struct {
 	repository.MediaUploadTicketRepository
 	jobID   string

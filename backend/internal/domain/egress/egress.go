@@ -131,6 +131,7 @@ type SubscriptionSource struct {
 	Scope                  Scope
 	Enabled                bool
 	EncryptedURL           string
+	EncryptedProxyURL      string
 	RefreshIntervalSeconds int
 	DefaultAccountCapacity int
 	LastSyncedAt           *time.Time
@@ -147,6 +148,7 @@ type PublicSubscriptionSource struct {
 	Scope                  Scope
 	Enabled                bool
 	URLConfigured          bool
+	ProxyConfigured        bool
 	RefreshIntervalSeconds int
 	DefaultAccountCapacity int
 	LastSyncedAt           *time.Time
@@ -218,11 +220,8 @@ type OperationsConfig struct {
 	AutoAssignEnabled         bool
 	AutoBalanceEnabled        bool
 	AssignmentIntervalSeconds int
-	// EncryptedSubscriptionProxyURL is the optional proxy used only when
-	// fetching remote proxy subscription sources. It is write-only at rest.
-	EncryptedSubscriptionProxyURL string
-	Fallbacks                     map[Scope]FallbackConfig
-	UpdatedAt                     time.Time
+	Fallbacks                 map[Scope]FallbackConfig
+	UpdatedAt                 time.Time
 }
 
 func DefaultOperationsConfig() OperationsConfig {

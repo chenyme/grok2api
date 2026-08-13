@@ -134,6 +134,7 @@ type quotaRefreshRequest struct {
 type quotaRefreshResult struct {
 	Credential accountdomain.Credential
 	Windows    []accountdomain.QuotaWindow
+	Modes      []string
 }
 
 type QuotaRefreshStats struct {
@@ -2833,6 +2834,9 @@ func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	mode = strings.TrimSpace(mode)
 	key := quotaSyncKey(id, mode)
 	result, err, _ := s.quotaSyncs.Do(key, func() (any, error) {
+		if isWebImagineQuotaMode(mode) {
+			return s.refreshQuotaGroup(ctx, id, accountdomain.QuotaGroupWebImagine)
+		}
 		return s.refreshQuotaMode(ctx, id, mode)
 	})
 	if err != nil {
@@ -2842,19 +2846,26 @@ func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	if !ok {
 		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider 模式额度同步返回类型无效")
 	}
+	if len(refreshed.Modes) > 0 {
+		if err := s.reconcileQuotaGroupWindows(ctx, refreshed.Credential.Provider, id, refreshed.Modes, refreshed.Windows); err != nil {
+			return accountdomain.QuotaWindow{}, err
+		}
+	}
 	window, ok := quotaWindowByMode(refreshed.Windows, mode)
 	if !ok {
 		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider usage 响应缺少 %s 额度", mode)
 	}
-	if refreshed.Credential.Provider == accountdomain.ProviderConsole {
+	if len(refreshed.Modes) == 0 && refreshed.Credential.Provider == accountdomain.ProviderConsole {
 		// One Console request refreshes all three authoritative windows. Reconcile
 		// every matching recovery event so externally consumed media quota cannot
 		// remain unscheduled merely because a different kind triggered the refresh.
 		if err := s.reconcileQuotaRecoveryWindows(ctx, refreshed.Credential.Provider, id, refreshed.Windows); err != nil {
 			return window, err
 		}
-	} else if err := s.reconcileQuotaRecoveryWindow(ctx, refreshed.Credential.Provider, id, window); err != nil {
-		return window, err
+	} else if len(refreshed.Modes) == 0 {
+		if err := s.reconcileQuotaRecoveryWindow(ctx, refreshed.Credential.Provider, id, window); err != nil {
+			return window, err
+		}
 	}
 	return window, nil
 }
@@ -2866,6 +2877,9 @@ func (s *Service) ProbeQuotaMode(ctx context.Context, id uint64, mode string) (a
 	mode = strings.TrimSpace(mode)
 	key := quotaSyncKey(id, mode)
 	result, err, _ := s.quotaSyncs.Do(key, func() (any, error) {
+		if isWebImagineQuotaMode(mode) {
+			return s.refreshQuotaGroup(ctx, id, accountdomain.QuotaGroupWebImagine)
+		}
 		return s.refreshQuotaMode(ctx, id, mode)
 	})
 	if err != nil {
@@ -2880,6 +2894,34 @@ func (s *Service) ProbeQuotaMode(ctx context.Context, id uint64, mode string) (a
 		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider usage 响应缺少 %s 额度", mode)
 	}
 	return window, nil
+}
+
+func (s *Service) refreshQuotaGroup(ctx context.Context, id uint64, group string) (quotaRefreshResult, error) {
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return quotaRefreshResult{}, mapRepositoryError(err)
+	}
+	adapter, ok := s.providers.QuotaGroup(value.Provider)
+	if !ok {
+		return quotaRefreshResult{}, fmt.Errorf("%s quota group Provider 未注册", value.Provider)
+	}
+	snapshot, err := adapter.SyncQuotaGroup(ctx, value, group)
+	if err != nil {
+		if errors.Is(err, provider.ErrUnauthorized) {
+			err = errors.Join(err, s.markSSOCredentialRejected(ctx, value, fmt.Sprintf("%s SSO credential rejected", value.Provider)))
+		}
+		return quotaRefreshResult{}, err
+	}
+	if snapshot.Group != group || len(snapshot.Modes) == 0 {
+		return quotaRefreshResult{}, fmt.Errorf("Provider quota group %s 返回无效快照", group)
+	}
+	if snapshot.SyncedAt.IsZero() {
+		snapshot.SyncedAt = s.now()
+	}
+	if err := s.accounts.ReplaceQuotaWindowGroup(ctx, id, snapshot.SyncedAt, snapshot.Modes, snapshot.Windows); err != nil {
+		return quotaRefreshResult{}, err
+	}
+	return quotaRefreshResult{Credential: value, Windows: snapshot.Windows, Modes: snapshot.Modes}, nil
 }
 
 func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) (quotaRefreshResult, error) {
@@ -2949,6 +2991,9 @@ func quotaSyncKey(accountID uint64, mode string) string {
 	if isConsoleUsageQuotaMode(mode) {
 		return "all:" + strconv.FormatUint(accountID, 10)
 	}
+	if isWebImagineQuotaMode(mode) || mode == accountdomain.QuotaGroupWebImagine {
+		return accountdomain.QuotaGroupWebImagine + ":" + strconv.FormatUint(accountID, 10)
+	}
 	return mode + ":" + strconv.FormatUint(accountID, 10)
 }
 
@@ -2965,6 +3010,27 @@ func (s *Service) reconcileQuotaRecoveryWindows(ctx context.Context, providerVal
 	for _, window := range windows {
 		if err := s.reconcileQuotaRecoveryWindow(ctx, providerValue, accountID, window); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) reconcileQuotaGroupWindows(ctx context.Context, providerValue accountdomain.Provider, accountID uint64, modes []string, windows []accountdomain.QuotaWindow) error {
+	byMode := make(map[string]accountdomain.QuotaWindow, len(windows))
+	for _, window := range windows {
+		byMode[window.Mode] = window
+	}
+	for _, mode := range modes {
+		if window, ok := byMode[mode]; ok {
+			if err := s.reconcileQuotaRecoveryWindow(ctx, providerValue, accountID, window); err != nil {
+				return err
+			}
+			continue
+		}
+		if s.quotaQueue != nil {
+			if err := s.quotaQueue.CancelQuotaRecovery(ctx, accountID, mode); err != nil {
+				return fmt.Errorf("取消额度恢复事件: %w", err)
+			}
 		}
 	}
 	return nil
@@ -3012,7 +3078,10 @@ func quotaRecoveryDueAt(window accountdomain.QuotaWindow, now time.Time, exhaust
 // QueueQuotaRefresh asynchronously refreshes the remote quota window after a successful request.
 func (s *Service) QueueQuotaRefresh(id uint64, mode string) {
 	mode = strings.TrimSpace(mode)
-	if id == 0 || (!isConsoleUsageQuotaMode(mode) && mode != "weekly" && !isWebChatQuotaMode(mode)) {
+	if isWebImagineQuotaMode(mode) {
+		mode = accountdomain.QuotaGroupWebImagine
+	}
+	if id == 0 || (!isConsoleUsageQuotaMode(mode) && mode != "weekly" && mode != accountdomain.QuotaGroupWebImagine && !isWebChatQuotaMode(mode)) {
 		return
 	}
 	key := strconv.FormatUint(id, 10) + ":" + mode
@@ -3181,9 +3250,10 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 						break
 					}
 				}
-			} else {
+			} else if request.mode != accountdomain.QuotaGroupWebImagine {
 				// Weekly remains a Grok Web capability. Console never inherits this
 				// legacy mode and always refreshes its authoritative /usage snapshot.
+				// Imagine 配额组走 /rest/media/imagine/quota_info，不可被改刷 weekly。
 				for _, window := range windows[request.accountID] {
 					if window.Mode == "weekly" {
 						refreshMode = "weekly"
@@ -3206,7 +3276,15 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		}
 		if !skipUpstream && refreshErr == nil && acquired {
 			if err := s.syncPool.Do(ctx, func(workCtx context.Context) error {
-				_, refreshErr = s.RefreshQuotaMode(workCtx, request.accountID, refreshMode)
+				if refreshMode == accountdomain.QuotaGroupWebImagine {
+					var refreshed quotaRefreshResult
+					refreshed, refreshErr = s.refreshQuotaGroup(workCtx, request.accountID, refreshMode)
+					if refreshErr == nil {
+						refreshErr = s.reconcileQuotaGroupWindows(workCtx, refreshed.Credential.Provider, request.accountID, refreshed.Modes, refreshed.Windows)
+					}
+				} else {
+					_, refreshErr = s.RefreshQuotaMode(workCtx, request.accountID, refreshMode)
+				}
 				return refreshErr
 			}); err != nil {
 				refreshErr = err
@@ -3458,6 +3536,10 @@ func isConsoleUsageQuotaMode(mode string) bool {
 	default:
 		return false
 	}
+}
+
+func isWebImagineQuotaMode(mode string) bool {
+	return accountdomain.IsWebImagineQuotaMode(mode)
 }
 
 func quotaWindowControlsRouting(providerValue accountdomain.Provider, mode string) bool {

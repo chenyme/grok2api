@@ -556,19 +556,33 @@ func TestReplaceProviderRoutesCanRenameUpstreamModels(t *testing.T) {
 	}
 }
 
-func TestReplaceProviderRoutesRenamesWebImagePublicIDs(t *testing.T) {
+func TestReplaceProviderRoutesRestoresWebImageLitePublicIDs(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
 	repo := NewModelRepository(database)
 	if err := repo.UpsertRoutes(ctx, []model.Route{
-		{PublicID: "grok-imagine-image", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImage, Enabled: true},
-		{PublicID: "grok-imagine-image-quality", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-2.0", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-2.0", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImageEdit, Enabled: true},
+		{PublicID: "grok-imagine-image-quality-2.0", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-quality-2.0", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImageEdit, Enabled: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var before []modelRouteModel
 	if err := database.db.WithContext(ctx).Where("provider = ?", account.ProviderWeb).Order("upstream_model ASC").Find(&before).Error; err != nil {
 		t.Fatal(err)
+	}
+	for _, route := range before {
+		if route.Capability != string(model.CapabilityImage) {
+			continue
+		}
+		alias := "Web/grok-imagine-image-lite"
+		if route.UpstreamModel == "grok-imagine-image-quality" {
+			alias = "Web/grok-imagine-image-quality-lite"
+		}
+		if err := database.db.WithContext(ctx).Create(&modelRouteAliasModel{Alias: alias, ModelRouteID: route.ID}).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := repo.ReplaceProviderRoutes(ctx, account.ProviderWeb, []model.Route{
 		{PublicID: "grok-imagine-image-lite", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImage, Enabled: true},
@@ -580,25 +594,99 @@ func TestReplaceProviderRoutesRenamesWebImagePublicIDs(t *testing.T) {
 	if err := database.db.WithContext(ctx).Where("provider = ?", account.ProviderWeb).Order("upstream_model ASC").Find(&after).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(after) != 2 || after[0].PublicID != "Web/grok-imagine-image-lite" || after[1].PublicID != "Web/grok-imagine-image-quality-lite" {
+	if len(after) != 2 {
 		t.Fatalf("renamed routes = %#v", after)
 	}
 	beforeIDs := make(map[string]uint64, len(before))
 	for _, route := range before {
-		beforeIDs[route.UpstreamModel] = route.ID
+		beforeIDs[route.UpstreamModel+"|"+route.Capability] = route.ID
 	}
 	for _, route := range after {
-		if beforeIDs[route.UpstreamModel] != route.ID {
+		wantPublicID := "Web/grok-imagine-image-lite"
+		if route.UpstreamModel == "grok-imagine-image-quality" {
+			wantPublicID = "Web/grok-imagine-image-quality-lite"
+		}
+		if route.Capability != string(model.CapabilityImage) || route.PublicID != wantPublicID || beforeIDs[route.UpstreamModel+"|"+route.Capability] != route.ID {
 			t.Fatalf("route ID changed for %s: before=%#v after=%#v", route.UpstreamModel, before, after)
 		}
 	}
-	for oldPublicID, upstreamModel := range map[string]string{
-		"grok-imagine-image":         "grok-imagine-image",
-		"grok-imagine-image-quality": "grok-imagine-image-quality",
-	} {
+	compatibilityAliases := map[string]string{
+		"grok-imagine-image-2.0":         "Web/grok-imagine-image-lite",
+		"grok-imagine-image-quality-2.0": "Web/grok-imagine-image-quality-lite",
+	}
+	for oldPublicID, wantPublicID := range compatibilityAliases {
 		route, err := repo.GetByPublicIDIncludingDisabled(ctx, oldPublicID)
-		if err != nil || route.UpstreamModel != upstreamModel || route.ID != beforeIDs[upstreamModel] {
-			t.Fatalf("legacy alias %s resolved as %#v, err=%v", oldPublicID, route, err)
+		if err != nil || route.PublicID != wantPublicID || route.Capability != model.CapabilityImage {
+			t.Fatalf("Web compatibility alias %s resolved as %#v, err=%v", oldPublicID, route, err)
+		}
+	}
+	var promotedAliasCount int64
+	if err := database.db.WithContext(ctx).Model(&modelRouteAliasModel{}).
+		Where("alias IN ?", []string{"Web/grok-imagine-image-lite", "Web/grok-imagine-image-quality-lite"}).
+		Count(&promotedAliasCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if promotedAliasCount != 0 {
+		t.Fatalf("promoted aliases remain: %d", promotedAliasCount)
+	}
+}
+
+func TestReplaceProviderRoutesRestoresThreeConsoleImageModels(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+	legacyCatalog := []model.Route{
+		{PublicID: "grok-imagine-image-quality-2.0", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-quality-2.0", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImageEdit, Enabled: true},
+		{PublicID: "grok-imagine-image-2.0", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-2.0", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImageEdit, Enabled: true},
+	}
+	if err := repo.UpsertRoutes(ctx, legacyCatalog); err != nil {
+		t.Fatal(err)
+	}
+	var before []modelRouteModel
+	if err := database.db.WithContext(ctx).Where("provider = ?", account.ProviderConsole).Find(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	beforeIDs := make(map[string]uint64, len(before))
+	for _, route := range before {
+		beforeIDs[route.UpstreamModel+"|"+route.Capability] = route.ID
+	}
+	desiredCatalog := []model.Route{
+		// Legacy and quality must be reconciled before the new 2.0 route so the
+		// rows created by the temporary two-model catalog retain their IDs.
+		{PublicID: "grok-imagine-image", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image", Capability: model.CapabilityImageEdit, Enabled: true},
+		{PublicID: "grok-imagine-image-quality", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-quality", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image-quality", Capability: model.CapabilityImageEdit, Enabled: true},
+		{PublicID: "grok-imagine-image-2.0", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image-2.0", Capability: model.CapabilityImage, Enabled: true},
+		{PublicID: "grok-imagine-image-2.0", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image-2.0", Capability: model.CapabilityImageEdit, Enabled: true},
+	}
+	for range 2 {
+		if err := repo.ReplaceProviderRoutes(ctx, account.ProviderConsole, desiredCatalog); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var after []modelRouteModel
+	if err := database.db.WithContext(ctx).Where("provider = ? AND upstream_model LIKE ?", account.ProviderConsole, "grok-imagine-image%").Order("id ASC").Find(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 6 {
+		t.Fatalf("Console image routes = %#v", after)
+	}
+	seen := make(map[string]map[string]bool)
+	for _, route := range after {
+		if seen[route.PublicID] == nil {
+			seen[route.PublicID] = make(map[string]bool)
+		}
+		seen[route.PublicID][route.Capability] = true
+		if route.UpstreamModel != "grok-imagine-image-2.0" && beforeIDs[route.UpstreamModel+"|"+route.Capability] != route.ID {
+			t.Fatalf("existing Console route ID changed: before=%#v after=%#v", before, after)
+		}
+	}
+	for _, publicID := range []string{"Console/grok-imagine-image", "Console/grok-imagine-image-quality", "Console/grok-imagine-image-2.0"} {
+		if !seen[publicID][string(model.CapabilityImage)] || !seen[publicID][string(model.CapabilityImageEdit)] {
+			t.Fatalf("Console image capabilities for %s = %#v", publicID, seen[publicID])
 		}
 	}
 }

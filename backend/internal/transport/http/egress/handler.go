@@ -800,6 +800,8 @@ type sourceRequest struct {
 	Enabled                bool    `json:"enabled"`
 	URL                    *string `json:"url"`
 	ClearURL               bool    `json:"clearUrl"`
+	ProxyURL               *string `json:"proxyURL"`
+	ClearProxyURL          bool    `json:"clearProxyURL"`
 	RefreshIntervalSeconds *int    `json:"refreshIntervalSeconds"`
 	DefaultAccountCapacity *int    `json:"defaultAccountCapacity"`
 }
@@ -810,6 +812,7 @@ type sourceResponse struct {
 	Scope                  string     `json:"scope"`
 	Enabled                bool       `json:"enabled"`
 	URLConfigured          bool       `json:"urlConfigured"`
+	ProxyConfigured        bool       `json:"proxyConfigured"`
 	RefreshIntervalSeconds int        `json:"refreshIntervalSeconds"`
 	DefaultAccountCapacity int        `json:"defaultAccountCapacity"`
 	LastSyncedAt           *time.Time `json:"lastSyncedAt,omitempty"`
@@ -835,8 +838,6 @@ type operationsConfigRequest struct {
 	AutoAssignEnabled         bool                                 `json:"autoAssignEnabled"`
 	AutoBalanceEnabled        bool                                 `json:"autoBalanceEnabled"`
 	AssignmentIntervalSeconds int                                  `json:"assignmentIntervalSeconds"`
-	SubscriptionProxyURL      *string                              `json:"subscriptionProxyURL,omitempty"`
-	ClearSubscriptionProxy    bool                                 `json:"clearSubscriptionProxy,omitempty"`
 	Fallbacks                 map[string]operationsFallbackRequest `json:"fallbacks"`
 }
 
@@ -846,14 +847,13 @@ type operationsFallbackRequest struct {
 }
 
 type operationsConfigResponse struct {
-	ProbeProvider               string                                `json:"probeProvider"`
-	ProbeIntervalSeconds        int                                   `json:"probeIntervalSeconds"`
-	AutoAssignEnabled           bool                                  `json:"autoAssignEnabled"`
-	AutoBalanceEnabled          bool                                  `json:"autoBalanceEnabled"`
-	AssignmentIntervalSeconds   int                                   `json:"assignmentIntervalSeconds"`
-	SubscriptionProxyConfigured bool                                  `json:"subscriptionProxyConfigured"`
-	Fallbacks                   map[string]operationsFallbackResponse `json:"fallbacks"`
-	UpdatedAt                   time.Time                             `json:"updatedAt"`
+	ProbeProvider             string                                `json:"probeProvider"`
+	ProbeIntervalSeconds      int                                   `json:"probeIntervalSeconds"`
+	AutoAssignEnabled         bool                                  `json:"autoAssignEnabled"`
+	AutoBalanceEnabled        bool                                  `json:"autoBalanceEnabled"`
+	AssignmentIntervalSeconds int                                   `json:"assignmentIntervalSeconds"`
+	Fallbacks                 map[string]operationsFallbackResponse `json:"fallbacks"`
+	UpdatedAt                 time.Time                             `json:"updatedAt"`
 }
 
 type operationsFallbackResponse struct {
@@ -865,12 +865,6 @@ func (value operationsConfigRequest) input() (egressapp.OperationsConfigInput, e
 	result := egressapp.OperationsConfigInput{
 		ProbeProvider: egressdomain.ProbeProvider(strings.TrimSpace(value.ProbeProvider)), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
-	}
-	if value.SubscriptionProxyURL != nil {
-		result.SubscriptionProxyURL = value.SubscriptionProxyURL
-	}
-	if value.ClearSubscriptionProxy {
-		result.ClearSubscriptionProxy = true
 	}
 	if value.Fallbacks == nil {
 		return result, nil
@@ -895,6 +889,7 @@ func (value operationsConfigRequest) input() (egressapp.OperationsConfigInput, e
 func (value sourceRequest) input() egressapp.SubscriptionSourceInput {
 	return egressapp.SubscriptionSourceInput{
 		Name: value.Name, Scope: egressdomain.Scope(value.Scope), Enabled: value.Enabled, URL: value.URL, ClearURL: value.ClearURL,
+		ProxyURL: value.ProxyURL, ClearProxyURL: value.ClearProxyURL,
 		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity,
 	}
 }
@@ -902,6 +897,7 @@ func (value sourceRequest) input() egressapp.SubscriptionSourceInput {
 func newSourceResponse(value egressdomain.PublicSubscriptionSource) sourceResponse {
 	return sourceResponse{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled, URLConfigured: value.URLConfigured,
+		ProxyConfigured:        value.ProxyConfigured,
 		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity,
 		LastSyncedAt: value.LastSyncedAt, NextSyncAt: value.NextSyncAt, LastSyncImported: value.LastSyncImported, LastSyncError: value.LastSyncError,
 	}
@@ -920,8 +916,7 @@ func newOperationsConfigResponse(value egressdomain.OperationsConfig) operations
 	return operationsConfigResponse{
 		ProbeProvider: string(value.ProbeProvider.Normalized()), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
-		SubscriptionProxyConfigured: value.EncryptedSubscriptionProxyURL != "",
-		Fallbacks:                   fallbacks, UpdatedAt: value.UpdatedAt,
+		Fallbacks: fallbacks, UpdatedAt: value.UpdatedAt,
 	}
 }
 

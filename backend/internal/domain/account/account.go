@@ -269,6 +269,27 @@ const (
 	QuotaSourceUpstream  QuotaSource = "upstream"
 )
 
+const (
+	QuotaModeWebImagePro  = "image_pro"
+	QuotaModeWebImageEdit = "image_edit"
+	QuotaModeWebVideo     = "video"
+	QuotaModeWebVideo720p = "video_720p"
+	QuotaGroupWebImagine  = "web_imagine"
+)
+
+func WebImagineQuotaModes() []string {
+	return []string{QuotaModeWebImagePro, QuotaModeWebImageEdit, QuotaModeWebVideo, QuotaModeWebVideo720p}
+}
+
+func IsWebImagineQuotaMode(mode string) bool {
+	switch mode {
+	case QuotaModeWebImagePro, QuotaModeWebImageEdit, QuotaModeWebVideo, QuotaModeWebVideo720p:
+		return true
+	default:
+		return false
+	}
+}
+
 // QuotaWindow 表示 Provider 单个模式的额度窗口。
 type QuotaWindow struct {
 	AccountID     uint64

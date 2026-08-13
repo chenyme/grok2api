@@ -304,7 +304,7 @@ func (s *Service) RunMaintenance(ctx context.Context) error {
 		resultErr = errors.Join(resultErr, err)
 	} else {
 		for _, source := range sources {
-			if _, syncErr := s.syncSourceWithConfig(ctx, operations, source, config); syncErr != nil {
+			if _, syncErr := s.syncSource(ctx, operations, source); syncErr != nil {
 				resultErr = errors.Join(resultErr, syncErr)
 			}
 		}

@@ -61,6 +61,28 @@ func TestMediaJobModelTagsAllowAllVideoProvidersAndPrimaryScopes(t *testing.T) {
 		!strings.Contains(countTag, "IS NULL OR input_image_count BETWEEN 0 AND "+maxImages) {
 		t.Fatalf("input_image_count tag = %q, want max %s", countTag, maxImages)
 	}
+	operationField, ok := modelType.FieldByName("Operation")
+	if !ok {
+		t.Fatal("Operation field missing")
+	}
+	operationTag := operationField.Tag.Get("gorm")
+	if !strings.Contains(operationTag, "chk_media_jobs_operation") ||
+		!strings.Contains(operationTag, "'generate','edit','extend'") {
+		t.Fatalf("operation tag = %q", operationTag)
+	}
+	for fieldName, expected := range map[string]string{
+		"Seconds": "seconds BETWEEN 0 AND 15",
+		"Size":    "length(trim(size)) BETWEEN 0 AND 32",
+		"Quality": "length(trim(quality)) BETWEEN 0 AND 32",
+	} {
+		field, exists := modelType.FieldByName(fieldName)
+		if !exists {
+			t.Fatalf("%s field missing", fieldName)
+		}
+		if tag := field.Tag.Get("gorm"); !strings.Contains(tag, expected) {
+			t.Fatalf("%s tag = %q, want %q", fieldName, tag, expected)
+		}
+	}
 }
 
 func TestMediaJobInputMetadataPendingIndexExists(t *testing.T) {
@@ -92,6 +114,61 @@ func TestMediaJobInputMetadataPendingIndexExists(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(sql), "input_image_count is null") {
 		t.Fatalf("pending index sql = %q", sql)
+	}
+}
+
+func TestInitializeSchemaBackfillsLegacyMediaJobOperations(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accountValue, _, err := NewAccountRepository(database).UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "legacy-video-operation", SourceKey: "legacy-video-operation",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := clientKeyModel{Name: "legacy-video-operation", Prefix: "legacy-video-operation", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	jobs := NewMediaJobRepository(database)
+	for index, operation := range []mediadomain.VideoOperation{mediadomain.VideoOperationEdit, mediadomain.VideoOperationExtend} {
+		job := testMediaJob(fmt.Sprintf("video_legacy_operation_%d", index), accountValue.ID, key.ID, mediadomain.StatusQueued, now)
+		job.Operation = mediadomain.VideoOperationGenerate
+		job.InputJSON = fmt.Sprintf(`{"operation":%q,"video_url":"https://example.com/source.mp4"}`, operation)
+		if err := jobs.CreateMediaJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	generate := testMediaJob("video_legitimate_generate", accountValue.ID, key.ID, mediadomain.StatusQueued, now)
+	generate.InputJSON = `{}`
+	if err := jobs.CreateMediaJob(ctx, generate); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []string{"edit", "extend"} {
+		var row mediaJobModel
+		if err := database.db.WithContext(ctx).Where("id = ?", fmt.Sprintf("video_legacy_operation_%d", index)).First(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		if row.Operation != want {
+			t.Fatalf("legacy operation = %q, want %q", row.Operation, want)
+		}
+	}
+	var generateRow mediaJobModel
+	if err := database.db.WithContext(ctx).Where("id = ?", generate.ID).First(&generateRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if generateRow.Operation != "generate" {
+		t.Fatalf("generate operation = %q", generateRow.Operation)
 	}
 }
 
