@@ -1056,6 +1056,18 @@ func TestOnlyChatModelsExposeRateLimitModes(t *testing.T) {
 	}
 }
 
+func TestQuotaRefreshGroupSeparatesImagineEndpointFromLiteChatQuota(t *testing.T) {
+	adapter := &Adapter{}
+	if got := adapter.QuotaRefreshGroup("grok-imagine-image"); got != "" {
+		t.Fatalf("lite refresh group = %q", got)
+	}
+	for _, model := range []string{"grok-imagine-image-quality", "imagine-x-1", "imagine-image-edit", "grok-imagine-video"} {
+		if got := adapter.QuotaRefreshGroup(model); got != account.QuotaGroupWebImagine {
+			t.Fatalf("QuotaRefreshGroup(%q) = %q", model, got)
+		}
+	}
+}
+
 func TestConsumeUpstreamChatFixture(t *testing.T) {
 	fixture := strings.Join([]string{
 		`data: {"result":{"conversation":{"conversationId":"conv_1"}}}`,

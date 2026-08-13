@@ -186,8 +186,9 @@ function ImagineQuotaRow({ windows, locale, t }: { windows: WebQuotaWindow[]; lo
       {columns.map(({ mode }) => {
         const window = windowsByMode.get(mode)!;
         const exhausted = window.remaining <= 0;
-        const used = Math.max(0, window.total - window.remaining);
-        const percent = window.total > 0 ? Math.max(0, Math.min(100, used / window.total * 100)) : 100;
+        const hasTotal = window.total > 0;
+        const used = hasTotal ? Math.max(0, window.total - window.remaining) : 0;
+        const percent = hasTotal ? Math.max(0, Math.min(100, used / window.total * 100)) : 0;
         const label = imagineModeLabel(mode, t);
         return (
           <Tooltip key={mode}>
@@ -197,11 +198,15 @@ function ImagineQuotaRow({ windows, locale, t }: { windows: WebQuotaWindow[]; lo
                   <span className={cn("truncate", exhausted ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>{label}</span>
                   {exhausted ? (
                     <span className="shrink-0 truncate text-amber-600 dark:text-amber-400">{t("accounts.imagineQuotaExhausted")}</span>
-                  ) : (
+                  ) : hasTotal ? (
                     <span className="shrink-0 tabular-nums text-muted-foreground">{formatNumber(window.remaining, locale, 0)}/{formatNumber(window.total, locale, 0)}</span>
+                  ) : (
+                    <span className="shrink-0 tabular-nums text-muted-foreground">{t("accounts.imagineQuotaRemaining", { remaining: formatNumber(window.remaining, locale, 0) })}</span>
                   )}
                 </div>
-                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted"><div className={cn("h-full", exhausted ? "bg-amber-500" : "bg-primary")} style={{ width: `${percent}%` }} /></div>
+                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                  {exhausted ? <div className="h-full w-full bg-amber-500" /> : hasTotal ? <div className="h-full bg-primary" style={{ width: `${percent}%` }} /> : null}
+                </div>
               </button>
             </TooltipTrigger>
             <TooltipContent>

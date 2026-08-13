@@ -642,7 +642,10 @@ func (r *AccountRepository) getRoutingQuotaWindows(ctx context.Context, provider
 		return result, nil
 	}
 	modes := make([]string, 0, 2)
-	if provider == account.ProviderWeb {
+	// Paid Web chat routes are governed by the shared weekly pool. Imagine
+	// products have independent authoritative windows and must not be hidden by
+	// a weekly row merely because the same account also has paid chat access.
+	if provider == account.ProviderWeb && !account.IsWebImagineQuotaMode(quotaMode) {
 		modes = append(modes, "weekly")
 	}
 	if quotaMode != "" {
@@ -2102,32 +2105,6 @@ func (r *AccountRepository) UpsertModelQuotaBlock(ctx context.Context, value acc
 	return err
 }
 
-// OverwriteModelQuotaBlock 无条件以新值覆盖既有的模型冷却块（包括把更长的旧块缩短）。
-// 用于对齐上游权威恢复时刻（如 Imagine quota_info 的 nextAvailableAt），
-// 与 UpsertModelQuotaBlock 的“只延长不缩短”保护语义相反，调用方必须确认覆盖是安全的。
-func (r *AccountRepository) OverwriteModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error {
-	value.UpstreamModel = strings.TrimSpace(value.UpstreamModel)
-	value.Reason = strings.TrimSpace(value.Reason)
-	if value.AccountID == 0 || value.UpstreamModel == "" || value.Reason == "" || value.CooldownUntil.IsZero() {
-		return repository.ErrConflict
-	}
-	now := time.Now().UTC()
-	row := accountModelQuotaBlockModel{
-		AccountID: value.AccountID, UpstreamModel: truncate(value.UpstreamModel, 255), Reason: truncate(value.Reason, 100),
-		CooldownUntil: value.CooldownUntil.UTC(), UpdatedAt: now,
-	}
-	err := r.db.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "account_id"}, {Name: "upstream_model"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"reason": row.Reason, "cooldown_until": row.CooldownUntil, "updated_at": now,
-		}),
-	}).Create(&row).Error
-	if err == nil {
-		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountModelQuotaChanged, AccountID: value.AccountID, UpstreamModel: value.UpstreamModel})
-	}
-	return err
-}
-
 func (r *AccountRepository) PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -2331,7 +2308,7 @@ func (r *AccountRepository) GetQuotaWindows(ctx context.Context, accountIDs []ui
 }
 
 func (r *AccountRepository) SaveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error {
-	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, false)
+	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, false, nil)
 	if err == nil {
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
 	}
@@ -2339,14 +2316,48 @@ func (r *AccountRepository) SaveQuotaWindows(ctx context.Context, accountID uint
 }
 
 func (r *AccountRepository) ReplaceQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error {
-	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, true)
+	err := r.saveQuotaWindows(ctx, accountID, tier, syncedAt, values, true, nil)
 	if err == nil {
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
 	}
 	return err
 }
 
-func (r *AccountRepository) saveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow, replace bool) error {
+func (r *AccountRepository) ReplaceQuotaWindowGroup(ctx context.Context, accountID uint64, syncedAt time.Time, modes []string, values []account.QuotaWindow) error {
+	allowed := make(map[string]struct{}, len(modes))
+	cleanModes := make([]string, 0, len(modes))
+	for _, mode := range modes {
+		mode = strings.TrimSpace(mode)
+		if mode == "" {
+			return repository.ErrConflict
+		}
+		if _, exists := allowed[mode]; !exists {
+			allowed[mode] = struct{}{}
+			cleanModes = append(cleanModes, mode)
+		}
+	}
+	if accountID == 0 || len(cleanModes) == 0 {
+		return repository.ErrConflict
+	}
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		mode := strings.TrimSpace(value.Mode)
+		if _, ok := allowed[mode]; !ok {
+			return repository.ErrConflict
+		}
+		if _, duplicate := seen[mode]; duplicate {
+			return repository.ErrConflict
+		}
+		seen[mode] = struct{}{}
+	}
+	err := r.saveQuotaWindows(ctx, accountID, "", syncedAt, values, false, cleanModes)
+	if err == nil {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountQuotaChanged, AccountID: accountID})
+	}
+	return err
+}
+
+func (r *AccountRepository) saveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow, replace bool, replaceModes []string) error {
 	return r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if tier != "" {
 			profile := webAccountProfileModel{AccountID: accountID, Tier: string(tier), SyncedAt: &syncedAt}
@@ -2356,6 +2367,10 @@ func (r *AccountRepository) saveQuotaWindows(ctx context.Context, accountID uint
 		}
 		if replace {
 			if err := tx.Where("account_id = ?", accountID).Delete(&quotaWindowModel{}).Error; err != nil {
+				return err
+			}
+		} else if len(replaceModes) > 0 {
+			if err := tx.Where("account_id = ? AND mode IN ?", accountID, replaceModes).Delete(&quotaWindowModel{}).Error; err != nil {
 				return err
 			}
 		}

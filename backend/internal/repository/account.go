@@ -157,8 +157,6 @@ type AccountRepository interface {
 	// MarkWebBirthDateSet 幂等记录 Web 账号首次确认生日已设置的时间。
 	MarkWebBirthDateSet(ctx context.Context, id uint64, setAt time.Time) error
 	UpsertModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error
-	// OverwriteModelQuotaBlock 无条件覆盖既有模型冷却块（可缩短），用于对齐上游权威恢复时刻。
-	OverwriteModelQuotaBlock(ctx context.Context, value account.ModelQuotaBlock) error
 	PruneExpiredModelQuotaBlocks(ctx context.Context, now time.Time, limit int) (int64, error)
 	SaveBilling(ctx context.Context, value account.Billing) error
 	GetBilling(ctx context.Context, accountID uint64) (account.Billing, error)
@@ -171,6 +169,7 @@ type AccountRepository interface {
 	HasQuotaWindows(ctx context.Context, accountID uint64) (bool, error)
 	GetQuotaWindows(ctx context.Context, accountIDs []uint64) (map[uint64][]account.QuotaWindow, error)
 	ReplaceQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error
+	ReplaceQuotaWindowGroup(ctx context.Context, accountID uint64, syncedAt time.Time, modes []string, values []account.QuotaWindow) error
 	SaveQuotaWindows(ctx context.Context, accountID uint64, tier account.WebTier, syncedAt time.Time, values []account.QuotaWindow) error
 	UpsertManyByIdentity(ctx context.Context, values []account.Credential) ([]AccountUpsertResult, error)
 	DecrementQuotaWindow(ctx context.Context, accountID uint64, mode string, now time.Time) (bool, error)
