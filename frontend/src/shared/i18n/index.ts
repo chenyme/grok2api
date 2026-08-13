@@ -2132,6 +2132,14 @@ Object.assign(resources.en.translation.settings.routing as unknown as Record<str
   markBuildChatDeniedAsReauth: "Mark Build Chat denied as reauth",
   markBuildChatDeniedAsReauthHelp: "Mark accounts that receive a Build Chat permission denial for reauthorization and remove them from routing.",
 });
+Object.assign(resources["zh-CN"].translation.settings.web as unknown as Record<string, string>, {
+  clearanceModeHelp: "手动维护 Clearance，使用 FlareSolverr 定期主动刷新，或仅在上游明确拒绝后按需重新求解。",
+  clearanceOnDemand: "按需刷新",
+});
+Object.assign(resources.en.translation.settings.web as unknown as Record<string, string>, {
+  clearanceModeHelp: "Maintain Clearance manually, refresh it proactively with FlareSolverr, or solve on demand only after an explicit upstream rejection.",
+  clearanceOnDemand: "On demand",
+});
 function readStoredLanguage(): string | null {
   if (typeof window === "undefined") return null;
   try {
