@@ -22,6 +22,9 @@ const (
 	CapabilityImage     Capability = "image"
 	CapabilityImageEdit Capability = "image_edit"
 	CapabilityVideo     Capability = "video"
+	CapabilityTTS       Capability = "tts"
+	CapabilitySTT       Capability = "stt"
+	CapabilityRealtime  Capability = "realtime"
 )
 
 // Capabilities returns every persisted route capability. Callers use this as
@@ -33,6 +36,9 @@ func Capabilities() []Capability {
 		CapabilityImage,
 		CapabilityImageEdit,
 		CapabilityVideo,
+		CapabilityTTS,
+		CapabilitySTT,
+		CapabilityRealtime,
 	}
 }
 

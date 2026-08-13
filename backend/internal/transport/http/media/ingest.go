@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
+	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/pkg/netguard"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
@@ -22,7 +24,7 @@ import (
 
 const (
 	// 20 MiB 为各 Provider 的共同安全输入上限，同时为全局 32 MiB multipart 请求上限保留编码开销。
-	ingestMaxImageBytes = 20 << 20
+	ingestMaxImageBytes = mediadomain.MaxInputAssetBytes
 	// ingestFetchTimeout 是 URL 导入单次抓取的整体超时。
 	ingestFetchTimeout = 20 * time.Second
 	// ingestResolveTimeout 限制每个重定向目标的 DNS 解析时间。
@@ -290,8 +292,8 @@ func (h *Handler) importInputImageFromURL(c *gin.Context) {
 	h.saveIngestedImage(c, data)
 }
 
-// uploadInputImage 接收管理员上传的本地图片文件（multipart 字段名 file），登记到临时输入区。
-func (h *Handler) uploadInputImage(c *gin.Context) {
+// uploadInputAsset 接收管理员上传的本地图片或视频（multipart 字段名 file），登记到临时输入区。
+func (h *Handler) uploadInputAsset(c *gin.Context) {
 	if !h.acquireIngest(c) {
 		return
 	}
@@ -300,14 +302,14 @@ func (h *Handler) uploadInputImage(c *gin.Context) {
 	if err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
-			response.Error(c, http.StatusRequestEntityTooLarge, "imageTooLarge", "图片超过请求大小上限")
+			response.Error(c, http.StatusRequestEntityTooLarge, "mediaTooLarge", "文件超过请求大小上限")
 			return
 		}
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "缺少上传文件")
 		return
 	}
 	if fileHeader.Size > ingestMaxImageBytes {
-		response.Error(c, http.StatusRequestEntityTooLarge, "imageTooLarge", "图片超过大小上限")
+		response.Error(c, http.StatusRequestEntityTooLarge, "mediaTooLarge", "文件超过大小上限")
 		return
 	}
 	src, err := fileHeader.Open()
@@ -322,10 +324,38 @@ func (h *Handler) uploadInputImage(c *gin.Context) {
 		return
 	}
 	if int64(len(data)) > ingestMaxImageBytes {
-		response.Error(c, http.StatusRequestEntityTooLarge, "imageTooLarge", "图片超过大小上限")
+		response.Error(c, http.StatusRequestEntityTooLarge, "mediaTooLarge", "文件超过大小上限")
 		return
 	}
-	h.saveIngestedImage(c, data)
+	declaredMIME := strings.ToLower(strings.TrimSpace(strings.Split(fileHeader.Header.Get("Content-Type"), ";")[0]))
+	detectedMIME := strings.ToLower(http.DetectContentType(data))
+	if strings.HasPrefix(detectedMIME, "image/") {
+		h.saveIngestedImage(c, data)
+		return
+	}
+	if strings.HasPrefix(declaredMIME, "video/") || strings.HasPrefix(detectedMIME, "video/") {
+		contentType := declaredMIME
+		if contentType == "" {
+			contentType = detectedMIME
+		}
+		asset, saveErr := h.service.SaveInputVideo(c.Request.Context(), contentType, bytes.NewReader(data))
+		if saveErr != nil {
+			switch {
+			case errors.Is(saveErr, mediaapp.ErrVideoUploadTooLarge):
+				response.Error(c, http.StatusRequestEntityTooLarge, "mediaTooLarge", "视频超过大小上限")
+			case errors.Is(saveErr, mediaapp.ErrInvalidVideoUpload):
+				response.Error(c, http.StatusBadRequest, "invalidVideo", "视频内容无效或格式不支持（mp4/webm/quicktime）")
+			case errors.Is(saveErr, mediaapp.ErrMediaCapacity):
+				response.Error(c, http.StatusInsufficientStorage, "mediaCapacityExceeded", "媒体临时存储容量不足")
+			default:
+				response.Error(c, http.StatusInternalServerError, "mediaSaveVideoFailed", "保存视频失败")
+			}
+			return
+		}
+		h.writeInputAsset(c, asset)
+		return
+	}
+	response.Error(c, http.StatusBadRequest, "invalidMedia", "仅支持图片或视频文件")
 }
 
 // saveIngestedImage 收口两种临时输入路径：校验、落盘并登记 TTL，不进入图库。
@@ -343,12 +373,16 @@ func (h *Handler) saveIngestedImage(c *gin.Context, data []byte) {
 		response.Error(c, http.StatusInternalServerError, "mediaSaveImageFailed", "保存图片失败")
 		return
 	}
+	h.writeInputAsset(c, asset)
+}
+
+func (h *Handler) writeInputAsset(c *gin.Context, asset mediadomain.Asset) {
 	expiresAt := ""
 	if asset.ExpiresAt != nil {
 		expiresAt = asset.ExpiresAt.Format(time.RFC3339)
 	}
 	response.Success(c, http.StatusCreated, gin.H{
-		"fileId": asset.ID, "mimeType": asset.MIMEType, "sizeBytes": asset.SizeBytes, "expiresAt": expiresAt,
+		"fileId": asset.ID, "kind": asset.Kind, "mimeType": asset.MIMEType, "sizeBytes": asset.SizeBytes, "expiresAt": expiresAt,
 	})
 }
 
@@ -357,7 +391,7 @@ func (h *Handler) acquireIngest(c *gin.Context) bool {
 	case h.ingestSlots <- struct{}{}:
 		return true
 	default:
-		response.Error(c, http.StatusServiceUnavailable, "mediaIngestBusy", "图片暂存并发已满，请稍后重试")
+		response.Error(c, http.StatusServiceUnavailable, "mediaIngestBusy", "媒体暂存并发已满，请稍后重试")
 		return false
 	}
 }

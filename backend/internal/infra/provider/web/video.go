@@ -219,8 +219,17 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	defer lease.Release()
 	parentID := ""
-	references := make([]string, 0, len(request.ReferenceURLs))
+	rawReferences := make([]string, 0, 1+len(request.ReferenceURLs))
+	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
+		rawReferences = append(rawReferences, imageURL)
+	}
 	for _, rawReference := range request.ReferenceURLs {
+		if value := strings.TrimSpace(rawReference); value != "" {
+			rawReferences = append(rawReferences, value)
+		}
+	}
+	references := make([]string, 0, len(rawReferences))
+	for _, rawReference := range rawReferences {
 		reference, referenceErr := a.prepareVideoReference(ctx, cfg, lease, token, rawReference)
 		if referenceErr != nil {
 			return provider.VideoResult{}, referenceErr

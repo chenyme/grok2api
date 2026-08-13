@@ -16,16 +16,35 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
+	"github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
+
+func TestVideoQuotaModeUsesWeb720pProduct(t *testing.T) {
+	tests := []struct {
+		provider   account.Provider
+		resolution string
+		want       string
+	}{
+		{account.ProviderWeb, "", account.QuotaModeWebVideo720p},
+		{account.ProviderWeb, "720p", account.QuotaModeWebVideo720p},
+		{account.ProviderWeb, "480p", account.QuotaModeWebVideo},
+		{account.ProviderConsole, "720p", account.QuotaModeWebVideo},
+	}
+	for _, test := range tests {
+		if got := videoQuotaMode(test.provider, account.QuotaModeWebVideo, test.resolution); got != test.want {
+			t.Fatalf("videoQuotaMode(%s, %q) = %q, want %q", test.provider, test.resolution, got, test.want)
+		}
+	}
+}
 
 func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
 	completedAt := time.Now().UTC()
 	repository := &videoUsageRepository{job: media.Job{
 		ID: "video_usage_recovery", RequestID: "request-usage-recovery",
 		ClientKeyID: 1, ClientKeyName: "client", AccountID: 2, AccountName: "account",
-		Provider: "grok_web", Model: "grok-imagine-video", ModelRouteID: 3, UpstreamModel: "video",
+		Provider: "grok_web", Model: "custom-video", ModelRouteID: 3, UpstreamModel: "Web/grok-imagine-video",
 		Seconds: 8, Quality: "720p", Status: media.StatusCompleted, InputImageCount: 2, CreatedAt: completedAt.Add(-time.Minute), CompletedAt: &completedAt,
 	}}
 	recorder := &durableVideoAuditRecorder{failures: 1}
@@ -47,15 +66,132 @@ func TestRecoverVideoJobsRetriesUsageWithoutRegeneratingVideo(t *testing.T) {
 	}
 }
 
-func TestEncodeVideoInputEnforcesPersistedLimit(t *testing.T) {
-	overhead := len(`{"image_urls":[""]}`)
-	atLimit := strings.Repeat("A", media.MaxInputJSONBytes-overhead)
-	encoded, err := encodeVideoInput([]string{atLimit})
-	if err != nil || len(encoded) != media.MaxInputJSONBytes {
-		t.Fatalf("encoded len=%d err=%v", len(encoded), err)
+func TestVideoEditRouteUsesResolvedUpstreamInsteadOfPublicName(t *testing.T) {
+	routes := []model.Route{
+		{ID: 1, PublicID: "grok-imagine-video", Provider: account.ProviderBuild, UpstreamModel: "grok-imagine-video"},
+		{ID: 2, PublicID: "company-video-editor", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video"},
+		{ID: 3, PublicID: "company-video-editor", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-video-1.5"},
 	}
-	if _, err := encodeVideoInput([]string{atLimit + "A"}); !errors.Is(err, ErrVideoInputTooLarge) {
+	compatible, err := routesForVideoOperation(routes, provider.VideoOperationEdit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compatible) != 1 || compatible[0].ID != 2 {
+		t.Fatalf("compatible routes = %#v", compatible)
+	}
+	if _, err := routesForVideoOperation(routes[:1], provider.VideoOperationExtend); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("unsupported route error = %v", err)
+	}
+}
+
+func TestVideoPricingLeavesUnmeasurableOperationsUnpriced(t *testing.T) {
+	pricing, priced := resolveVideoPricing(provider.VideoOperationGenerate, "Console/grok-imagine-video", "720p", 6, 1)
+	if !priced || pricing.CostInUSDTicks <= 0 {
+		t.Fatalf("priced generation = %#v, priced=%v", pricing, priced)
+	}
+	if pricing, priced := resolveVideoPricing(provider.VideoOperationGenerate, "Console/grok-imagine-video", "", 6, 0); priced || pricing.CostInUSDTicks != 0 {
+		t.Fatalf("generation without resolution = %#v, priced=%v", pricing, priced)
+	}
+	if pricing, priced := resolveVideoPricing(provider.VideoOperationExtend, "Console/grok-imagine-video", "", 6, 0); priced || pricing.CostInUSDTicks != 0 {
+		t.Fatalf("extension without measurable input duration = %#v, priced=%v", pricing, priced)
+	}
+}
+
+func TestVideo1080pValidationUsesResolvedUpstreamModel(t *testing.T) {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "1080P", false); err != nil {
+		t.Fatalf("1.5 text/image 1080p rejected: %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "1080p", false); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("legacy 1080p error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "1080p", true); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("reference 1080p error = %v", err)
+	}
+}
+
+func TestEncodeVideoInputEnforcesPersistedLimit(t *testing.T) {
+	// image_url and combined image_urls both store the same value, so the URL is counted twice.
+	base := `{"image_url":"","image_urls":[""]}`
+	overhead := len(base)
+	urlLen := (media.MaxInputJSONBytes - overhead) / 2
+	atLimit := strings.Repeat("A", urlLen)
+	encoded, err := encodeVideoInput(atLimit, nil)
+	if err != nil {
+		t.Fatalf("encode at limit: %v", err)
+	}
+	if len(encoded) > media.MaxInputJSONBytes {
+		t.Fatalf("encoded len=%d exceeds limit", len(encoded))
+	}
+	if _, err := encodeVideoInput(atLimit+"AA", nil); !errors.Is(err, ErrVideoInputTooLarge) {
 		t.Fatalf("oversized input error = %v", err)
+	}
+}
+
+func TestEncodeDecodeVideoInputPreservesImageAndReferences(t *testing.T) {
+	encoded, err := encodeVideoInput("https://example.com/first.png", []string{"https://example.com/ref.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageURL, refs := decodeVideoInputParts(encoded)
+	if imageURL != "https://example.com/first.png" || len(refs) != 1 || refs[0] != "https://example.com/ref.png" {
+		t.Fatalf("decoded split = %q %#v from %s", imageURL, refs, encoded)
+	}
+
+	encoded, err = encodeVideoInput("", []string{"https://example.com/ref-only.png"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageURL, refs = decodeVideoInputParts(encoded)
+	if imageURL != "" || len(refs) != 1 || refs[0] != "https://example.com/ref-only.png" {
+		t.Fatalf("single reference decoded = %q %#v from %s", imageURL, refs, encoded)
+	}
+
+	imageURL, refs = decodeVideoInputParts(`{"image_urls":["https://legacy/one.png"]}`)
+	if imageURL != "https://legacy/one.png" || len(refs) != 0 {
+		t.Fatalf("legacy single = %q %#v", imageURL, refs)
+	}
+	imageURL, refs = decodeVideoInputParts(`{"image_urls":["https://legacy/a.png","https://legacy/b.png"]}`)
+	if imageURL != "" || len(refs) != 2 || refs[0] != "https://legacy/a.png" || refs[1] != "https://legacy/b.png" {
+		t.Fatalf("legacy multi = %q %#v", imageURL, refs)
+	}
+}
+
+func TestEncodeDecodeVideoInputPreservesOperationAndReferenceAudio(t *testing.T) {
+	encoded, err := encodeVideoInputFull(
+		provider.VideoOperationGenerate,
+		"",
+		[]string{"https://example.com/ref.png"},
+		[]string{"eve", " ara "},
+		"",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageURL, refs, audios, videoURL := decodeVideoInputDetailed(encoded)
+	if imageURL != "" || videoURL != "" || len(refs) != 1 || refs[0] != "https://example.com/ref.png" || len(audios) != 2 || audios[0] != "eve" || audios[1] != "ara" {
+		t.Fatalf("decoded reference input = image %q refs %#v audios %#v video %q from %s", imageURL, refs, audios, videoURL, encoded)
+	}
+	if operation := decodeVideoOperation(encoded); operation != provider.VideoOperationGenerate {
+		t.Fatalf("generation operation = %q", operation)
+	}
+
+	encoded, err = encodeVideoInputFull(provider.VideoOperationExtend, "", nil, nil, media.InputReference("source-video"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operation := decodeVideoOperation(encoded); operation != provider.VideoOperationExtend {
+		t.Fatalf("extension operation = %q from %s", operation, encoded)
+	}
+	_, _, _, videoURL = decodeVideoInputDetailed(encoded)
+	if videoURL != media.InputReference("source-video") {
+		t.Fatalf("extension video = %q", videoURL)
+	}
+
+	if err := validateVideoReferenceAudios([]string{"eve", ""}); err == nil {
+		t.Fatal("blank reference voice was accepted")
+	}
+	if err := validateVideoReferenceAudios([]string{"a", "b", "c", "d"}); err == nil {
+		t.Fatal("too many reference voices were accepted")
 	}
 }
 
@@ -181,10 +317,13 @@ func TestResolveVideoInputFileReferenceToDataURI(t *testing.T) {
 	store := &videoAssetStoreStub{inputID: inputID, inputData: raw}
 	service := &Service{mediaAssets: store}
 	reference := VideoInputFileReference(inputID)
-	if err := service.validateVideoInputReferences(context.Background(), []string{reference}); err != nil {
+	if err := service.validateVideoInputReferences(context.Background(), []string{reference}, "image"); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := service.resolveVideoInputReferences(context.Background(), []string{"https://example.com/a.png", reference})
+	if err := service.validateVideoInputReferences(context.Background(), []string{reference}, "video"); !errors.Is(err, ErrVideoInputUnavailable) {
+		t.Fatalf("image accepted as video input: %v", err)
+	}
+	resolved, err := service.resolveVideoInputReferences(context.Background(), []string{"https://example.com/a.png", reference}, "image")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,11 +331,11 @@ func TestResolveVideoInputFileReferenceToDataURI(t *testing.T) {
 	if len(resolved) != 2 || resolved[0] != "https://example.com/a.png" || resolved[1] != want {
 		t.Fatalf("resolved=%#v", resolved)
 	}
-	if err := service.validateVideoInputReferences(context.Background(), []string{VideoInputFileReference("missing")}); !errors.Is(err, ErrVideoInputUnavailable) {
+	if err := service.validateVideoInputReferences(context.Background(), []string{VideoInputFileReference("missing")}, "image"); !errors.Is(err, ErrVideoInputUnavailable) {
 		t.Fatalf("missing input error=%v", err)
 	}
 	store.inputSize = 20 << 20
-	if err := service.validateVideoInputReferences(context.Background(), []string{reference, reference}); !errors.Is(err, ErrVideoInputTooLarge) {
+	if err := service.validateVideoInputReferences(context.Background(), []string{reference, reference}, "image"); !errors.Is(err, ErrVideoInputTooLarge) {
 		t.Fatalf("aggregate local input error=%v", err)
 	}
 }
@@ -257,6 +396,8 @@ type videoAssetStoreStub struct {
 	inputID   string
 	inputData []byte
 	inputSize int64
+	inputKind string
+	inputMIME string
 }
 
 func (s *videoAssetStoreStub) SaveVideo(_ context.Context, jobID, contentType string, body io.Reader) (media.Asset, error) {
@@ -278,7 +419,7 @@ func (*videoAssetStoreStub) OpenVideo(context.Context, string) (media.Asset, io.
 	return media.Asset{}, nil, errors.New("not implemented")
 }
 
-func (s *videoAssetStoreStub) OpenInputImage(_ context.Context, id string) (media.Asset, io.ReadCloser, error) {
+func (s *videoAssetStoreStub) OpenInputAsset(_ context.Context, id string) (media.Asset, io.ReadCloser, error) {
 	if id != s.inputID || len(s.inputData) == 0 {
 		return media.Asset{}, nil, errors.New("not implemented")
 	}
@@ -286,10 +427,18 @@ func (s *videoAssetStoreStub) OpenInputImage(_ context.Context, id string) (medi
 	if size <= 0 {
 		size = int64(len(s.inputData))
 	}
-	return media.Asset{ID: id, Kind: "image", MIMEType: "image/png", SizeBytes: size}, io.NopCloser(bytes.NewReader(s.inputData)), nil
+	kind := s.inputKind
+	if kind == "" {
+		kind = "image"
+	}
+	mimeType := s.inputMIME
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return media.Asset{ID: id, Kind: kind, MIMEType: mimeType, SizeBytes: size}, io.NopCloser(bytes.NewReader(s.inputData)), nil
 }
 
-func (*videoAssetStoreStub) ReleaseInputImages(context.Context, []string) error { return nil }
+func (*videoAssetStoreStub) ReleaseInputAssets(context.Context, []string) error { return nil }
 
 type durableVideoAuditRecorder struct {
 	failures int

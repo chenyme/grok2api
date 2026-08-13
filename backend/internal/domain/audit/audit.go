@@ -12,6 +12,10 @@ const (
 	OperationImage      Operation = "image"
 	OperationImageEdit  Operation = "image_edit"
 	OperationVideo      Operation = "video"
+	OperationTTS        Operation = "tts"
+	OperationSTT        Operation = "stt"
+	OperationRealtime   Operation = "realtime"
+	OperationVoice      Operation = "voice"
 )
 
 type UsageSource string
