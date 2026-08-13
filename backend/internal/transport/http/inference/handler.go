@@ -177,6 +177,7 @@ type videoGenerationRequest struct {
 	Model           string                 `json:"model"`
 	Prompt          string                 `json:"prompt"`
 	Messages        json.RawMessage        `json:"messages"`
+	Stream          *bool                  `json:"stream"`
 	User            *string                `json:"user"`
 	Duration        json.RawMessage        `json:"duration"`
 	AspectRatio     string                 `json:"aspect_ratio"`

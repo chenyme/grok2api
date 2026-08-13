@@ -127,6 +127,7 @@ func TestVideoGenerationAcceptsChatMessagesAsPrompt(t *testing.T) {
 		{name: "string content", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"animate ocean waves"}]}`},
 		{name: "text content parts", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":[{"type":"text","text":"animate"},{"type":"input_text","text":"ocean waves"}]}]}`},
 		{name: "last user message", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"first"},{"role":"assistant","content":"reply"},{"role":"user","content":"final prompt"}]}`},
+		{name: "chat stream flag", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"animate ocean waves"}],"stream":true}`},
 		{name: "explicit prompt takes precedence", body: `{"model":"grok-imagine-video","prompt":"explicit","messages":{"not":"an array"}}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -147,6 +148,7 @@ func TestVideoGenerationAcceptsChatMessagesAsPrompt(t *testing.T) {
 	}{
 		{name: "invalid messages shape", body: `{"model":"grok-imagine-video","messages":{"role":"user","content":"test"}}`, want: "messages 无效"},
 		{name: "no user text", body: `{"model":"grok-imagine-video","messages":[{"role":"assistant","content":"reply"}]}`, want: "必须提供 prompt"},
+		{name: "invalid stream type", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"test"}],"stream":"true"}`, want: "cannot unmarshal string"},
 		{name: "unknown top level field remains rejected", body: `{"model":"grok-imagine-video","messages":[{"role":"user","content":"test"}],"unexpected":true}`, want: "unknown field"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
