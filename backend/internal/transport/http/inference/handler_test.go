@@ -134,6 +134,31 @@ func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
 	}
 }
 
+// A completed job carries a stored asset, so the returned URL must point at the
+// public media route. /v1/videos/{id}/content requires the client API key and is
+// therefore not usable in a browser or player.
+func TestVideoPlaybackURLPrefersPublicAssetRoute(t *testing.T) {
+	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
+	job := mediadomain.Job{
+		ID: "video_request_1", Status: mediadomain.StatusCompleted,
+		UpstreamURL: "https://assets.grok.com/source.mp4", ResultAssetID: "vid_abc123",
+	}
+	response := videoGenerationResponse(job, handler.videoPlaybackURL(job))
+	video, ok := response["video"].(gin.H)
+	if !ok || video["url"] != "https://api.example.com/grok2api/v1/media/videos/vid_abc123" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+// Without a stored asset the protected content endpoint remains the only option.
+func TestVideoPlaybackURLFallsBackToContentEndpoint(t *testing.T) {
+	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
+	job := mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted}
+	if got := handler.videoPlaybackURL(job); got != "https://api.example.com/grok2api/v1/videos/video_request_1/content" {
+		t.Fatalf("fallback URL = %q", got)
+	}
+}
+
 func TestVideoContentURLFollowsRuntimePublicAPIBase(t *testing.T) {
 	baseURL := "https://old.example.com"
 	handler := NewHandler(nil, nil, 1<<20, "https://static.example.com").SetPublicAPIBaseURLResolver(func() string {
