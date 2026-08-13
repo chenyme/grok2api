@@ -69,6 +69,24 @@ func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
 	}
 }
 
+func TestAppendReasoningModelAliasesIncludesConsoleGrok46XHigh(t *testing.T) {
+	expanded := appendReasoningModelAliases([]modelListItem{{
+		ID: "grok-4.6", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses,
+	}})
+	ids := make(map[string]bool, len(expanded))
+	for _, item := range expanded {
+		ids[item.ID] = true
+	}
+	for _, want := range []string{"grok-4.6-low", "grok-4.6-medium", "grok-4.6-high", "grok-4.6-xhigh"} {
+		if !ids[want] {
+			t.Fatalf("missing Console alias %q in %#v", want, expanded)
+		}
+	}
+	if ids["grok-4.6-max"] {
+		t.Fatalf("client compatibility value max must not be advertised as a model alias: %#v", expanded)
+	}
+}
+
 func TestNewCodexModelCatalogIncludesRequiredProtocolFields(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	items := newModelListItems([]modeldomain.Route{
