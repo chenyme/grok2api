@@ -171,8 +171,8 @@ func TestBuildVideoCreatePayloadMapsMultipleReferences(t *testing.T) {
 	}
 }
 
-func TestBuildVideoCreatePayloadKeepsImageAndReferences(t *testing.T) {
-	payload, err := videoCreatePayload(provider.VideoRequest{
+func TestBuildVideoCreatePayloadRejectsImageWithReferences(t *testing.T) {
+	_, err := videoCreatePayload(provider.VideoRequest{
 		Prompt:        "animate",
 		Duration:      6,
 		AspectRatio:   "16:9",
@@ -180,18 +180,36 @@ func TestBuildVideoCreatePayloadKeepsImageAndReferences(t *testing.T) {
 		ImageURL:      "https://cdn.example.com/first-frame.png",
 		ReferenceURLs: []string{"https://cdn.example.com/ref.png"},
 	}, "", buildVideoRequestProfile)
+	if err == nil {
+		t.Fatal("expected image+reference_images combination to fail")
+	}
+}
+
+func TestBuildVideoCreatePayloadReferenceAudios(t *testing.T) {
+	payload, err := videoCreatePayload(provider.VideoRequest{
+		Prompt:           "speak",
+		Duration:         8,
+		AspectRatio:      "9:16",
+		Resolution:       "720p",
+		ReferenceURLs:    []string{"https://cdn.example.com/person.png"},
+		ReferenceAudios:  []string{"eve"},
+	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	image, ok := payload["image"].(map[string]any)
-	if !ok || image["image_url"] != "https://cdn.example.com/first-frame.png" {
+	if _, exists := payload["image"]; exists {
 		t.Fatalf("image = %#v", payload["image"])
 	}
 	references, ok := payload["reference_images"].([]map[string]any)
-	if !ok || len(references) != 1 || references[0]["image_url"] != "https://cdn.example.com/ref.png" {
+	if !ok || len(references) != 1 || references[0]["image_url"] != "https://cdn.example.com/person.png" {
 		t.Fatalf("reference_images = %#v", payload["reference_images"])
 	}
+	audios, ok := payload["reference_audios"].([]map[string]any)
+	if !ok || len(audios) != 1 || audios[0]["voice_id"] != "eve" {
+		t.Fatalf("reference_audios = %#v", payload["reference_audios"])
+	}
 }
+
 
 func TestGenerateVideoRejectsTooManyImagesBeforeUpstream(t *testing.T) {
 	adapter, encrypted := newTestBuildVideoAdapter(t)

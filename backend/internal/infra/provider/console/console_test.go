@@ -1373,7 +1373,19 @@ func TestConsoleVideoPostsSingleReferenceImage(t *testing.T) {
 	}
 }
 
-func TestConsoleVideoPostsFirstFrameAndReferences(t *testing.T) {
+func TestConsoleVideoRejectsImageWithReferences(t *testing.T) {
+	adapter, credential := newConsoleTestAdapter(t, "https://console.example")
+	_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+		Credential: credential, Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
+		ImageURL: "https://example.com/first.png",
+		ReferenceURLs: []string{"https://example.com/ref.png"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "不能与") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestConsoleVideoPostsReferenceAudios(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if serveTestDPoPToken(t, writer, request) {
 			return
@@ -1386,8 +1398,7 @@ func TestConsoleVideoPostsFirstFrameAndReferences(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 				t.Error(err)
 			}
-			image, ok := payload["image"].(map[string]any)
-			if !ok || image["url"] != "https://example.com/first.png" {
+			if _, exists := payload["image"]; exists {
 				t.Errorf("image = %#v", payload["image"])
 			}
 			references, ok := payload["reference_images"].([]any)
@@ -1395,13 +1406,19 @@ func TestConsoleVideoPostsFirstFrameAndReferences(t *testing.T) {
 				t.Errorf("reference_images = %#v", payload["reference_images"])
 			} else {
 				first, _ := references[0].(map[string]any)
-				if first["url"] != "https://example.com/ref.png" {
+				if first["url"] != "https://example.com/person.png" {
 					t.Errorf("reference_images = %#v", references)
 				}
 			}
-			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-both"}`))
-		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/upstream-video-both":
-			_, _ = writer.Write([]byte(`{"status":"done","progress":100,"video":{"url":"https://vidgen.x.ai/result-both.mp4"}}`))
+			audios, ok := payload["reference_audios"].([]any)
+			if !ok || len(audios) != 1 {
+				t.Errorf("reference_audios = %#v", payload["reference_audios"])
+			} else if first, _ := audios[0].(map[string]any); first["voice_id"] != "eve" {
+				t.Errorf("reference_audios = %#v", audios)
+			}
+			_, _ = writer.Write([]byte(`{"request_id":"upstream-video-ref-audio"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/videos/upstream-video-ref-audio":
+			_, _ = writer.Write([]byte(`{"status":"done","progress":100,"video":{"url":"https://vidgen.x.ai/result-ref-audio.mp4","duration":8}}`))
 		default:
 			http.NotFound(writer, request)
 		}
@@ -1409,14 +1426,14 @@ func TestConsoleVideoPostsFirstFrameAndReferences(t *testing.T) {
 	t.Cleanup(server.Close)
 	adapter, credential := newConsoleTestAdapter(t, server.URL)
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
-		Credential: credential, Prompt: "animate", Duration: 6, AspectRatio: "16:9", Resolution: "720p",
-		ImageURL: "https://example.com/first.png",
-		ReferenceURLs: []string{"https://example.com/ref.png"},
+		Credential: credential, Prompt: "speak", Duration: 8, AspectRatio: "9:16", Resolution: "720p",
+		ReferenceURLs: []string{"https://example.com/person.png"},
+		ReferenceAudios: []string{"eve"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.URL != "https://vidgen.x.ai/result-both.mp4" {
+	if result.URL != "https://vidgen.x.ai/result-ref-audio.mp4" {
 		t.Fatalf("video result = %#v", result)
 	}
 }
@@ -1445,7 +1462,7 @@ func TestConsoleVideoRejectsTooManyCombinedImages(t *testing.T) {
 		Credential: credential, Prompt: "animate", Duration: 6,
 		ImageURL: "https://example.com/first.png", ReferenceURLs: references,
 	})
-	if err == nil || !strings.Contains(err.Error(), "最多支持") {
+	if err == nil || !(strings.Contains(err.Error(), "不能与") || strings.Contains(err.Error(), "最多支持")) {
 		t.Fatalf("error = %v", err)
 	}
 }

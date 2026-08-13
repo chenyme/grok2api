@@ -297,6 +297,9 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 	if imageURL := strings.TrimSpace(request.ImageURL); imageURL != "" {
 		payload["image"] = map[string]any{profile.imageURLField: imageURL}
 	}
+	if strings.TrimSpace(request.ImageURL) != "" && (len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0) {
+		return nil, fmt.Errorf("image 不能与 reference_images/reference_audios 同时使用")
+	}
 	if len(request.ReferenceURLs) > 0 {
 		references := make([]map[string]any, 0, len(request.ReferenceURLs))
 		for _, rawURL := range request.ReferenceURLs {
@@ -309,9 +312,32 @@ func videoCreatePayload(request provider.VideoRequest, uploadURL string, profile
 		// A single reference must stay in reference_images; do not coerce to image.
 		payload["reference_images"] = references
 	}
+	if len(request.ReferenceAudios) > 0 {
+		if len(request.ReferenceAudios) > 3 {
+			return nil, fmt.Errorf("reference_audios 最多 3 个")
+		}
+		audios := make([]map[string]any, 0, len(request.ReferenceAudios))
+		for _, raw := range request.ReferenceAudios {
+			voiceID := strings.TrimSpace(raw)
+			if voiceID == "" {
+				return nil, fmt.Errorf("reference_audios.voice_id 不能为空")
+			}
+			audios = append(audios, map[string]any{"voice_id": voiceID})
+		}
+		payload["reference_audios"] = audios
+	}
+	hasReferenceMode := len(request.ReferenceURLs) > 0 || len(request.ReferenceAudios) > 0
+	if hasReferenceMode {
+		if strings.TrimSpace(request.Prompt) == "" {
+			return nil, fmt.Errorf("参考图/参考音频视频必须提供 prompt")
+		}
+		if strings.EqualFold(strings.TrimSpace(request.Resolution), "1080p") {
+			return nil, fmt.Errorf("参考图视频 resolution 最高 720p")
+		}
+	}
 	if _, hasPrompt := payload["prompt"]; !hasPrompt {
 		if _, hasImage := payload["image"]; !hasImage {
-			if _, hasReferences := payload["reference_images"]; !hasReferences {
+			if !hasReferenceMode {
 				return nil, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 			}
 		}

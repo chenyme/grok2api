@@ -117,6 +117,8 @@ export async function createVideo(input: {
   prompt: string;
   imageURL?: string;
   imageFileID?: string;
+  referenceImages?: Array<{ url?: string; fileId?: string }>;
+  referenceVoiceIds?: string[];
   duration: number;
   aspectRatio: string;
   resolution: string;
@@ -131,6 +133,15 @@ export async function createVideo(input: {
   };
   if (input.imageFileID) body.image = { file_id: input.imageFileID };
   else if (input.imageURL) body.image = { url: input.imageURL };
+  if (input.referenceImages && input.referenceImages.length > 0) {
+    body.reference_images = input.referenceImages.map((item) => {
+      if (item.fileId) return { file_id: item.fileId };
+      return { url: item.url };
+    });
+  }
+  if (input.referenceVoiceIds && input.referenceVoiceIds.length > 0) {
+    body.reference_audios = input.referenceVoiceIds.map((voiceId) => ({ voice_id: voiceId }));
+  }
   const payload = await publicApiRequest(
     input.apiKey,
     "/videos/generations",

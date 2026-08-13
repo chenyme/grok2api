@@ -63,12 +63,28 @@ type SwaggerImageEditRequest struct {
 }
 
 // SwaggerVideoGenerationRequest 表示视频生成请求。
+// image 与 reference_images/reference_audios 互斥；参考图模式 resolution 最高 720p。
 type SwaggerVideoGenerationRequest struct {
-	Model       string `json:"model" example:"grok-imagine-video"`
-	Prompt      string `json:"prompt" example:"A cinematic tracking shot in the rain"`
-	Duration    int    `json:"duration" example:"8"`
-	AspectRatio string `json:"aspect_ratio,omitempty" example:"16:9"`
-	Resolution  string `json:"resolution,omitempty" example:"720p"`
+	Model            string                    `json:"model" example:"grok-imagine-video"`
+	Prompt           string                    `json:"prompt" example:"A cinematic tracking shot in the rain"`
+	Duration         int                       `json:"duration" example:"8"`
+	AspectRatio      string                    `json:"aspect_ratio,omitempty" example:"16:9"`
+	Resolution       string                    `json:"resolution,omitempty" example:"720p"`
+	Image            *SwaggerVideoMediaInput   `json:"image,omitempty"`
+	ReferenceImages  []SwaggerVideoMediaInput  `json:"reference_images,omitempty"`
+	ReferenceAudios  []SwaggerVideoAudioInput  `json:"reference_audios,omitempty"`
+	Video            *SwaggerVideoMediaInput   `json:"video,omitempty"`
+}
+
+// SwaggerVideoMediaInput 表示视频相关的图片/视频输入。
+type SwaggerVideoMediaInput struct {
+	URL    string `json:"url,omitempty" example:"https://example.com/input.png"`
+	FileID string `json:"file_id,omitempty" example:"file_123"`
+}
+
+// SwaggerVideoAudioInput 表示参考音频（内置 voice_id）。
+type SwaggerVideoAudioInput struct {
+	VoiceID string `json:"voice_id" example:"eve"`
 }
 
 // swaggerHealth godoc

@@ -176,6 +176,10 @@ type videoGenerationImage struct {
 	FileID string `json:"file_id"`
 }
 
+type videoGenerationAudio struct {
+	VoiceID string `json:"voice_id"`
+}
+
 type videoGenerationRequest struct {
 	Model           string                 `json:"model"`
 	Prompt          string                 `json:"prompt"`
@@ -185,6 +189,7 @@ type videoGenerationRequest struct {
 	Resolution      string                 `json:"resolution"`
 	Image           *videoGenerationImage  `json:"image"`
 	ReferenceImages []videoGenerationImage `json:"reference_images"`
+	ReferenceAudios []videoGenerationAudio `json:"reference_audios"`
 	Video           *videoGenerationImage  `json:"video"`
 	Output          json.RawMessage        `json:"output"`
 	StorageOptions  json.RawMessage        `json:"storage_options"`
@@ -701,6 +706,7 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 	resolution := ""
 	imageURL := ""
 	referenceURLs := []string{}
+	referenceAudios := []string{}
 	videoURL := ""
 
 	if operation == gatewayVideoOperationGenerate {
@@ -741,15 +747,39 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 			}
 			referenceURLs = append(referenceURLs, value)
 		}
-		totalImages := len(referenceURLs)
-		if imageURL != "" {
-			totalImages++
+		referenceAudios = make([]string, 0, len(request.ReferenceAudios))
+		for i, input := range request.ReferenceAudios {
+			voiceID := strings.TrimSpace(input.VoiceID)
+			if voiceID == "" {
+				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_audios[%d].voice_id 不能为空", i))
+				return
+			}
+			referenceAudios = append(referenceAudios, voiceID)
 		}
-		if totalImages > mediadomain.MaxInputImages {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("image 与 reference_images 合计不能超过 %d 张", mediadomain.MaxInputImages))
+		if len(referenceAudios) > 3 {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "reference_audios 最多 3 个")
 			return
 		}
-		if prompt == "" && imageURL == "" && len(referenceURLs) == 0 {
+		if imageURL != "" && (len(referenceURLs) > 0 || len(referenceAudios) > 0) {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image 不能与 reference_images/reference_audios 同时使用")
+			return
+		}
+		if len(referenceURLs) > mediadomain.MaxInputImages {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", fmt.Sprintf("reference_images 不能超过 %d 张", mediadomain.MaxInputImages))
+			return
+		}
+		hasReferenceMode := len(referenceURLs) > 0 || len(referenceAudios) > 0
+		if hasReferenceMode {
+			if prompt == "" {
+				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "参考图/参考音频视频必须提供 prompt")
+				return
+			}
+			if resolution == "1080p" {
+				writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "参考图视频 resolution 最高 720p")
+				return
+			}
+		}
+		if prompt == "" && imageURL == "" && !hasReferenceMode {
 			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 			return
 		}
@@ -771,8 +801,8 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 			return
 		}
 		videoURL = value
-		if request.Image != nil || len(request.ReferenceImages) > 0 {
-			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", label+"不支持 image 或 reference_images")
+		if request.Image != nil || len(request.ReferenceImages) > 0 || len(request.ReferenceAudios) > 0 {
+			writeOpenAIError(c, http.StatusBadRequest, "invalid_request", label+"不支持 image、reference_images 或 reference_audios")
 			return
 		}
 		if strings.TrimSpace(request.AspectRatio) != "" || strings.TrimSpace(request.Resolution) != "" {
@@ -820,7 +850,7 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model,
 		Operation: op,
 		Prompt: prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
-		ImageURL: imageURL, ReferenceURLs: referenceURLs, VideoURL: videoURL,
+		ImageURL: imageURL, ReferenceURLs: referenceURLs, ReferenceAudios: referenceAudios, VideoURL: videoURL,
 	})
 	if err != nil {
 		writeGatewayError(c, err)

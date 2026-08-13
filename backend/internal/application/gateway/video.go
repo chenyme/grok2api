@@ -53,6 +53,8 @@ type VideoInput struct {
 	ImageURL string
 	// ReferenceURLs are style/content references (official "reference_images").
 	ReferenceURLs []string
+	// ReferenceAudios are preset voice_ids for reference-to-video.
+	ReferenceAudios []string
 	// VideoURL is required for edit/extend (official "video").
 	VideoURL string
 }
@@ -74,11 +76,28 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		return media.Job{}, fmt.Errorf("prompt 过长")
 	}
 	if operation == provider.VideoOperationGenerate {
-		if len(input.Prompt) == 0 && strings.TrimSpace(input.ImageURL) == "" && len(input.ReferenceURLs) == 0 {
+		hasImage := strings.TrimSpace(input.ImageURL) != ""
+		hasRefs := len(input.ReferenceURLs) > 0
+		hasRefAudio := len(input.ReferenceAudios) > 0
+		if hasImage && (hasRefs || hasRefAudio) {
+			return media.Job{}, fmt.Errorf("image 不能与 reference_images/reference_audios 同时使用")
+		}
+		if hasRefs || hasRefAudio {
+			if len(input.Prompt) == 0 {
+				return media.Job{}, fmt.Errorf("参考图/参考音频视频必须提供 prompt")
+			}
+			if resolution := strings.ToLower(strings.TrimSpace(input.Resolution)); resolution == "1080p" {
+				return media.Job{}, fmt.Errorf("参考图视频 resolution 最高 720p")
+			}
+		}
+		if len(input.Prompt) == 0 && !hasImage && !hasRefs && !hasRefAudio {
 			return media.Job{}, fmt.Errorf("文本生视频必须提供 prompt；图片生视频可以省略 prompt")
 		}
 		if strings.TrimSpace(input.VideoURL) != "" {
 			return media.Job{}, fmt.Errorf("视频生成不支持 video 输入")
+		}
+		if err := validateVideoReferenceAudios(input.ReferenceAudios); err != nil {
+			return media.Job{}, err
 		}
 	} else {
 		if strings.TrimSpace(input.Prompt) == "" {
@@ -87,8 +106,8 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 		if strings.TrimSpace(input.VideoURL) == "" {
 			return media.Job{}, fmt.Errorf("视频编辑/延长必须提供 video")
 		}
-		if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 {
-			return media.Job{}, fmt.Errorf("视频编辑/延长不支持 image 或 reference_images")
+		if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 || len(input.ReferenceAudios) > 0 {
+			return media.Job{}, fmt.Errorf("视频编辑/延长不支持 image、reference_images 或 reference_audios")
 		}
 		if operation == provider.VideoOperationEdit && input.Duration != 0 {
 			return media.Job{}, fmt.Errorf("视频编辑不支持 duration")
@@ -126,7 +145,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 			return media.Job{}, err
 		}
 	}
-	inputJSON, err := encodeVideoInputFull(operation, input.ImageURL, input.ReferenceURLs, input.VideoURL)
+	inputJSON, err := encodeVideoInputFull(operation, input.ImageURL, input.ReferenceURLs, input.ReferenceAudios, input.VideoURL)
 	if err != nil {
 		return media.Job{}, err
 	}
@@ -405,7 +424,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		s.failVideoJob(parent, job, "provider_unavailable", ErrNoAvailableAccount)
 		return
 	}
-	operation, imageURL, referenceURLs, videoURL, err := s.resolveVideoJobInputs(ctx, job.InputJSON)
+	operation, imageURL, referenceURLs, referenceAudios, videoURL, err := s.resolveVideoJobInputs(ctx, job.InputJSON)
 	if err != nil {
 		s.failVideoJob(parent, job, "input_unavailable", err)
 		return
@@ -426,7 +445,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		Credential: lease.Credential, Billing: lease.Billing, JobID: job.ID, Model: route.UpstreamModel,
 		Operation: operation,
 		Prompt: job.Prompt, Duration: duration, AspectRatio: aspectRatio, Resolution: resolution,
-		ImageURL: imageURL, ReferenceURLs: referenceURLs, VideoURL: videoURL,
+		ImageURL: imageURL, ReferenceURLs: referenceURLs, ReferenceAudios: referenceAudios, VideoURL: videoURL,
 		Progress: func(value int) {
 			value = min(99, max(1, value))
 			if value-lastProgress < 5 {
@@ -788,10 +807,10 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 }
 
 func encodeVideoInput(imageURL string, referenceURLs []string) (string, error) {
-	return encodeVideoInputFull(provider.VideoOperationGenerate, imageURL, referenceURLs, "")
+	return encodeVideoInputFull(provider.VideoOperationGenerate, imageURL, referenceURLs, nil, "")
 }
 
-func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, referenceURLs []string, videoURL string) (string, error) {
+func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, referenceURLs []string, referenceAudios []string, videoURL string) (string, error) {
 	payload := map[string]any{}
 	if operation == "" {
 		operation = provider.VideoOperationGenerate
@@ -810,6 +829,10 @@ func encodeVideoInputFull(operation provider.VideoOperation, imageURL string, re
 	}
 	if len(refs) > 0 {
 		payload["reference_urls"] = refs
+	}
+	audios := normalizeVideoReferenceAudios(referenceAudios)
+	if len(audios) > 0 {
+		payload["reference_audios"] = audios
 	}
 	if value := strings.TrimSpace(videoURL); value != "" {
 		payload["video_url"] = value
@@ -845,23 +868,30 @@ func decodeVideoInputParts(value string) (string, []string) {
 }
 
 func decodeVideoInputFull(value string) (string, []string, string) {
+	imageURL, refs, _, videoURL := decodeVideoInputDetailed(value)
+	return imageURL, refs, videoURL
+}
+
+func decodeVideoInputDetailed(value string) (string, []string, []string, string) {
 	var input struct {
-		Operation     string   `json:"operation"`
-		ImageURL      string   `json:"image_url"`
-		ReferenceURLs []string `json:"reference_urls"`
-		ImageURLs     []string `json:"image_urls"`
-		VideoURL      string   `json:"video_url"`
+		Operation        string   `json:"operation"`
+		ImageURL         string   `json:"image_url"`
+		ReferenceURLs    []string `json:"reference_urls"`
+		ReferenceAudios  []string `json:"reference_audios"`
+		ImageURLs        []string `json:"image_urls"`
+		VideoURL         string   `json:"video_url"`
 	}
 	_ = json.Unmarshal([]byte(value), &input)
 	videoURL := strings.TrimSpace(input.VideoURL)
-	if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 || videoURL != "" || strings.TrimSpace(input.Operation) != "" {
+	audios := normalizeVideoReferenceAudios(input.ReferenceAudios)
+	if strings.TrimSpace(input.ImageURL) != "" || len(input.ReferenceURLs) > 0 || len(audios) > 0 || videoURL != "" || strings.TrimSpace(input.Operation) != "" {
 		refs := make([]string, 0, len(input.ReferenceURLs))
 		for _, raw := range input.ReferenceURLs {
 			if v := strings.TrimSpace(raw); v != "" {
 				refs = append(refs, v)
 			}
 		}
-		return strings.TrimSpace(input.ImageURL), refs, videoURL
+		return strings.TrimSpace(input.ImageURL), refs, audios, videoURL
 	}
 	// Legacy jobs stored a flat image_urls list. Preserve historical mapping:
 	// one URL was treated as the first-frame image; multiple URLs were references.
@@ -873,11 +903,11 @@ func decodeVideoInputFull(value string) (string, []string, string) {
 	}
 	switch len(legacy) {
 	case 0:
-		return "", nil, ""
+		return "", nil, nil, ""
 	case 1:
-		return legacy[0], nil, ""
+		return legacy[0], nil, nil, ""
 	default:
-		return "", legacy, ""
+		return "", legacy, nil, ""
 	}
 }
 
@@ -896,24 +926,47 @@ func decodeVideoOperation(value string) provider.VideoOperation {
 	}
 }
 
-func (s *Service) resolveVideoJobInputs(ctx context.Context, inputJSON string) (provider.VideoOperation, string, []string, string, error) {
+func (s *Service) resolveVideoJobInputs(ctx context.Context, inputJSON string) (provider.VideoOperation, string, []string, []string, string, error) {
 	operation := decodeVideoOperation(inputJSON)
-	_, _, videoURL := decodeVideoInputFull(inputJSON)
+	_, _, referenceAudios, videoURL := decodeVideoInputDetailed(inputJSON)
 	resolvedImage, resolvedRefs, err := s.resolveVideoInputParts(ctx, inputJSON)
 	if err != nil {
-		return "", "", nil, "", err
+		return "", "", nil, nil, "", err
 	}
 	if strings.TrimSpace(videoURL) == "" {
-		return operation, resolvedImage, resolvedRefs, "", nil
+		return operation, resolvedImage, resolvedRefs, referenceAudios, "", nil
 	}
 	resolvedVideos, err := s.resolveVideoInputReferences(ctx, []string{videoURL})
 	if err != nil {
-		return "", "", nil, "", err
+		return "", "", nil, nil, "", err
 	}
 	if len(resolvedVideos) == 0 {
-		return "", "", nil, "", ErrVideoInputUnavailable
+		return "", "", nil, nil, "", ErrVideoInputUnavailable
 	}
-	return operation, resolvedImage, resolvedRefs, resolvedVideos[0], nil
+	return operation, resolvedImage, resolvedRefs, referenceAudios, resolvedVideos[0], nil
+}
+
+func validateVideoReferenceAudios(values []string) error {
+	audios := normalizeVideoReferenceAudios(values)
+	if len(audios) > 3 {
+		return fmt.Errorf("reference_audios 最多 3 个")
+	}
+	for _, voiceID := range audios {
+		if voiceID == "" {
+			return fmt.Errorf("reference_audios.voice_id 不能为空")
+		}
+	}
+	return nil
+}
+
+func normalizeVideoReferenceAudios(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		if value := strings.TrimSpace(raw); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func videoInputReferences(imageURL string, referenceURLs []string) []string {

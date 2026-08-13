@@ -300,7 +300,11 @@ type VideoRequest struct {
 	ImageURL string
 	// ReferenceURLs are style/content references (official "reference_images").
 	// A single reference must stay in reference_images and must not be coerced to image.
+	// Official docs forbid combining image with reference_images.
 	ReferenceURLs []string
+	// ReferenceAudios are preset voice_ids for reference-to-video (official "reference_audios").
+	// At most 3 entries; may be used alone or with reference_images.
+	ReferenceAudios []string
 	// VideoURL is required for edit/extend (official "video" field).
 	VideoURL string
 	Progress      func(int)

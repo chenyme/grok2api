@@ -1029,6 +1029,60 @@ func TestSelectionErrorResponseDistinguishesCoolingAndSaturation(t *testing.T) {
 }
 
 
+func TestReferenceToVideoRequestValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := &Handler{maxBodyBytes: 1 << 20}
+	router := gin.New()
+	handler.Register(router.Group("/v1"))
+
+	combined := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x",
+		"image":{"url":"https://example.com/a.png"},
+		"reference_images":[{"url":"https://example.com/b.png"}]
+	}`))
+	combined.Header.Set("Content-Type", "application/json")
+	combinedRec := httptest.NewRecorder()
+	router.ServeHTTP(combinedRec, combined)
+	if combinedRec.Code != http.StatusBadRequest || !strings.Contains(combinedRec.Body.String(), "不能与") {
+		t.Fatalf("combined image+refs status=%d body=%s", combinedRec.Code, combinedRec.Body.String())
+	}
+
+	highRes := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x","resolution":"1080p",
+		"reference_images":[{"url":"https://example.com/b.png"}]
+	}`))
+	highRes.Header.Set("Content-Type", "application/json")
+	highResRec := httptest.NewRecorder()
+	router.ServeHTTP(highResRec, highRes)
+	if highResRec.Code != http.StatusBadRequest || !strings.Contains(highResRec.Body.String(), "720p") {
+		t.Fatalf("r2v 1080p status=%d body=%s", highResRec.Code, highResRec.Body.String())
+	}
+
+	tooManyAudio := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x","duration":8,"resolution":"720p",
+		"reference_audios":[{"voice_id":"eve"},{"voice_id":"ara"},{"voice_id":"rex"},{"voice_id":"sal"}]
+	}`))
+	tooManyAudio.Header.Set("Content-Type", "application/json")
+	tooManyAudioRec := httptest.NewRecorder()
+	router.ServeHTTP(tooManyAudioRec, tooManyAudio)
+	if tooManyAudioRec.Code != http.StatusBadRequest || !strings.Contains(tooManyAudioRec.Body.String(), "最多 3") {
+		t.Fatalf("too many audios status=%d body=%s", tooManyAudioRec.Code, tooManyAudioRec.Body.String())
+	}
+
+	valid := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"The person speaks","duration":8,
+		"aspect_ratio":"9:16","resolution":"720p",
+		"reference_images":[{"url":"https://example.com/p.png"}],
+		"reference_audios":[{"voice_id":"eve"}]
+	}`))
+	valid.Header.Set("Content-Type", "application/json")
+	validRec := httptest.NewRecorder()
+	router.ServeHTTP(validRec, valid)
+	if validRec.Code != http.StatusUnauthorized {
+		t.Fatalf("valid r2v status=%d body=%s", validRec.Code, validRec.Body.String())
+	}
+}
+
 func TestEditAndExtendVideoRequestValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := &Handler{maxBodyBytes: 1 << 20}
