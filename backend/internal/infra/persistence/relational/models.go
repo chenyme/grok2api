@@ -185,7 +185,7 @@ type modelRouteModel struct {
 	PublicID      string    `gorm:"size:255;index:idx_model_routes_public_id_lookup;not null;check:chk_model_routes_public_id,length(trim(public_id)) BETWEEN 1 AND 255"`
 	Provider      string    `gorm:"size:32;index:idx_model_routes_provider_upstream;not null;check:chk_model_routes_provider,provider IN ('grok_build','grok_web','grok_console')"`
 	UpstreamModel string    `gorm:"size:255;index:idx_model_routes_provider_upstream;not null;check:chk_model_routes_upstream_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
-	Capability    string    `gorm:"size:32;not null;check:chk_model_routes_capability,capability IN ('responses','chat','image','image_edit','video')"`
+	Capability    string    `gorm:"size:32;not null;check:chk_model_routes_capability,capability IN ('responses','chat','image','image_edit','video','tts','stt','realtime')"`
 	Origin        string    `gorm:"size:32;not null;default:discovered;check:chk_model_routes_origin,origin IN ('catalog','discovered','manual')"`
 	Enabled       bool      `gorm:"not null"`
 	CreatedAt     time.Time `gorm:"not null"`
@@ -297,7 +297,7 @@ type requestAuditModel struct {
 	ModelPublicID           string    `gorm:"size:255;check:chk_request_audits_model_public_id,length(model_public_id) <= 255"`
 	ModelUpstreamModel      string    `gorm:"size:255;check:chk_request_audits_model_upstream_model,length(model_upstream_model) <= 255"`
 	Provider                string    `gorm:"size:32;not null;check:chk_request_audits_provider,provider IN ('grok_build','grok_web','grok_console')"`
-	Operation               string    `gorm:"size:32;not null;check:chk_request_audits_operation,operation IN ('responses','compaction','chat','messages','image','image_edit','video')"`
+	Operation               string    `gorm:"size:32;not null;check:chk_request_audits_operation,operation IN ('responses','compaction','chat','messages','image','image_edit','video','tts','stt','realtime','voice')"`
 	UsageSource             string    `gorm:"size:16;not null;check:chk_request_audits_usage_source,usage_source IN ('upstream','estimated','none')"`
 	AccountID               *uint64   `gorm:"check:chk_request_audits_account_id,account_id IS NULL OR account_id > 0"`
 	AccountName             string    `gorm:"size:160;check:chk_request_audits_account_name,length(account_name) <= 160"`
@@ -404,10 +404,11 @@ type mediaJobModel struct {
 	Model          string  `gorm:"size:255;not null;check:chk_media_jobs_model,length(trim(model)) BETWEEN 1 AND 255"`
 	ModelRouteID   uint64  `gorm:"not null;check:chk_media_jobs_model_route_id,model_route_id > 0"`
 	UpstreamModel  string  `gorm:"size:255;not null;check:chk_media_jobs_upstream_model,length(trim(upstream_model)) BETWEEN 1 AND 255"`
+	Operation      string  `gorm:"size:16;not null;default:'generate';check:chk_media_jobs_operation,operation IN ('generate','edit','extend')"`
 	Prompt         string  `gorm:"type:text;not null;check:chk_media_jobs_prompt,length(prompt) BETWEEN 0 AND 100000"`
-	Seconds        int     `gorm:"not null;check:chk_media_jobs_seconds,seconds BETWEEN 1 AND 15"`
-	Size           string  `gorm:"size:32;not null;check:chk_media_jobs_size,length(trim(size)) BETWEEN 1 AND 32"`
-	Quality        string  `gorm:"size:32;not null;check:chk_media_jobs_quality,length(trim(quality)) BETWEEN 1 AND 32"`
+	Seconds        int     `gorm:"not null;check:chk_media_jobs_seconds,seconds BETWEEN 0 AND 15"`
+	Size           string  `gorm:"size:32;not null;default:'';check:chk_media_jobs_size,length(trim(size)) BETWEEN 0 AND 32"`
+	Quality        string  `gorm:"size:32;not null;default:'';check:chk_media_jobs_quality,length(trim(quality)) BETWEEN 0 AND 32"`
 	Status         string  `gorm:"size:32;not null;check:chk_media_jobs_status,status IN ('queued','in_progress','completed','failed')"`
 	Progress       int     `gorm:"not null;check:chk_media_jobs_progress,progress BETWEEN 0 AND 100"`
 	// InputJSON limit 33554432 must stay equal to media.MaxInputJSONBytes (GORM tags require literals).

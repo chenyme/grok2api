@@ -136,10 +136,14 @@ func (a *Adapter) PricingModel(upstreamModel string) string {
 		if spec.Capability == modeldomain.CapabilityChat {
 			return "grok-4.5"
 		}
-		// Public Web image names carry the -lite suffix to distinguish them from
+		// Public Web image names use the -2.0 suffix to distinguish them from
 		// Console routes. Billing continues to use the upstream xAI model name.
 		if spec.Capability == modeldomain.CapabilityImage {
 			return spec.UpstreamModel
+		}
+		// Dedicated Web edit upstream keeps a stable billing name.
+		if spec.Capability == modeldomain.CapabilityImageEdit {
+			return "grok-imagine-image-edit"
 		}
 		return spec.PublicID
 	}

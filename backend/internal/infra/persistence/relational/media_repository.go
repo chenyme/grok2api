@@ -129,7 +129,7 @@ func (r *MediaAssetRepository) ExpireMediaInputIfUnreferenced(ctx context.Contex
 	activeReference := r.db.db.Model(&mediaJobModel{}).Select("1").
 		Where("status IN ? AND input_json LIKE ?", []string{string(media.StatusQueued), string(media.StatusInProgress)}, referencePattern)
 	result := r.db.db.WithContext(ctx).Model(&mediaAssetModel{}).
-		Where("id = ? AND kind = ? AND expires_at IS NOT NULL", id, "image").
+		Where("id = ? AND kind IN ? AND expires_at IS NOT NULL", id, []string{"image", "video"}).
 		Where("NOT EXISTS (?)", activeReference).
 		Update("expires_at", expiresAt)
 	return result.RowsAffected > 0, result.Error
@@ -483,12 +483,16 @@ func (r *MediaJobRepository) TryClaimMediaJob(ctx context.Context, id string, no
 }
 
 func mediaJobFromDomain(value media.Job) *mediaJobModel {
+	operation := value.Operation
+	if operation == "" {
+		operation = media.VideoOperationGenerate
+	}
 	return &mediaJobModel{
 		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName,
 		AccountID: mediaJobAccountID(value.AccountID), AccountName: value.AccountName,
 		EgressNodeID: value.EgressNodeID, EgressNodeName: value.EgressNodeName, EgressScope: value.EgressScope, EgressMode: value.EgressMode,
 		Provider: value.Provider,
-		Model:    value.Model, ModelRouteID: value.ModelRouteID, UpstreamModel: value.UpstreamModel,
+		Model:    value.Model, ModelRouteID: value.ModelRouteID, UpstreamModel: value.UpstreamModel, Operation: string(operation),
 		Prompt: value.Prompt, Seconds: value.Seconds, Size: value.Size, Quality: value.Quality,
 		Status: string(value.Status), Progress: value.Progress, InputJSON: value.InputJSON, InputImageCount: mediaJobInputImageCount(value.InputImageCount), UpstreamURL: value.UpstreamURL,
 		ResultAssetID: value.ResultAssetID, ContentType: value.ContentType, ErrorCode: value.ErrorCode, ErrorMessage: value.ErrorMessage,
@@ -506,12 +510,16 @@ func mediaJobToDomain(row mediaJobModel) media.Job {
 	if row.InputImageCount != nil {
 		inputImageCount = *row.InputImageCount
 	}
+	operation := media.VideoOperation(row.Operation)
+	if operation == "" {
+		operation = media.VideoOperationGenerate
+	}
 	return media.Job{
 		ID: row.ID, RequestID: row.RequestID, ClientKeyID: row.ClientKeyID, ClientKeyName: row.ClientKeyName,
 		AccountID: accountID, AccountName: row.AccountName,
 		EgressNodeID: row.EgressNodeID, EgressNodeName: row.EgressNodeName, EgressScope: row.EgressScope, EgressMode: row.EgressMode,
 		Provider: row.Provider,
-		Model:    row.Model, ModelRouteID: row.ModelRouteID, UpstreamModel: row.UpstreamModel,
+		Model:    row.Model, ModelRouteID: row.ModelRouteID, UpstreamModel: row.UpstreamModel, Operation: operation,
 		Prompt: row.Prompt, Seconds: row.Seconds, Size: row.Size, Quality: row.Quality,
 		Status: media.Status(row.Status), Progress: row.Progress, InputJSON: row.InputJSON, InputImageCount: inputImageCount, UpstreamURL: row.UpstreamURL,
 		ResultAssetID: row.ResultAssetID, ContentType: row.ContentType, ErrorCode: row.ErrorCode, ErrorMessage: row.ErrorMessage,

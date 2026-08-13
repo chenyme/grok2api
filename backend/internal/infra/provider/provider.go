@@ -30,6 +30,29 @@ type HTTPStatusError interface {
 	HTTPStatusCode() int
 }
 
+// RetryAfterError preserves a safe upstream retry delay when an adapter cannot
+// return a Response, for example when a WebSocket handshake is rejected.
+type RetryAfterError interface {
+	error
+	RetryAfterDuration() time.Duration
+}
+
+// RequestScopedError marks an upstream rejection that retrying with another
+// account or egress cannot resolve.
+type RequestScopedError interface {
+	error
+	RequestScopedFailure() bool
+}
+
+// PublicMessageError exposes a deliberately sanitized message that may cross
+// the public API boundary. Provider errors must opt in; arbitrary Error()
+// strings can contain upstream response bodies, tokens, cookies, or request
+// diagnostics and therefore are never returned to clients by default.
+type PublicMessageError interface {
+	error
+	PublicErrorMessage() string
+}
+
 // ErrorHTTPStatus extracts the upstream HTTP status from a Provider error chain.
 func ErrorHTTPStatus(err error) (int, bool) {
 	var statusError HTTPStatusError
@@ -38,6 +61,33 @@ func ErrorHTTPStatus(err error) (int, bool) {
 	}
 	status := statusError.HTTPStatusCode()
 	return status, status > 0
+}
+
+// ErrorRetryAfter extracts a positive retry delay from an error chain.
+func ErrorRetryAfter(err error) time.Duration {
+	var retryError RetryAfterError
+	if !errors.As(err, &retryError) {
+		return 0
+	}
+	return max(0, retryError.RetryAfterDuration())
+}
+
+// IsRequestScopedError reports whether the Provider has positively classified
+// the failure as request-scoped.
+func IsRequestScopedError(err error) bool {
+	var requestError RequestScopedError
+	return errors.As(err, &requestError) && requestError.RequestScopedFailure()
+}
+
+// ErrorPublicMessage extracts a message that the Provider has explicitly
+// classified as safe for clients.
+func ErrorPublicMessage(err error) (string, bool) {
+	var publicError PublicMessageError
+	if !errors.As(err, &publicError) {
+		return "", false
+	}
+	message := strings.TrimSpace(publicError.PublicErrorMessage())
+	return message, message != ""
 }
 
 // MediaPostProcessingStage identifies a local processing stage that failed after media generation.
@@ -248,6 +298,7 @@ type ImageGenerationRequest struct {
 	Size           string
 	AspectRatio    string
 	Resolution     string
+	Quality        string
 	ResponseFormat string
 	Streaming      bool
 	PartialImages  int
@@ -268,23 +319,47 @@ type ImageEditRequest struct {
 	Size           string
 	AspectRatio    string
 	Resolution     string
+	Quality        string
 	ResponseFormat string
 	Streaming      bool
 	PartialImages  int
 }
+
+// VideoOperation selects the official xAI video endpoint family.
+type VideoOperation = media.VideoOperation
+
+const (
+	VideoOperationGenerate = media.VideoOperationGenerate
+	VideoOperationEdit     = media.VideoOperationEdit
+	VideoOperationExtend   = media.VideoOperationExtend
+)
 
 type VideoRequest struct {
 	Credential account.Credential
 	// Billing is used only to determine XAI eligibility in Build auto mode; nil means the account tier is unknown.
 	Billing *account.Billing
 	// JobID binds the local video job to XAI ZDR upload tickets and result assets.
-	JobID         string
-	Prompt        string
-	Duration      int
-	AspectRatio   string
-	Resolution    string
+	JobID string
+	// Model is the selected upstream video model when the Provider supports more than one.
+	Model string
+	// Operation defaults to generate when empty.
+	Operation   VideoOperation
+	Prompt      string
+	Duration    int
+	AspectRatio string
+	Resolution  string
+	// ImageURL is the optional first-frame image (official "image" field).
+	ImageURL string
+	// ReferenceURLs are style/content references (official "reference_images").
+	// A single reference must stay in reference_images and must not be coerced to image.
+	// Official docs forbid combining image with reference_images.
 	ReferenceURLs []string
-	Progress      func(int)
+	// ReferenceAudios are preset voice_ids for reference-to-video (official "reference_audios").
+	// At most 3 entries; may be used alone or with reference_images.
+	ReferenceAudios []string
+	// VideoURL is required for edit/extend (official "video" field).
+	VideoURL string
+	Progress func(int)
 }
 
 type VideoResult struct {
@@ -292,6 +367,91 @@ type VideoResult struct {
 	ContentType string
 	// A non-empty AssetID means the result is stored as a local media asset; content reads must use MediaObjectStorage.
 	AssetID string
+}
+
+type TTSOutputFormat struct {
+	Codec      string
+	SampleRate int
+	BitRate    int
+}
+
+type TTSRequest struct {
+	Credential               account.Credential
+	Model                    string
+	Text                     string
+	VoiceID                  string
+	Language                 string
+	OutputFormat             TTSOutputFormat
+	Speed                    float64
+	OptimizeStreamingLatency int
+	TextNormalization        bool
+	WithTimestamps           bool
+}
+
+type TTSTimestampSpan struct {
+	Start float64
+	End   float64
+}
+
+type TTSTimestamps struct {
+	GraphChars []string
+	GraphTimes []TTSTimestampSpan
+}
+
+type TTSResult struct {
+	Audio        []byte
+	ContentType  string
+	Duration     float64
+	Base64Audio  string
+	Timestamps   *TTSTimestamps
+	JSONEnvelope bool
+}
+
+type STTRequest struct {
+	Credential   account.Credential
+	Model        string
+	FileName     string
+	FileMIME     string
+	FileData     []byte
+	URL          string
+	AudioFormat  string
+	SampleRate   string
+	Language     string
+	Format       bool
+	Multichannel bool
+	Channels     int
+	Diarize      bool
+	KeyTerms     []string
+	FillerWords  bool
+	VADThreshold *float64
+}
+
+type STTWord struct {
+	Text    string
+	Start   float64
+	End     float64
+	Speaker *int
+}
+
+type STTChannel struct {
+	Index int
+	Text  string
+	Words []STTWord
+}
+
+type STTResult struct {
+	Text     string
+	Language string
+	Duration float64
+	Words    []STTWord
+	Channels []STTChannel
+	RawJSON  []byte
+}
+
+type VoiceInfo struct {
+	VoiceID  string
+	Name     string
+	Language string
 }
 
 // RefreshedCredential represents rotated credentials returned by an OAuth refresh.
@@ -424,6 +584,42 @@ type VideoAdapter interface {
 type VideoContentDownloader interface {
 	VideoAdapter
 	DownloadVideo(ctx context.Context, credential account.Credential, rawURL string) (io.ReadCloser, string, int64, error)
+}
+
+// TTSAdapter synthesizes speech audio for text prompts.
+type TTSAdapter interface {
+	Adapter
+	SynthesizeSpeech(ctx context.Context, request TTSRequest) (TTSResult, error)
+	ListTTSVoices(ctx context.Context, credential account.Credential) ([]VoiceInfo, error)
+	GetTTSVoice(ctx context.Context, credential account.Credential, voiceID string) (VoiceInfo, error)
+}
+
+// STTAdapter transcribes audio into text.
+type STTAdapter interface {
+	Adapter
+	TranscribeSpeech(ctx context.Context, request STTRequest) (STTResult, error)
+}
+
+// VoiceWebSocketConn is a minimal duplex websocket used by voice streaming proxies.
+type VoiceWebSocketConn interface {
+	ReadMessage() (messageType int, data []byte, err error)
+	WriteMessage(messageType int, data []byte) error
+	SetReadLimit(limit int64)
+	Close() error
+}
+
+// VoiceWebSocketRequest dials an upstream voice websocket with provider auth.
+type VoiceWebSocketRequest struct {
+	Credential account.Credential
+	// Path is a v1-relative path such as /realtime or /stt.
+	Path  string
+	Model string
+}
+
+// VoiceWebSocketAdapter dials official voice websocket endpoints with account auth.
+type VoiceWebSocketAdapter interface {
+	Adapter
+	DialVoiceWebSocket(ctx context.Context, request VoiceWebSocketRequest) (VoiceWebSocketConn, func(), error)
 }
 
 type RoutingMetadataAdapter interface {
@@ -605,6 +801,21 @@ func (r *Registry) Validate() error {
 		if definition.Media.VideoGeneration {
 			if _, ok := adapter.(VideoAdapter); !ok {
 				return fmt.Errorf("Provider %s 声明视频能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.TTS {
+			if _, ok := adapter.(TTSAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明语音合成能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.STT {
+			if _, ok := adapter.(STTAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明语音识别能力但未实现适配器", value)
+			}
+		}
+		if definition.Media.Realtime {
+			if _, ok := adapter.(VoiceWebSocketAdapter); !ok {
+				return fmt.Errorf("Provider %s 声明实时语音能力但未实现 WebSocket 适配器", value)
 			}
 		}
 	}
@@ -824,6 +1035,33 @@ func (r *Registry) Videos(value account.Provider) (VideoAdapter, bool) {
 		return nil, false
 	}
 	result, ok := adapter.(VideoAdapter)
+	return result, ok
+}
+
+func (r *Registry) TTS(value account.Provider) (TTSAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(TTSAdapter)
+	return result, ok
+}
+
+func (r *Registry) STT(value account.Provider) (STTAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(STTAdapter)
+	return result, ok
+}
+
+func (r *Registry) VoiceWebSocket(value account.Provider) (VoiceWebSocketAdapter, bool) {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil, false
+	}
+	result, ok := adapter.(VoiceWebSocketAdapter)
 	return result, ok
 }
 
