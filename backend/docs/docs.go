@@ -497,6 +497,102 @@ const docTemplate = `{
                 }
             }
         },
+        "/v1/videos/edits": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Videos"
+                ],
+                "summary": "创建异步视频编辑任务",
+                "parameters": [
+                    {
+                        "description": "请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httpserver.SwaggerVideoGenerationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/videos/extensions": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Videos"
+                ],
+                "summary": "创建异步视频延长任务",
+                "parameters": [
+                    {
+                        "description": "请求",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/httpserver.SwaggerVideoGenerationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/v1/videos/generations": {
             "post": {
                 "security": [
@@ -754,6 +850,15 @@ const docTemplate = `{
                 }
             }
         },
+        "httpserver.SwaggerVideoAudioInput": {
+            "type": "object",
+            "properties": {
+                "voice_id": {
+                    "type": "string",
+                    "example": "eve"
+                }
+            }
+        },
         "httpserver.SwaggerVideoGenerationRequest": {
             "type": "object",
             "properties": {
@@ -765,6 +870,9 @@ const docTemplate = `{
                     "type": "integer",
                     "example": 8
                 },
+                "image": {
+                    "$ref": "#/definitions/httpserver.SwaggerVideoMediaInput"
+                },
                 "model": {
                     "type": "string",
                     "example": "grok-imagine-video"
@@ -773,9 +881,37 @@ const docTemplate = `{
                     "type": "string",
                     "example": "A cinematic tracking shot in the rain"
                 },
+                "reference_audios": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httpserver.SwaggerVideoAudioInput"
+                    }
+                },
+                "reference_images": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httpserver.SwaggerVideoMediaInput"
+                    }
+                },
                 "resolution": {
                     "type": "string",
                     "example": "720p"
+                },
+                "video": {
+                    "$ref": "#/definitions/httpserver.SwaggerVideoMediaInput"
+                }
+            }
+        },
+        "httpserver.SwaggerVideoMediaInput": {
+            "type": "object",
+            "properties": {
+                "file_id": {
+                    "type": "string",
+                    "example": "file_123"
+                },
+                "url": {
+                    "type": "string",
+                    "example": "https://example.com/input.png"
                 }
             }
         }

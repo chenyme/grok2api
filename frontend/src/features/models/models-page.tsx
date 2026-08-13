@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TFunction } from "i18next";
-import { Clapperboard, Image as ImageIcon, MessagesSquare, MessageSquareText, MoreHorizontal, Paintbrush, Pencil, Plus, RefreshCw, Search, SquareTerminal, Trash2 } from "lucide-react";
+import { AudioLines, Clapperboard, Image as ImageIcon, MessagesSquare, MessageSquareText, Mic, MoreHorizontal, Paintbrush, Pencil, Plus, Radio, RefreshCw, Search, SquareTerminal, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -34,6 +34,8 @@ import { cn } from "@/shared/lib/cn";
 import { formatDateTime } from "@/shared/lib/format";
 import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/table-sort";
 
+const modelSyncToastID = "model-sync-progress";
+
 export function ModelsPage() {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -53,7 +55,7 @@ export function ModelsPage() {
     publicId: z.string().min(1, t("errors.required")),
     provider: z.enum(["grok_build", "grok_web", "grok_console"]),
     upstreamModel: z.string().min(1, t("errors.required")),
-    capability: z.enum(["responses", "chat", "image", "image_edit", "video"]),
+    capability: z.enum(["responses", "chat", "image", "image_edit", "video", "tts", "stt", "realtime"]),
     enabled: z.boolean(),
     bindingMode: z.boolean(),
     accountIds: z.array(z.string()),
@@ -135,14 +137,21 @@ export function ModelsPage() {
   });
 
   const syncMutation = useMutation({
-    mutationFn: syncModels,
+    mutationFn: () => syncModels((progress) => {
+      toast.loading(t("models.syncingProgress", progress), { id: modelSyncToastID });
+    }),
+    onMutate: () => {
+      toast.loading(t("models.syncing"), { id: modelSyncToastID });
+    },
     onSuccess: (result) => {
       setSelected(new Set());
       setPage(1);
       void queryClient.invalidateQueries({ queryKey: ["models"] });
-      toast.success(t("models.synced", { count: result.synced }));
+      toast.success(t("models.synced", { count: result.synced }), { id: modelSyncToastID });
     },
-    onError: showError,
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : t("errors.generic"), { id: modelSyncToastID });
+    },
   });
 
   function showError(error: unknown): void {
@@ -473,6 +482,9 @@ const endpointCapabilityMetadata = {
   image: { icon: ImageIcon, method: "POST", path: "/v1/images/generations", color: "text-emerald-600 dark:text-emerald-400" },
   image_edit: { icon: Paintbrush, method: "POST", path: "/v1/images/edits", color: "text-amber-700 dark:text-amber-400" },
   video: { icon: Clapperboard, method: "POST", path: "/v1/videos/generations", color: "text-rose-600 dark:text-rose-400" },
+  tts: { icon: AudioLines, method: "POST", path: "/v1/tts", color: "text-cyan-700 dark:text-cyan-400" },
+  stt: { icon: Mic, method: "POST", path: "/v1/stt", color: "text-teal-700 dark:text-teal-400" },
+  realtime: { icon: Radio, method: "GET", path: "/v1/realtime", color: "text-sky-700 dark:text-sky-400" },
 } as const;
 
 type ModelRouteGroup = {
@@ -533,5 +545,8 @@ function displayCapabilityLabel(capability: ModelDisplayCapability, t: TFunction
     image: t("models.capabilityImage"),
     image_edit: t("models.capabilityImageEdit"),
     video: t("models.capabilityVideo"),
+    tts: t("models.capabilityTTS"),
+    stt: t("models.capabilitySTT"),
+    realtime: t("models.capabilityRealtime"),
   }[capability];
 }

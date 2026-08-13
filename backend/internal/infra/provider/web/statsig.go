@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,8 @@ const (
 	statsigMetaBodyLimit    = 4 << 20
 	statsigResponseLimit    = 4 << 10
 )
+
+var errStatsigMetaMissing = errors.New("Grok index 缺少 grok-site-verification")
 
 type statsigCacheEntry struct {
 	value     string
@@ -272,11 +275,54 @@ func fetchStatsigMetaContent(ctx context.Context, baseURL, token string, lease *
 	if lease == nil {
 		return "", fmt.Errorf("Statsig 获取缺少出口租约")
 	}
-	requestCtx, cancel := context.WithTimeout(infraegress.WithPhysicalCallStage(ctx, "statsig_meta"), 15*time.Second)
-	defer cancel()
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/index", nil)
+	return fetchStatsigMetaContentWithDo(ctx, baseURL, token, lease, lease.Do)
+}
+
+func fetchStatsigMetaContentWithDo(ctx context.Context, baseURL, token string, lease *infraegress.Lease, do func(*http.Request) (*http.Response, error)) (string, error) {
+	if do == nil {
+		return "", fmt.Errorf("Statsig 获取缺少出口租约")
+	}
+	index, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/index", do)
 	if err != nil {
 		return "", err
+	}
+	if index.statusCode >= 200 && index.statusCode < 300 {
+		// A successful index response without the verification meta remains a hard
+		// protocol failure. Falling back here would hide a changed upstream page.
+		return extractStatsigMetaContent(index.body)
+	}
+	if index.statusCode != http.StatusNotFound {
+		return "", statsigMetaStatusError("/index", index.statusCode)
+	}
+	if content, extractErr := extractStatsigMetaContent(index.body); extractErr == nil {
+		return content, nil
+	} else if !errors.Is(extractErr, errStatsigMetaMissing) {
+		return "", extractErr
+	}
+
+	// /index currently returns a branded 404. Only that exact status with a
+	// missing meta is allowed to fall back to the canonical root page.
+	root, err := fetchStatsigMetaResponse(ctx, baseURL, token, lease, "/", do)
+	if err != nil {
+		return "", err
+	}
+	if root.statusCode < 200 || root.statusCode >= 300 {
+		return "", statsigMetaStatusError("/", root.statusCode)
+	}
+	return extractStatsigMetaContent(root.body)
+}
+
+type statsigMetaResponse struct {
+	statusCode int
+	body       []byte
+}
+
+func fetchStatsigMetaResponse(ctx context.Context, baseURL, token string, lease *infraegress.Lease, path string, do func(*http.Request) (*http.Response, error)) (statsigMetaResponse, error) {
+	requestCtx, cancel := context.WithTimeout(infraegress.WithPhysicalCallStage(ctx, "statsig_meta"), 15*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, strings.TrimRight(baseURL, "/")+path, nil)
+	if err != nil {
+		return statsigMetaResponse{}, err
 	}
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
@@ -287,28 +333,37 @@ func fetchStatsigMetaContent(ctx context.Context, baseURL, token string, lease *
 	request.Header.Set("Sec-Fetch-Mode", "navigate")
 	request.Header.Set("Sec-Fetch-Site", "same-origin")
 	request.Header.Set("Upgrade-Insecure-Requests", "1")
-	request.Header.Set("User-Agent", lease.UserAgent)
-	request.Header.Set("Cookie", infraegress.BuildSSOCookie(token, lease.CFCookies))
-	response, err := lease.Do(request)
+	if lease != nil {
+		request.Header.Set("User-Agent", lease.UserAgent)
+		request.Header.Set("Cookie", infraegress.BuildSSOCookie(token, lease.CFCookies))
+	}
+	response, err := do(request)
 	if err != nil {
-		return "", err
+		return statsigMetaResponse{}, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("Grok index 返回 %d", response.StatusCode)
-	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, statsigMetaBodyLimit+1))
 	if err != nil {
-		return "", err
+		return statsigMetaResponse{}, err
 	}
 	if len(body) > statsigMetaBodyLimit {
-		return "", fmt.Errorf("Grok index 超过安全上限")
+		return statsigMetaResponse{}, statsigMetaOversizeError(path)
 	}
-	content, err := extractStatsigMetaContent(body)
-	if err != nil {
-		return "", err
+	return statsigMetaResponse{statusCode: response.StatusCode, body: body}, nil
+}
+
+func statsigMetaStatusError(path string, statusCode int) error {
+	if path == "/" {
+		return fmt.Errorf("Grok 首页返回 %d", statusCode)
 	}
-	return content, nil
+	return fmt.Errorf("Grok index 返回 %d", statusCode)
+}
+
+func statsigMetaOversizeError(path string) error {
+	if path == "/" {
+		return fmt.Errorf("Grok 首页超过安全上限")
+	}
+	return fmt.Errorf("Grok index 超过安全上限")
 }
 
 func extractStatsigMetaContent(body []byte) (string, error) {
@@ -317,7 +372,7 @@ func extractStatsigMetaContent(body []byte) (string, error) {
 		switch tokenizer.Next() {
 		case html.ErrorToken:
 			if tokenizer.Err() == io.EOF {
-				return "", fmt.Errorf("Grok index 缺少 grok-site-verification")
+				return "", errStatsigMetaMissing
 			}
 			return "", tokenizer.Err()
 		case html.StartTagToken, html.SelfClosingTagToken:

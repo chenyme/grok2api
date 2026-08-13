@@ -293,6 +293,23 @@ func (a *Adapter) doDPoPRequest(
 	body []byte,
 	accept string,
 ) (*http.Response, error) {
+	contentType := ""
+	if len(body) > 0 {
+		contentType = "application/json"
+	}
+	return a.doDPoPRequestWithContentType(ctx, credential, ssoToken, lease, method, endpoint, body, contentType, accept)
+}
+
+func (a *Adapter) doDPoPRequestWithContentType(
+	ctx context.Context,
+	credential account.Credential,
+	ssoToken string,
+	lease *infraegress.Lease,
+	method, endpoint string,
+	body []byte,
+	contentType string,
+	accept string,
+) (*http.Response, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		session, cacheKey, err := a.dpop.get(ctx, a, credential, ssoToken, lease)
 		if err != nil {
@@ -308,7 +325,10 @@ func (a *Adapter) doDPoPRequest(
 		}
 		applyBrowserHeaders(request, ssoToken, lease)
 		if len(body) > 0 {
-			request.Header.Set("Content-Type", "application/json")
+			if strings.TrimSpace(contentType) == "" {
+				contentType = "application/json"
+			}
+			request.Header.Set("Content-Type", contentType)
 		}
 		if strings.TrimSpace(accept) != "" {
 			request.Header.Set("Accept", accept)

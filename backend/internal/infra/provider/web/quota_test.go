@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -77,6 +78,8 @@ func TestSyncQuotaFetchesWeeklyOnlyAfterPaidTierIsConfirmed(t *testing.T) {
 	var weeklyCalls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case "/rest/media/imagine/quota_info":
+			writeEmptyImagineQuota(writer)
 		case "/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig":
 			weeklyCalls.Add(1)
 			writer.Header().Set("Content-Type", "application/grpc-web+proto")
@@ -386,6 +389,8 @@ func TestSyncQuotaCorrectsStoredSuperFromFreshWebQuota(t *testing.T) {
 	var weeklyCalls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
+		case "/rest/media/imagine/quota_info":
+			writeEmptyImagineQuota(writer)
 		case "/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig":
 			weeklyCalls.Add(1)
 			http.Error(writer, "not available", http.StatusNotFound)
@@ -438,5 +443,65 @@ func TestSyncQuotaCorrectsStoredSuperFromFreshWebQuota(t *testing.T) {
 	}
 	if weeklyCalls.Load() != 0 {
 		t.Fatalf("basic account probed weekly endpoint %d times", weeklyCalls.Load())
+	}
+}
+
+func writeEmptyImagineQuota(writer http.ResponseWriter) {
+	writer.Header().Set("Content-Type", "application/json")
+	_, _ = writer.Write([]byte(`{"image":null,"imageEdit":null,"imagePro":null,"video":null,"video720p":null}`))
+}
+
+func TestDecodeImagineQuotaSnapshotMatchesObservedProtocol(t *testing.T) {
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	body := []byte(`{
+		"image": null,
+		"imageEdit": null,
+		"imagePro": {"available":true,"remainingQueries":4,"windowSizeSeconds":86400},
+		"video": null,
+		"video720p": {"available":true,"remainingQueries":1,"windowSizeSeconds":86400}
+	}`)
+	windows, err := decodeImagineQuotaSnapshot(body, 42, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 2 {
+		t.Fatalf("windows = %#v", windows)
+	}
+	if windows[0].Mode != account.QuotaModeWebImagePro || windows[0].Remaining != 4 || windows[0].Total != 0 || windows[0].ResetAt != nil {
+		t.Fatalf("image_pro = %#v", windows[0])
+	}
+	if windows[1].Mode != account.QuotaModeWebVideo720p || windows[1].Remaining != 1 || windows[1].Total != 0 || windows[1].ResetAt != nil {
+		t.Fatalf("video_720p = %#v", windows[1])
+	}
+}
+
+func TestDecodeImagineQuotaSnapshotRequiresCompleteResponse(t *testing.T) {
+	now := time.Now().UTC()
+	_, err := decodeImagineQuotaSnapshot([]byte(`{"image":null,"imageEdit":null,"imagePro":null,"video":null}`), 42, now)
+	if err == nil || !strings.Contains(err.Error(), "video720p") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDecodeImagineQuotaSnapshotAcceptsExplicitUnavailableProduct(t *testing.T) {
+	now := time.Now().UTC()
+	windows, err := decodeImagineQuotaSnapshot([]byte(`{
+		"image":null,"imageEdit":{"available":false},"imagePro":null,"video":null,"video720p":null
+	}`), 42, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 1 || windows[0].Mode != account.QuotaModeWebImageEdit || windows[0].Remaining != 0 || windows[0].ResetAt == nil {
+		t.Fatalf("windows = %#v", windows)
+	}
+}
+
+func TestDecodeImagineQuotaSnapshotRejectsIncompleteAvailableProduct(t *testing.T) {
+	now := time.Now().UTC()
+	_, err := decodeImagineQuotaSnapshot([]byte(`{
+		"image":null,"imageEdit":null,"imagePro":{"available":true},"video":null,"video720p":null
+	}`), 42, now)
+	if err == nil || !strings.Contains(err.Error(), "imagePro") {
+		t.Fatalf("err = %v", err)
 	}
 }

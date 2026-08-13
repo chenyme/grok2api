@@ -669,7 +669,7 @@ func TestGenerateVideoFallbackInjectsUploadURL(t *testing.T) {
 	})
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
 		Credential: account.Credential{ID: 15, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildSuperEntitled: true},
-		JobID:      "video_job_1", Prompt: "waves", Duration: 6, Resolution: "720p", ReferenceURLs: []string{"https://cdn.example.com/first.png"},
+		JobID:      "video_job_1", Prompt: "waves", Duration: 6, Resolution: "720p", ImageURL: "https://cdn.example.com/first.png",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -750,7 +750,7 @@ func TestGenerateVideoAutoBotFlaggedUsesXAIDirectly(t *testing.T) {
 	})
 	result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
 		Credential: account.Credential{ID: 116, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted, BuildRouteMode: account.BuildRouteAuto, BuildSuperEntitled: true},
-		JobID:      "video_bot", Prompt: "waves", Duration: 6, Resolution: "720p", ReferenceURLs: []string{"https://cdn.example.com/bot.png"},
+		JobID:      "video_bot", Prompt: "waves", Duration: 6, Resolution: "720p", ImageURL: "https://cdn.example.com/bot.png",
 	})
 	if err != nil {
 		t.Fatal(err)

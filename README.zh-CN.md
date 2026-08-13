@@ -139,7 +139,7 @@ flowchart LR
 | 路由 | 模型发现、Provider 限定、会话粘滞、额度/并发门禁和有界切换 |
 | 会话 | stored response、compact、Prompt Cache 亲和与可选 reasoning replay |
 | 媒体 | 图片生成与编辑、视频任务、本地归档及 URL/Base64/SSE 输出 |
-| 出口 | HTTP/SOCKS/Resin、订阅、探测、代理池、调配、回退与 FlareSolverr |
+| 出口 | HTTP/SOCKS/Resin 与 Trojan/VLESS/Shadowsocks/VMess 隧道、订阅、探测、代理池、调配、回退与 FlareSolverr |
 | 运维 | Dashboard、模型路由、客户端密钥、审计、运行设置和媒体库 |
 
 ### Provider 边界
@@ -148,9 +148,9 @@ flowchart LR
 | :-- | :-- | :-- | :-- |
 | Grok Build | OAuth / 设备授权 | 按账号动态发现 | Responses、Chat、Messages、compact、stored response、付费账号视频 |
 | Grok Web | SSO | 内置并按等级过滤 | Responses、Chat、Messages、stored response、图片、图片编辑、视频 |
-| Grok Console | SSO | 内置 | 无状态 Responses、Chat、Messages、图片、图片编辑、视频 |
+| Grok Console | SSO | 内置 | 无状态 Responses、Chat、Messages、图片、图片编辑、视频、TTS、STT、Realtime |
 
-三个 Provider 独立维护凭据、额度、健康、冷却、并发与模型能力。故障切换不会跨 Provider 混用账号状态。
+三个 Provider 独立维护凭据、额度、健康、冷却、并发与模型能力。单条路由的账号重试始终留在当前 Provider；当同一对外模型名主动聚合了多条路由时，网关可选择另一条可调度路由，但不会跨 Provider 混用账号状态。
 
 ## 快速部署
 
@@ -259,13 +259,13 @@ Web 使用内置目录并按账号等级过滤；更高等级继承低等级模�
 | `grok-chat-expert` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-heavy` | 对话 | Heavy | Chat Completions、Responses、Messages |
 | `grok-imagine-image-lite` | 图像 | Basic | Images Generations |
-| `grok-imagine-image-quality-lite` | 图像 | Super | Images Generations |
+| `grok-imagine-image-quality-lite` | 图像 | Basic | Images Generations |
 | `grok-imagine-image-edit` | 图像编辑 | Super | Images Edits |
 | `grok-imagine-video` | 视频 | Super | Videos |
 
 ### Grok Console
 
-Console 使用当前版本内置目录。对话为无状态转发；图片和视频使用 xAI 标准资源接口。
+Console 使用当前版本内置目录。对话为无状态转发；图片、视频和语音使用 xAI 标准资源接口。
 
 | 模型 | 类型 | 网关接口能力 |
 | :-- | :-- | :-- |
@@ -277,7 +277,11 @@ Console 使用当前版本内置目录。对话为无状态转发；图片和视
 | `grok-build-0.1` | 对话 | Chat Completions、Responses、Messages |
 | `grok-imagine-image` | 图像、图像编辑 | Images Generations、Images Edits |
 | `grok-imagine-image-quality` | 图像、图像编辑 | Images Generations、Images Edits |
+| `grok-imagine-image-2.0` | 图像、图像编辑 | Images Generations、Images Edits |
 | `grok-imagine-video` | 视频 | Videos |
+| `grok-imagine-video-1.5` | 视频 | 视频生成，包括 Free Console 账号 |
+| `grok-voice-latest`、`grok-voice-think-fast-2.0`、`grok-voice-think-fast-1.0` | 语音 | TTS 和 Realtime WebSocket 代理 |
+| `grok-stt` | 语音 | STT 和 OpenAI 兼容的音频转录 |
 
 同一个 Console 图片模型的生成与编辑能力会聚合展示为一条逻辑模型，不需要创建 `-edit` 模型副本。
 
@@ -310,9 +314,14 @@ Authorization: Bearer g2a_xxx_xxx
 | `POST` | `/v1/messages` | Anthropic Messages JSON/SSE |
 | `POST` | `/v1/images/generations`、`/v1/images/edits` | 生成或编辑图片 |
 | `POST`、`GET` | `/v1/videos/*` | 创建和查询视频任务 |
+| `POST` | `/v1/tts`、`/v1/audio/speech`、`/v1/audio/tasks` | 语音合成 |
+| `POST` | `/v1/stt`、`/v1/audio/transcriptions` | 音频转录 |
+| `GET` | `/v1/stt`、`/v1/realtime` | 代理语音 WebSocket 会话 |
 | `GET` | `/v1/media/images/{asset_id}`、`/v1/media/videos/{asset_id}` | 读取归档媒体 |
 
 stored response 和 compact 取决于最终 Provider。登录管理端后可在 `/docs` 查看当前模型与调用示例；仅在 `server.swaggerEnabled: true` 时提供 Swagger。
+
+`/v1/audio/transcriptions` 支持 `json`（默认）、`verbose_json` 和 `text`。视频编辑与延长按实际路由校验 Console `grok-imagine-video`，对外模型名仍可自定义。金额计费以网关能够可靠测量的官方计价单位为准：TTS 按输入字符数预留并结算，REST 与流式 STT 按成功响应返回的实际音频时长结算。STT 时长只能在请求完成后获得，因此并发中的请求可能使有限额 Key 短暂超过金额上限。Realtime、视频编辑与延长，以及未收录官方定价的自定义路由当前记录为“未计费”，保持可调用且不消耗金额额度。
 
 客户端密钥支持模型白名单，以及可选的 RPM、并发、用量和截止日期限制。
 
@@ -331,13 +340,16 @@ curl http://127.0.0.1:8000/v1/responses \
 
 出口节点按 Build、Web、Console 或 Web 资源隔离。管理端支持：
 
-- HTTP、HTTPS、SOCKS4/4A、SOCKS5/5H 与 Resin
+- HTTP、HTTPS、SOCKS4/4A、SOCKS5/5H、Resin、Trojan、VLESS、Shadowsocks 与 VMess
+- 隧道协议支持 TCP、WebSocket 和 TLS，未实现的传输形态会在导入时拒绝
 - 订阅和文本/Base64 导入
 - 批量探测、筛选、删除、分配与均衡
 - 按作用域配置无回退、直连或固定节点
 - 代理池模式，单次连接失败不会触发全局冷却
 - 固定代理传输失败后立即复测；同节点复测自动合并，后续绑定请求限时等待并在恢复后快速重试
 - 可选的[出口质量守护程序](./tools/egress-quality-guard/README.zh-CN.md)，支持逐节点模型探测、防误杀隔离和自动恢复；通过内置的 `quality-guard` Compose profile 按需启用
+
+Hysteria 与 TUIC 暂未支持。FlareSolverr 仅接受 HTTP/SOCKS 代理地址，因此自动刷新 Clearance 暂不能直接使用隧道分享链接。
 
 首次启用时只需在 `config.yaml` 中增加 `qualityGuard` 并启动 profile。主程序会自动创建并稳定复用不可导出的系统探测身份：
 
@@ -371,7 +383,12 @@ socks5h://Default.{account}:RESIN_PROXY_TOKEN@resin:2260
 docker compose --profile flaresolverr up -d
 ```
 
-随后在 **运行设置 → 媒体与网络 → Clearance** 选择 `FlareSolverr`，地址填写 `http://flaresolverr:8191`。
+随后在 **运行设置 → 媒体与网络 → Clearance** 填写 `http://flaresolverr:8191`，并选择一种托管模式：
+
+- `FlareSolverr` 按配置周期主动刷新固定出口中过期的 Clearance。
+- `按需刷新` 不按时间淘汰最后一次成功的 Clearance，只在上游明确拒绝并将其标记失效后重新求解；后台定时任务不会在该模式下启动浏览器。
+
+`手动维护` 始终不会调用 FlareSolverr。按需模式允许首次请求不携带托管 Clearance；若被 Cloudflare 拒绝，下一次租约会执行一次经过并发去重的求解。
 
 出口层只重试可以确认发生在请求提交前的连接故障，不会重放已经提交的生成请求、认证失败、额度耗尽或上游限流。
 

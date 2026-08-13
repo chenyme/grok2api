@@ -30,7 +30,6 @@ import {
   type EgressFallbackMode,
   type EgressNodeDTO,
   type EgressOperationsConfigDTO,
-  type EgressOperationsConfigInput,
   type EgressScope,
   type EgressSourceDTO,
   type EgressSourceInput,
@@ -43,13 +42,9 @@ import { DataTableShell } from "@/shared/components/data-table-shell";
 import { Pagination } from "@/shared/components/pagination";
 import { VirtualTableBody } from "@/shared/components/virtual-table-body";
 
-type SourceForm = EgressSourceInput & { url: string };
-type OperationsForm = Omit<EgressOperationsConfigDTO, "updatedAt"> & {
-  subscriptionProxyURL: string;
-  clearSubscriptionProxy: boolean;
-};
+type SourceForm = Omit<EgressSourceInput, "url" | "proxyURL" | "clearProxyURL"> & { url: string; proxyEnabled: boolean; proxyURL: string };
 const emptySource: SourceForm = {
-  name: "", scope: "grok_build", enabled: true, url: "", refreshIntervalSeconds: 900, defaultAccountCapacity: 0,
+  name: "", scope: "grok_build", enabled: true, url: "", proxyEnabled: false, proxyURL: "", refreshIntervalSeconds: 900, defaultAccountCapacity: 0,
 };
 // Eight nodes run concurrently; each checks IPv4 and IPv6 in parallel with a
 // 15-second ceiling. Keeping a request to 32 nodes leaves enough headroom for
@@ -71,11 +66,11 @@ function defaultFallbacks(): Record<EgressScope, EgressFallbackConfigDTO> {
   };
 }
 
-const defaultOperationsForm: OperationsForm = {
-  probeProvider: "cloudflare", probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300, fallbacks: defaultFallbacks(), subscriptionProxyURL: "", subscriptionProxyConfigured: false, clearSubscriptionProxy: false,
+const defaultOperationsForm: Omit<EgressOperationsConfigDTO, "updatedAt"> = {
+  probeProvider: "cloudflare", probeIntervalSeconds: 900, autoAssignEnabled: false, autoBalanceEnabled: false, assignmentIntervalSeconds: 300, fallbacks: defaultFallbacks(),
 };
 
-function operationsFormFrom(value?: EgressOperationsConfigDTO): OperationsForm {
+function operationsFormFrom(value?: EgressOperationsConfigDTO): Omit<EgressOperationsConfigDTO, "updatedAt"> {
   if (!value) return { ...defaultOperationsForm, fallbacks: defaultFallbacks() };
 
   const defaults = defaultFallbacks();
@@ -92,24 +87,7 @@ function operationsFormFrom(value?: EgressOperationsConfigDTO): OperationsForm {
       grok_web_asset: { ...defaults.grok_web_asset, ...value.fallbacks.grok_web_asset },
       grok_console_asset: { ...defaults.grok_console_asset, ...value.fallbacks.grok_console_asset },
     },
-    subscriptionProxyURL: "",
-    subscriptionProxyConfigured: value.subscriptionProxyConfigured,
-    clearSubscriptionProxy: false,
   };
-}
-
-function operationsInputFrom(value: OperationsForm): EgressOperationsConfigInput {
-  const result: EgressOperationsConfigInput = {
-    probeProvider: value.probeProvider,
-    probeIntervalSeconds: value.probeIntervalSeconds,
-    autoAssignEnabled: value.autoAssignEnabled,
-    autoBalanceEnabled: value.autoBalanceEnabled,
-    assignmentIntervalSeconds: value.assignmentIntervalSeconds,
-    fallbacks: value.fallbacks,
-  };
-  if (value.clearSubscriptionProxy) result.clearSubscriptionProxy = true;
-  else if (value.subscriptionProxyURL.trim()) result.subscriptionProxyURL = value.subscriptionProxyURL.trim();
-  return result;
 }
 
 async function testAllEgressNodes() {
@@ -138,8 +116,7 @@ async function testAllEgressNodes() {
 export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressScope) => string }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [operationsDraft, setOperationsDraft] = useState<OperationsForm | null>(null);
-  const [subscriptionProxyError, setSubscriptionProxyError] = useState("");
+  const [operationsDraft, setOperationsDraft] = useState<Omit<EgressOperationsConfigDTO, "updatedAt"> | null>(null);
   const operationsQuery = useQuery({ queryKey: ["egress-operations"], queryFn: getEgressOperationsConfig });
   const nodesQuery = useQuery({ queryKey: ["egress-nodes", "fallback-options"], queryFn: () => listAllEgressNodes() });
   const operationsForm = operationsDraft ?? operationsFormFrom(operationsQuery.data);
@@ -163,7 +140,7 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
     onError: showError,
   });
   const saveOperations = useMutation({
-    mutationFn: () => updateEgressOperationsConfig(operationsInputFrom(operationsForm)),
+    mutationFn: () => updateEgressOperationsConfig(operationsForm),
     onSuccess: () => { setOperationsDraft(null); invalidate(); toast.success(t("settings.egress.automationSaved")); },
     onError: showError,
   });
@@ -188,7 +165,7 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
         <OperationSectionHeader title={t("settings.egress.automation")} help={t("settings.egress.automationHelp")}>
           <ActionTooltip label={t("settings.egress.testAllHelp")}><Button type="button" size="sm" variant="secondary" disabled={testAll.isPending} onClick={() => testAll.mutate()}>{testAll.isPending ? <Spinner /> : <Network />}{t("settings.egress.testAll")}</Button></ActionTooltip>
           <ActionTooltip label={t("settings.egress.rebalanceHelp")}><Button type="button" size="sm" variant="secondary" disabled={rebalance.isPending} onClick={() => rebalance.mutate()}>{rebalance.isPending ? <Spinner /> : <Shuffle />}{t("settings.egress.rebalance")}</Button></ActionTooltip>
-          <ActionTooltip label={t("settings.egress.saveAutomationHelp")}><Button type="button" size="sm" disabled={operationsDraft === null || Boolean(subscriptionProxyError) || saveOperations.isPending} onClick={() => saveOperations.mutate()}>{saveOperations.isPending ? <Spinner /> : null}{t("common.save")}</Button></ActionTooltip>
+          <ActionTooltip label={t("settings.egress.saveAutomationHelp")}><Button type="button" size="sm" disabled={operationsDraft === null || saveOperations.isPending} onClick={() => saveOperations.mutate()}>{saveOperations.isPending ? <Spinner /> : null}{t("common.save")}</Button></ActionTooltip>
         </OperationSectionHeader>
 
         {operationsQuery.isError ? <ErrorState message={operationsQuery.error.message} onRetry={() => void operationsQuery.refetch()} /> : operationsQuery.isPending ? <LoadingState /> : (
@@ -213,43 +190,6 @@ export function EgressAutomation({ scopeLabel }: { scopeLabel: (scope: EgressSco
             </AutomationRow>
             <AutomationRow controlId="egress-auto-balance" label={t("settings.egress.autoBalance")} description={t("settings.egress.autoBalanceHelp")}>
               <div className="flex h-8 items-center"><Switch id="egress-auto-balance" checked={operationsForm.autoBalanceEnabled} onCheckedChange={(autoBalanceEnabled) => setOperationsDraft({ ...operationsForm, autoBalanceEnabled })} /></div>
-            </AutomationRow>
-            <AutomationRow controlId="egress-subscription-proxy" label={t("settings.egress.subscriptionProxy")} description={t("settings.egress.subscriptionProxyHelp")} error={subscriptionProxyError}>
-              <div className="space-y-2">
-                <div className="flex min-w-0 gap-2">
-                  <Input
-                    id="egress-subscription-proxy"
-                    placeholder="socks5h://user:pass@host:port"
-                    value={operationsForm.subscriptionProxyURL}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setOperationsDraft({ ...operationsForm, subscriptionProxyURL: value, clearSubscriptionProxy: false });
-                      setSubscriptionProxyError(value.trim() && !validSubscriptionProxyURL(value) ? t("settings.egress.invalidProxy") : "");
-                    }}
-                  />
-                  {operationsForm.subscriptionProxyConfigured ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={operationsForm.clearSubscriptionProxy ? "secondary" : "outline"}
-                      onClick={() => {
-                        setOperationsDraft({ ...operationsForm, subscriptionProxyURL: "", clearSubscriptionProxy: !operationsForm.clearSubscriptionProxy });
-                        setSubscriptionProxyError("");
-                      }}
-                    >
-                      {operationsForm.clearSubscriptionProxy ? t("settings.egress.cancelClearSubscriptionProxy") : t("settings.egress.clearSubscriptionProxy")}
-                    </Button>
-                  ) : null}
-                </div>
-                {operationsForm.subscriptionProxyConfigured ? (
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <Badge variant={operationsForm.clearSubscriptionProxy ? "destructive" : "secondary"}>
-                      {operationsForm.clearSubscriptionProxy ? t("settings.egress.subscriptionProxyClearPending") : t("settings.egress.configured")}
-                    </Badge>
-                    {!operationsForm.clearSubscriptionProxy && !operationsForm.subscriptionProxyURL ? <span>{t("settings.egress.keepConfigured")}</span> : null}
-                  </div>
-                ) : null}
-              </div>
             </AutomationRow>
             <div className="pt-4">
               <div className="flex items-center gap-1.5 px-0.5">
@@ -319,7 +259,13 @@ export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope)
   };
   const saveSource = useMutation({
     mutationFn: () => {
-      const input: EgressSourceInput = { ...sourceForm, url: sourceForm.url.trim() || undefined };
+      const input: EgressSourceInput = {
+        name: sourceForm.name, scope: sourceForm.scope, enabled: sourceForm.enabled,
+        url: sourceForm.url.trim() || undefined,
+        proxyURL: sourceForm.proxyEnabled ? (sourceForm.proxyURL.trim() || undefined) : undefined,
+        clearProxyURL: Boolean(sourceEditing?.proxyConfigured && !sourceForm.proxyEnabled),
+        refreshIntervalSeconds: sourceForm.refreshIntervalSeconds, defaultAccountCapacity: sourceForm.defaultAccountCapacity,
+      };
       return sourceEditing ? updateEgressSource(sourceEditing.id, input) : createEgressSource(input);
     },
     onSuccess: () => { if (!sourceEditing) setPage(1); invalidate(); setSourceEditing(undefined); toast.success(t("settings.egress.sourceSaved")); },
@@ -344,7 +290,7 @@ export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope)
     }
     setSourceForm({
       name: value.name, scope: value.scope, enabled: value.enabled, url: "", refreshIntervalSeconds: value.refreshIntervalSeconds,
-      defaultAccountCapacity: value.defaultAccountCapacity,
+      proxyEnabled: value.proxyConfigured, proxyURL: "", defaultAccountCapacity: value.defaultAccountCapacity,
     });
     setSourceEditing(value);
   }
@@ -359,6 +305,7 @@ export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope)
   const currentPage = Math.min(page, pageCount);
   const pagedSources = filteredSources.slice((currentPage - 1) * pageSize, currentPage * pageSize);
   const hasActiveFilters = Boolean(normalizedSearch || scopeFilter);
+  const sourceProxyInvalid = sourceForm.proxyEnabled && Boolean(sourceForm.proxyURL.trim()) && !validSubscriptionProxyURL(sourceForm.proxyURL);
 
   return (
     <section className="space-y-3">
@@ -388,14 +335,15 @@ export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope)
         footer={filteredSources.length > 0 ? <Pagination page={currentPage} pageSize={pageSize} total={filteredSources.length} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} /> : undefined}
       >
         {sourcesQuery.isError ? <ErrorState message={sourcesQuery.error.message} onRetry={() => void sourcesQuery.refetch()} /> : null}
-        {!sourcesQuery.isError ? <Table viewportRows={10} rowHeight={48} className="min-w-[640px] table-fixed">
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-[24%]">{t("settings.egress.source")}</TableHead><TableHead className="w-[18%] text-center">{t("settings.egress.scope")}</TableHead><TableHead className="w-[38%]">{t("settings.egress.lastSync")}</TableHead><TableHead className="w-[15%] text-center">{t("settings.egress.capacity")}</TableHead><TableActionHead /></TableRow></TableHeader>
-          {sourcesQuery.isPending ? <TableBody><TableLoadingRow colSpan={5} /></TableBody> : null}
-          {!sourcesQuery.isPending && pagedSources.length === 0 ? <TableBody><TableRow><TableCell colSpan={5} className="h-24 text-center text-xs text-muted-foreground">{hasActiveFilters ? t("settings.egress.noSubscriptionMatches") : t("settings.egress.noSources")}</TableCell></TableRow></TableBody> : null}
-          {!sourcesQuery.isPending && pagedSources.length > 0 ? <VirtualTableBody items={pagedSources} colSpan={5} rowHeight={48} renderRow={(source) => (
+        {!sourcesQuery.isError ? <Table viewportRows={10} rowHeight={48} className="min-w-[720px] table-fixed">
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-[22%]">{t("settings.egress.source")}</TableHead><TableHead className="w-[16%] text-center">{t("settings.egress.scope")}</TableHead><TableHead className="w-[13%] text-center">{t("settings.egress.subscriptionRoute")}</TableHead><TableHead className="w-[29%]">{t("settings.egress.lastSync")}</TableHead><TableHead className="w-[15%] text-center">{t("settings.egress.capacity")}</TableHead><TableActionHead /></TableRow></TableHeader>
+          {sourcesQuery.isPending ? <TableBody><TableLoadingRow colSpan={6} /></TableBody> : null}
+          {!sourcesQuery.isPending && pagedSources.length === 0 ? <TableBody><TableRow><TableCell colSpan={6} className="h-24 text-center text-xs text-muted-foreground">{hasActiveFilters ? t("settings.egress.noSubscriptionMatches") : t("settings.egress.noSources")}</TableCell></TableRow></TableBody> : null}
+          {!sourcesQuery.isPending && pagedSources.length > 0 ? <VirtualTableBody items={pagedSources} colSpan={6} rowHeight={48} renderRow={(source) => (
             <TableRow className="group h-12" key={source.id}>
               <TableCell><div className="flex min-w-0 items-center gap-2"><span className={source.enabled ? "size-1.5 shrink-0 rounded-full bg-emerald-500" : "size-1.5 shrink-0 rounded-full bg-muted-foreground/35"} /><span className="truncate text-xs font-medium">{source.name}</span>{source.lastSyncError ? <SourceError message={source.lastSyncError} /> : null}</div></TableCell>
               <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(source.scope)}</Badge></TableCell>
+              <TableCell className="text-center"><Badge variant={source.proxyConfigured ? "secondary" : "outline"} className="text-[10px]">{source.proxyConfigured ? t("settings.egress.subscriptionProxyShort") : t("settings.egress.direct")}</Badge></TableCell>
               <TableCell className="text-xs text-muted-foreground">{source.lastSyncedAt ? formatDateTime(source.lastSyncedAt, i18n.language) : t("settings.egress.never")}</TableCell>
               <TableCell className="text-center text-xs tabular-nums">{source.defaultAccountCapacity || t("settings.egress.unlimited")}</TableCell>
               <TableActionCell>
@@ -419,11 +367,13 @@ export function EgressSources({ scopeLabel }: { scopeLabel: (scope: EgressScope)
             <Control label={t("settings.egress.name")}><Input value={sourceForm.name} onChange={(event) => setSourceForm({ ...sourceForm, name: event.target.value })} /></Control>
             <Control label={t("settings.egress.scope")}><ScopeSelect value={sourceForm.scope} onChange={(scope) => setSourceForm({ ...sourceForm, scope })} scopeLabel={scopeLabel} /></Control>
             <Control label={t("settings.egress.subscriptionURL")}><Input type="password" autoComplete="new-password" placeholder={sourceEditing?.urlConfigured ? t("settings.egress.keepConfigured") : "https://..."} value={sourceForm.url} onChange={(event) => setSourceForm({ ...sourceForm, url: event.target.value })} /></Control>
+            <ToggleControl label={t("settings.egress.subscriptionProxy")} checked={sourceForm.proxyEnabled} onChange={(proxyEnabled) => setSourceForm({ ...sourceForm, proxyEnabled })} />
+            {sourceForm.proxyEnabled ? <Control label={t("settings.egress.subscriptionProxyURL")}><Input type="password" autoComplete="new-password" aria-invalid={sourceProxyInvalid} placeholder={sourceEditing?.proxyConfigured ? t("settings.egress.keepConfigured") : "http://proxy.example:8080"} value={sourceForm.proxyURL} onChange={(event) => setSourceForm({ ...sourceForm, proxyURL: event.target.value })} />{sourceProxyInvalid ? <p className="text-xs text-destructive">{t("settings.egress.invalidSubscriptionProxy")}</p> : null}</Control> : null}
             <div className="grid gap-3 sm:grid-cols-2">
               <Control label={t("settings.egress.refreshInterval")}><Input type="number" min={60} max={86400} value={sourceForm.refreshIntervalSeconds} onChange={(event) => setSourceForm({ ...sourceForm, refreshIntervalSeconds: Number(event.target.value) })} /></Control>
               <Control label={t("settings.egress.capacity")}><Input type="number" min={0} max={100000} placeholder={t("settings.egress.unlimited")} value={sourceForm.defaultAccountCapacity || ""} onChange={(event) => setSourceForm({ ...sourceForm, defaultAccountCapacity: Number(event.target.value) })} /></Control>
             </div>
-            <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setSourceEditing(undefined)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!sourceForm.name.trim() || (!sourceEditing && !sourceForm.url.trim()) || saveSource.isPending}>{saveSource.isPending ? <Spinner /> : null}{t("common.save")}</Button></DialogFooter>
+            <DialogFooter><Button type="button" size="sm" variant="secondary" onClick={() => setSourceEditing(undefined)}>{t("common.cancel")}</Button><Button type="submit" size="sm" disabled={!sourceForm.name.trim() || (!sourceEditing && !sourceForm.url.trim()) || (sourceForm.proxyEnabled && !sourceEditing?.proxyConfigured && !sourceForm.proxyURL.trim()) || sourceProxyInvalid || saveSource.isPending}>{saveSource.isPending ? <Spinner /> : null}{t("common.save")}</Button></DialogFooter>
           </form>
         </DialogContent>
       </Dialog>

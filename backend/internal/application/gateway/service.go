@@ -44,6 +44,7 @@ var (
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
 	ErrVideoInputTooLarge         = errors.New("视频参考图片编码后总输入超过 32 MiB")
 	ErrVideoInputUnavailable      = errors.New("视频临时输入不存在或已过期")
+	ErrVideoOperationUnsupported  = errors.New("视频编辑/延长仅支持路由到 Console grok-imagine-video")
 	ErrLedgerUnavailable          = errors.New("计费账本暂不可用")
 )
 
@@ -160,8 +161,8 @@ type routeResolver interface {
 type videoAssetStore interface {
 	SaveVideo(ctx context.Context, jobID, contentType string, body io.Reader) (mediadomain.Asset, error)
 	OpenVideo(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error)
-	OpenInputImage(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error)
-	ReleaseInputImages(ctx context.Context, references []string) error
+	OpenInputAsset(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error)
+	ReleaseInputAssets(ctx context.Context, references []string) error
 }
 
 type accountModelSyncer interface {
@@ -686,10 +687,19 @@ func routeTargetSeed(input Input) string {
 
 // selectMediaRoute selects a same-name route that satisfies media capability, key permissions, and Provider support.
 func (s *Service) selectMediaRoute(routes []modeldomain.Route, key clientkey.Key, capability modeldomain.Capability, providerSupported func(accountdomain.Provider) bool) (modeldomain.Route, error) {
+	eligible, fallback, err := s.eligibleMediaRoutes(routes, key, capability, providerSupported)
+	if err != nil {
+		return fallback, err
+	}
+	return eligible[0], nil
+}
+
+func (s *Service) eligibleMediaRoutes(routes []modeldomain.Route, key clientkey.Key, capability modeldomain.Capability, providerSupported func(accountdomain.Provider) bool) ([]modeldomain.Route, modeldomain.Route, error) {
 	if len(routes) == 0 {
-		return modeldomain.Route{}, ErrModelNotFound
+		return nil, modeldomain.Route{}, ErrModelNotFound
 	}
 	fallback := routes[0]
+	eligible := make([]modeldomain.Route, 0, len(routes))
 	accountScope := key.AccountScope()
 	capabilityMatched := false
 	scopeMatched := false
@@ -709,19 +719,68 @@ func (s *Service) selectMediaRoute(routes []modeldomain.Route, key clientkey.Key
 		}
 		allowed = true
 		if providerSupported(route.Provider) {
-			return route, nil
+			eligible = append(eligible, route)
 		}
 	}
+	if len(eligible) > 0 {
+		return eligible, fallback, nil
+	}
 	if !capabilityMatched {
-		return fallback, ErrModelNotFound
+		return nil, fallback, ErrModelNotFound
 	}
 	if !scopeMatched {
-		return fallback, &SelectionUnavailableError{Reason: SelectionNoAccounts, Scope: accountScope}
+		return nil, fallback, &SelectionUnavailableError{Reason: SelectionNoAccounts, Scope: accountScope}
 	}
 	if !allowed {
-		return fallback, clientkeyapp.ErrModelNotAllowed
+		return nil, fallback, clientkeyapp.ErrModelNotAllowed
 	}
-	return fallback, ErrNoAvailableAccount
+	return nil, fallback, ErrNoAvailableAccount
+}
+
+// selectSchedulableMediaRoute resolves a concrete same-name media target and
+// its immutable account plan together. A cooling or exhausted first target
+// therefore cannot hide a healthy target from another Provider.
+func (s *Service) selectSchedulableMediaRoute(ctx context.Context, routes []modeldomain.Route, key clientkey.Key, capability modeldomain.Capability, consumesQuota bool, providerSupported func(accountdomain.Provider) bool) (modeldomain.Route, *selectionSession, error) {
+	return s.selectSchedulableMediaRouteWithQuotaMode(ctx, routes, key, capability, consumesQuota, providerSupported, nil)
+}
+
+func (s *Service) selectSchedulableMediaRouteWithQuotaMode(ctx context.Context, routes []modeldomain.Route, key clientkey.Key, capability modeldomain.Capability, consumesQuota bool, providerSupported func(accountdomain.Provider) bool, resolveQuotaMode func(modeldomain.Route) string) (modeldomain.Route, *selectionSession, error) {
+	eligible, fallback, err := s.eligibleMediaRoutes(routes, key, capability, providerSupported)
+	if err != nil {
+		return fallback, nil, err
+	}
+	var firstSelectionErr error
+	for _, route := range eligible {
+		quotaMode := ""
+		if consumesQuota {
+			if resolveQuotaMode != nil {
+				quotaMode = resolveQuotaMode(route)
+			} else {
+				quotaMode = s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+			}
+		}
+		session, selectionErr := s.selector.beginSelectionSessionForKey(
+			ctx,
+			route.Provider,
+			route.ID,
+			route.UpstreamModel,
+			quotaMode,
+			"",
+			nil,
+			false,
+			key.AccountScope(),
+		)
+		if selectionErr == nil {
+			return route, session, nil
+		}
+		if firstSelectionErr == nil {
+			firstSelectionErr = selectionErr
+		}
+	}
+	if firstSelectionErr == nil {
+		firstSelectionErr = ErrNoAvailableAccount
+	}
+	return eligible[0], nil, firstSelectionErr
 }
 
 func (s *Service) createResponseAt(ctx context.Context, input Input, path string) (*Result, error) {
@@ -1294,7 +1353,7 @@ attemptLoop:
 				record.ReasoningTokens = usage.ReasoningTokens
 				record.TotalTokens = usage.TotalTokens
 				record.CostInUSDTicks = usage.CostInUSDTicks
-				imagePricing, imagePriced := audit.EstimateOfficialImageCost(pricingModel, "", response.QuotaUnits)
+				imagePricing, imagePriced := audit.EstimateOfficialImageCost(pricingModel, "", "", response.QuotaUnits)
 				if imagePriced {
 					record.MediaOutputImages = int64(max(0, response.QuotaUnits))
 				}

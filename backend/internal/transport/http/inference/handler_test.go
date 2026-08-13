@@ -344,6 +344,85 @@ func TestDirectUpstreamCredentialResponsesAreRewritten(t *testing.T) {
 	}
 }
 
+func TestMediaResultRejectsActiveContentAndRedirects(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	for _, tc := range []struct {
+		name        string
+		status      int
+		contentType string
+		headers     http.Header
+	}{
+		{name: "html", status: http.StatusOK, contentType: "text/html; charset=utf-8"},
+		{name: "svg", status: http.StatusOK, contentType: "image/svg+xml"},
+		{name: "redirect", status: http.StatusFound, contentType: "text/plain", headers: http.Header{"Location": {"javascript:alert(1)"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			finalCode := ""
+			header := make(http.Header)
+			for name, values := range tc.headers {
+				header[name] = append([]string(nil), values...)
+			}
+			header.Set("Content-Type", tc.contentType)
+			result := &gateway.Result{
+				StatusCode: tc.status,
+				Header:     header,
+				Body:       io.NopCloser(strings.NewReader(`<script id="must-not-reflect">alert(1)</script>`)),
+				Finalize: func(_ gateway.Usage, _, code string) {
+					finalCode = code
+				},
+			}
+			router := gin.New()
+			router.GET("/", func(c *gin.Context) { handler.writeMediaResult(c, result) })
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+			if recorder.Code != http.StatusBadGateway || strings.Contains(recorder.Body.String(), "must-not-reflect") || recorder.Header().Get("Location") != "" || finalCode == "" {
+				t.Fatalf("status=%d headers=%#v body=%s finalize=%q", recorder.Code, recorder.Header(), recorder.Body.String(), finalCode)
+			}
+		})
+	}
+}
+
+func TestMediaResultPinsSafeResponseHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	result := &gateway.Result{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":   {"audio/mpeg; attacker=ignored"},
+			"Content-Length": {"5"},
+			"Set-Cookie":     {"upstream=secret"},
+			"Location":       {"javascript:alert(1)"},
+			"X-Request-Id":   {"upstream-request"},
+		},
+		Body:     io.NopCloser(strings.NewReader("audio")),
+		Finalize: func(gateway.Usage, string, string) {},
+	}
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) { handler.writeMediaResult(c, result) })
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "audio" {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Content-Type") != "audio/mpeg" || recorder.Header().Get("X-Content-Type-Options") != "nosniff" || recorder.Header().Get("Content-Security-Policy") == "" {
+		t.Fatalf("safe headers = %#v", recorder.Header())
+	}
+	if recorder.Header().Get("Set-Cookie") != "" || recorder.Header().Get("Location") != "" || recorder.Header().Get("X-Request-Id") != "upstream-request" {
+		t.Fatalf("unsafe or missing forwarded headers = %#v", recorder.Header())
+	}
+}
+
+func TestVideoContentRejectsUnsafeContentType(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	writeVideoContent(context, strings.NewReader(`<script id="must-not-reflect">alert(1)</script>`), "text/html", -1)
+	if recorder.Code != http.StatusBadGateway || strings.Contains(recorder.Body.String(), "must-not-reflect") {
+		t.Fatalf("status=%d headers=%#v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+}
+
 func TestMessagesEndpointUsesAnthropicContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -428,6 +507,11 @@ func TestVideoGenerationResponseMatchesOfficialPollingShape(t *testing.T) {
 	if done["status"] != "done" || done["progress"] != 100 || !ok || video["url"] != "https://assets.grok.com/video.mp4" || video["duration"] != 8 || video["respect_moderation"] != true {
 		t.Fatalf("done response=%#v", done)
 	}
+	extended := videoGenerationResponse(mediadomain.Job{Operation: mediadomain.VideoOperationExtend, Status: mediadomain.StatusCompleted, Seconds: 6, UpstreamURL: "https://assets.grok.com/extended.mp4"})
+	extendedVideo, ok := extended["video"].(gin.H)
+	if !ok || extendedVideo["duration"] != nil {
+		t.Fatalf("extended response exposes requested extension as output duration: %#v", extended)
+	}
 	failed := videoGenerationResponse(mediadomain.Job{Status: mediadomain.StatusFailed, ErrorCode: "account_unavailable", ErrorMessage: "try later"})
 	errorValue, ok := failed["error"].(gin.H)
 	if failed["status"] != "failed" || !ok || errorValue["code"] != "service_unavailable" || failed["model"] != nil || failed["progress"] != nil {
@@ -447,6 +531,7 @@ func TestImageGenerationEndpointValidatesXAIContractBeforeRouting(t *testing.T) 
 	}{
 		{name: "zero n", body: `{"model":"grok-imagine-image","prompt":"test","n":0}`, want: "n 必须在 1 到 10 之间"},
 		{name: "large n", body: `{"model":"grok-imagine-image","prompt":"test","n":11}`, want: "n 必须在 1 到 10 之间"},
+		{name: "invalid quality", body: `{"model":"grok-imagine-image-2.0","prompt":"test","quality":"high"}`, want: "quality 必须是 low 或 medium"},
 		{name: "storage options", body: `{"model":"grok-imagine-image","prompt":"test","storage_options":{"filename":"test.jpg"}}`, want: "不支持 storage_options"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -503,6 +588,17 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	router.ServeHTTP(invalidResolutionRecorder, invalidResolution)
 	if invalidResolutionRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidResolutionRecorder.Body.String(), "resolution 必须是 1k 或 2k") {
 		t.Fatalf("invalid resolution status=%d body=%s", invalidResolutionRecorder.Code, invalidResolutionRecorder.Body.String())
+	}
+
+	invalidQuality := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
+		"model":"grok-imagine-image-2.0","prompt":"test","quality":"high",
+		"image":{"url":"https://example.com/input.png"}
+	}`))
+	invalidQuality.Header.Set("Content-Type", "application/json")
+	invalidQualityRecorder := httptest.NewRecorder()
+	router.ServeHTTP(invalidQualityRecorder, invalidQuality)
+	if invalidQualityRecorder.Code != http.StatusBadRequest || !strings.Contains(invalidQualityRecorder.Body.String(), "quality 必须是 low 或 medium") {
+		t.Fatalf("invalid quality status=%d body=%s", invalidQualityRecorder.Code, invalidQualityRecorder.Body.String())
 	}
 
 	validBatchCount := httptest.NewRequest(http.MethodPost, "/v1/images/edits", strings.NewReader(`{
@@ -982,24 +1078,29 @@ func TestCopyJSONForwardsBodyBeyondMetadataInspectionLimit(t *testing.T) {
 
 func TestCopyMediaRejectsUnknownLengthOverflowWithoutWritingPastLimit(t *testing.T) {
 	payload := bytes.Repeat([]byte("v"), 33)
-	var destination bytes.Buffer
-	err := copyMedia(&destination, bytes.NewReader(payload), 32)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	err := writeMediaBody(context, bytes.NewReader(payload), "video/mp4", http.StatusOK, 32)
 	if !errors.Is(err, errResponseTransferLimit) {
 		t.Fatalf("copy error = %v", err)
 	}
-	if destination.Len() != 32 {
-		t.Fatalf("forwarded media size = %d", destination.Len())
+	if recorder.Body.Len() != 32 {
+		t.Fatalf("forwarded media size = %d", recorder.Body.Len())
 	}
 }
 
 func TestCopyMediaAllowsExactLimit(t *testing.T) {
 	payload := bytes.Repeat([]byte("v"), 32)
-	var destination bytes.Buffer
-	if err := copyMedia(&destination, bytes.NewReader(payload), 32); err != nil {
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	if err := writeMediaBody(context, bytes.NewReader(payload), "video/mp4", http.StatusOK, 32); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(destination.Bytes(), payload) {
-		t.Fatalf("forwarded media = %q", destination.Bytes())
+	if !bytes.Equal(recorder.Body.Bytes(), payload) {
+		t.Fatalf("forwarded media = %q", recorder.Body.Bytes())
+	}
+	if recorder.Header().Get("Content-Type") != "video/mp4" {
+		t.Fatalf("content type = %q", recorder.Header().Get("Content-Type"))
 	}
 }
 
@@ -1025,5 +1126,93 @@ func TestSelectionErrorResponseDistinguishesCoolingAndSaturation(t *testing.T) {
 				t.Fatalf("status=%d code=%q retry-after=%q", status, code, recorder.Header().Get("Retry-After"))
 			}
 		})
+	}
+}
+
+func TestReferenceToVideoRequestValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := &Handler{maxBodyBytes: 1 << 20}
+	router := gin.New()
+	handler.Register(router.Group("/v1"))
+
+	combined := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x",
+		"image":{"url":"https://example.com/a.png"},
+		"reference_images":[{"url":"https://example.com/b.png"}]
+	}`))
+	combined.Header.Set("Content-Type", "application/json")
+	combinedRec := httptest.NewRecorder()
+	router.ServeHTTP(combinedRec, combined)
+	if combinedRec.Code != http.StatusBadRequest || !strings.Contains(combinedRec.Body.String(), "不能与") {
+		t.Fatalf("combined image+refs status=%d body=%s", combinedRec.Code, combinedRec.Body.String())
+	}
+
+	highRes := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x","resolution":"1080p",
+		"reference_images":[{"url":"https://example.com/b.png"}]
+	}`))
+	highRes.Header.Set("Content-Type", "application/json")
+	highResRec := httptest.NewRecorder()
+	router.ServeHTTP(highResRec, highRes)
+	if highResRec.Code != http.StatusBadRequest || !strings.Contains(highResRec.Body.String(), "720p") {
+		t.Fatalf("r2v 1080p status=%d body=%s", highResRec.Code, highResRec.Body.String())
+	}
+
+	tooManyAudio := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"x","duration":8,"resolution":"720p",
+		"reference_audios":[{"voice_id":"eve"},{"voice_id":"ara"},{"voice_id":"rex"},{"voice_id":"sal"}]
+	}`))
+	tooManyAudio.Header.Set("Content-Type", "application/json")
+	tooManyAudioRec := httptest.NewRecorder()
+	router.ServeHTTP(tooManyAudioRec, tooManyAudio)
+	if tooManyAudioRec.Code != http.StatusBadRequest || !strings.Contains(tooManyAudioRec.Body.String(), "最多 3") {
+		t.Fatalf("too many audios status=%d body=%s", tooManyAudioRec.Code, tooManyAudioRec.Body.String())
+	}
+
+	valid := httptest.NewRequest(http.MethodPost, "/v1/videos/generations", strings.NewReader(`{
+		"model":"grok-imagine-video","prompt":"The person speaks","duration":8,
+		"aspect_ratio":"9:16","resolution":"720p",
+		"reference_images":[{"url":"https://example.com/p.png"}],
+		"reference_audios":[{"voice_id":"eve"}]
+	}`))
+	valid.Header.Set("Content-Type", "application/json")
+	validRec := httptest.NewRecorder()
+	router.ServeHTTP(validRec, valid)
+	if validRec.Code != http.StatusUnauthorized {
+		t.Fatalf("valid r2v status=%d body=%s", validRec.Code, validRec.Body.String())
+	}
+}
+func TestEditAndExtendVideoRequestValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := &Handler{maxBodyBytes: 1 << 20}
+	router := gin.New()
+	group := router.Group("/v1")
+	handler.Register(group)
+
+	// Model compatibility is resolved from the selected upstream route, not the
+	// caller-controlled public model name.
+	rec := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(rec)
+	writeGatewayError(context, gateway.ErrVideoOperationUnsupported)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported video route status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	// missing video on extend
+	req := httptest.NewRequest(http.MethodPost, "/v1/videos/extensions", strings.NewReader(`{"model":"grok-imagine-video","prompt":"x","duration":4}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("extend missing video status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	// invalid extend duration
+	req = httptest.NewRequest(http.MethodPost, "/v1/videos/extensions", strings.NewReader(`{"model":"grok-imagine-video","prompt":"x","duration":15,"video":{"url":"https://example.com/a.mp4"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("extend bad duration status = %d body = %s", rec.Code, rec.Body.String())
 	}
 }

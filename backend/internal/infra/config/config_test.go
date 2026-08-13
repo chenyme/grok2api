@@ -501,6 +501,17 @@ func TestValidateStatsigModes(t *testing.T) {
 	}
 }
 
+func TestValidateOnDemandClearance(t *testing.T) {
+	base := defaultConfig()
+	base.Secrets.JWTSecret = "12345678901234567890123456789012"
+	base.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	base.Provider.Web.ClearanceMode = ClearanceModeOnDemand
+	base.Provider.Web.FlareSolverrURL = "http://flaresolverr:8191"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid on-demand Clearance rejected: %v", err)
+	}
+}
+
 func TestValidateFlareSolverrClearance(t *testing.T) {
 	base := defaultConfig()
 	base.Secrets.JWTSecret = "12345678901234567890123456789012"

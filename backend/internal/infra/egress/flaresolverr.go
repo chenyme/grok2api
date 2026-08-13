@@ -14,12 +14,14 @@ import (
 	"time"
 
 	application "github.com/chenyme/grok2api/backend/internal/application/egress"
+	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 )
 
 const maxFlareSolverrResponseBytes = 2 << 20
 
 var (
 	proxyCredentialPattern  = regexp.MustCompile(`(?i)\b(https?|socks4a?|socks5h?)://[^\s/@:]+:[^\s/@]+@`)
+	tunnelCredentialPattern = regexp.MustCompile(`(?i)\b(?:trojan|vless)://[^\s/@]+@|\b(?:ss|vmess)://[^\s,;]+`)
 	bearerCredentialPattern = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
 	namedCredentialPattern  = regexp.MustCompile(`(?i)\b(token|password|passwd|authorization|cookie)\s*[:=]\s*[^\s,;]+`)
 )
@@ -44,6 +46,9 @@ type clearanceSolver interface {
 type flaresolverrSolver struct{}
 
 func (flaresolverrSolver) Solve(ctx context.Context, cfg ClearanceConfig, proxyURL string) (clearanceSolution, error) {
+	if parsedProxy, parseErr := url.Parse(proxyURL); parseErr == nil && tunnelproxy.IsSupportedScheme(parsedProxy.Scheme) {
+		return clearanceSolution{}, errors.New("FlareSolverr 暂不支持 Trojan、VLESS、SS 或 VMess 隧道代理")
+	}
 	endpoint, err := flaresolverrEndpoint(cfg.FlareSolverrURL)
 	if err != nil {
 		return clearanceSolution{}, err
@@ -139,6 +144,7 @@ func sanitizeFlareSolverrMessage(value string) string {
 		}
 		return candidate[:separator+3] + "***:***@"
 	})
+	value = tunnelCredentialPattern.ReplaceAllString(value, "[redacted tunnel proxy]")
 	value = bearerCredentialPattern.ReplaceAllString(value, "Bearer [redacted]")
 	value = namedCredentialPattern.ReplaceAllString(value, "$1=[redacted]")
 	characters := []rune(value)
