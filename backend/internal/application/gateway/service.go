@@ -741,6 +741,10 @@ func (s *Service) eligibleMediaRoutes(routes []modeldomain.Route, key clientkey.
 // its immutable account plan together. A cooling or exhausted first target
 // therefore cannot hide a healthy target from another Provider.
 func (s *Service) selectSchedulableMediaRoute(ctx context.Context, routes []modeldomain.Route, key clientkey.Key, capability modeldomain.Capability, consumesQuota bool, providerSupported func(accountdomain.Provider) bool) (modeldomain.Route, *selectionSession, error) {
+	return s.selectSchedulableMediaRouteWithQuotaMode(ctx, routes, key, capability, consumesQuota, providerSupported, nil)
+}
+
+func (s *Service) selectSchedulableMediaRouteWithQuotaMode(ctx context.Context, routes []modeldomain.Route, key clientkey.Key, capability modeldomain.Capability, consumesQuota bool, providerSupported func(accountdomain.Provider) bool, resolveQuotaMode func(modeldomain.Route) string) (modeldomain.Route, *selectionSession, error) {
 	eligible, fallback, err := s.eligibleMediaRoutes(routes, key, capability, providerSupported)
 	if err != nil {
 		return fallback, nil, err
@@ -749,7 +753,11 @@ func (s *Service) selectSchedulableMediaRoute(ctx context.Context, routes []mode
 	for _, route := range eligible {
 		quotaMode := ""
 		if consumesQuota {
-			quotaMode = s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+			if resolveQuotaMode != nil {
+				quotaMode = resolveQuotaMode(route)
+			} else {
+				quotaMode = s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+			}
 		}
 		session, selectionErr := s.selector.beginSelectionSessionForKey(
 			ctx,

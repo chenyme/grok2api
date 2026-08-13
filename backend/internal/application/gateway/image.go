@@ -176,6 +176,7 @@ func (s *Service) executeImage(
 		}
 	}()
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
+	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
 	attemptPolicy := newRoutingAttemptPolicy(int(s.maxAttempts.Load()))
 	excluded := make(map[uint64]bool)
 	selection := preselectedSession
@@ -305,22 +306,28 @@ func (s *Service) executeImage(
 				}
 			}
 			quotaKind, _ := s.providers.QuotaKind(route.Provider)
-			if successful && quotaKind == provider.QuotaRemoteWindow && effectiveQuotaMode != "" {
-				if effectiveQuotaMode != "weekly" {
+			refreshMode := effectiveQuotaMode
+			decrementMode := effectiveQuotaMode
+			if quotaRefreshGroup != "" {
+				refreshMode = quotaRefreshGroup
+				decrementMode = quotaMode
+			}
+			if successful && quotaKind == provider.QuotaRemoteWindow && refreshMode != "" {
+				if decrementMode != "" && decrementMode != "weekly" {
 					units := max(1, response.QuotaUnits)
 					var updated bool
 					err := budget.run("quota_decrement", finalizationQuotaBudget, func(stageCtx context.Context) error {
 						var decrementErr error
-						updated, decrementErr = s.accounts.DecrementWebQuota(stageCtx, accountID, effectiveQuotaMode, units)
+						updated, decrementErr = s.accounts.DecrementWebQuota(stageCtx, accountID, decrementMode, units)
 						return decrementErr
 					})
 					if err != nil {
-						s.logger.Warn("web_quota_decrement_failed", "account_id", accountID, "mode", effectiveQuotaMode, "units", units, "error", err)
+						s.logger.Warn("web_quota_decrement_failed", "account_id", accountID, "mode", decrementMode, "units", units, "error", err)
 					} else if updated {
-						s.selector.ConsumeQuota(route.Provider, accountID, effectiveQuotaMode, units)
+						s.selector.ConsumeQuota(route.Provider, accountID, decrementMode, units)
 					}
 				}
-				s.accounts.QueueQuotaRefresh(accountID, effectiveQuotaMode)
+				s.accounts.QueueQuotaRefresh(accountID, refreshMode)
 			}
 			if err := budget.run("audit", finalizationAuditBudget, func(stageCtx context.Context) error {
 				return s.audits.Create(stageCtx, record)

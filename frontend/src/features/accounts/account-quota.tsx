@@ -103,6 +103,18 @@ function BuildQuota({ quota, billing, locale }: { quota: QuotaDTO; billing?: Bil
 
 const visibleWebQuotaModes = ["auto", "fast", "expert", "heavy"] as const;
 
+const imagineQuotaModes = [
+  { mode: "image_pro", labelKey: "imagineModeImagePro" as const },
+  { mode: "image_edit", labelKey: "imagineModeImageEdit" as const },
+  { mode: "video", labelKey: "imagineModeVideo" as const },
+  { mode: "video_720p", labelKey: "imagineModeVideo720p" as const },
+] as const;
+
+function imagineWindowsOf(windows: WebQuotaWindow[]): WebQuotaWindow[] {
+  const known: Set<string> = new Set(imagineQuotaModes.map((item) => item.mode));
+  return windows.filter((window) => known.has(window.mode));
+}
+
 export function ConsoleQuota({ windows, locale }: { windows: NonNullable<AccountDTO["quotaWindows"]>; locale: string }) {
   const { t } = useTranslation();
   if (windows.length === 0) return <span className="text-xs text-muted-foreground">{t("accounts.quotaNotSynced")}</span>;
@@ -129,25 +141,84 @@ export function WebQuota({ windows, locale, tier }: { windows: NonNullable<Accou
   const { t } = useTranslation();
   if (windows.length === 0) return <span className="text-xs text-muted-foreground">{t("accounts.quotaNotSynced")}</span>;
   const windowsByMode = new Map(windows.map((window) => [window.mode, window]));
+  const imagineWindows = imagineWindowsOf(windows);
   const weekly = windowsByMode.get("weekly");
-  if (weekly) return <WeeklyWebQuota window={weekly} locale={locale} t={t} />;
 
-  const fast = windowsByMode.get("fast");
-  if (tier === "basic" && fast) return <WebQuotaMode mode="Fast" window={fast} locale={locale} />;
+  const mainBlock = (() => {
+    if (weekly) return <WeeklyWebQuota window={weekly} locale={locale} t={t} />;
+    const fast = windowsByMode.get("fast");
+    if (tier === "basic" && fast) return <WebQuotaMode mode="Fast" window={fast} locale={locale} />;
+    return (
+      <div className="grid w-full min-w-0 grid-cols-4 divide-x divide-border/70">
+        {visibleWebQuotaModes.map((mode) => {
+          const window = windowsByMode.get(mode);
+          if (!window) {
+            return <div key={mode} className="min-w-0 px-2 first:pl-0 last:pr-0"><div className="flex items-center justify-between gap-1 text-[11px]"><span className="truncate capitalize text-muted-foreground">{mode}</span><span className="text-muted-foreground">-</span></div><div className="mt-1.5 h-1.5 rounded-full bg-muted" /></div>;
+          }
+          return <WebQuotaMode key={mode} mode={formatWebQuotaMode(mode)} window={window} locale={locale} compact />;
+        })}
+      </div>
+    );
+  })();
+
+  if (imagineWindows.length === 0) return mainBlock;
   return (
-    <div className="grid w-full min-w-0 grid-cols-4 divide-x divide-border/70">
-      {visibleWebQuotaModes.map((mode) => {
-        const window = windowsByMode.get(mode);
-        if (!window) {
-          return <div key={mode} className="min-w-0 px-2 first:pl-0 last:pr-0"><div className="flex items-center justify-between gap-1 text-[11px]"><span className="truncate capitalize text-muted-foreground">{mode}</span><span className="text-muted-foreground">-</span></div><div className="mt-1.5 h-1.5 rounded-full bg-muted" /></div>;
-        }
-        return <WebQuotaMode key={mode} mode={formatWebQuotaMode(mode)} window={window} locale={locale} compact />;
-      })}
+    <div className="w-full min-w-0 space-y-1.5">
+      {mainBlock}
+      <ImagineQuotaRow windows={imagineWindows} locale={locale} t={t} />
     </div>
   );
 }
 
 type WebQuotaWindow = NonNullable<AccountDTO["quotaWindows"]>[number];
+
+function imagineModeLabel(mode: string, t: TFunction): string {
+  const entry = imagineQuotaModes.find((item) => item.mode === mode);
+  return entry ? t(`accounts.${entry.labelKey}`) : mode;
+}
+
+function ImagineQuotaRow({ windows, locale, t }: { windows: WebQuotaWindow[]; locale: string; t: TFunction }) {
+  const windowsByMode = new Map(windows.map((window) => [window.mode, window]));
+  const columns = imagineQuotaModes.filter((item) => windowsByMode.has(item.mode));
+  if (columns.length === 0) return null;
+  return (
+    <div className="grid w-full min-w-0 divide-x divide-border/70" style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}>
+      {columns.map(({ mode }) => {
+        const window = windowsByMode.get(mode)!;
+        const exhausted = window.remaining <= 0;
+        const hasTotal = window.total > 0;
+        const used = hasTotal ? Math.max(0, window.total - window.remaining) : 0;
+        const percent = hasTotal ? Math.max(0, Math.min(100, used / window.total * 100)) : 0;
+        const label = imagineModeLabel(mode, t);
+        return (
+          <Tooltip key={mode}>
+            <TooltipTrigger asChild>
+              <button type="button" className="block w-full min-w-0 px-2 text-left first:pl-0 last:pr-0">
+                <div className="flex items-center justify-between gap-1 text-[11px]">
+                  <span className={cn("truncate", exhausted ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>{label}</span>
+                  {exhausted ? (
+                    <span className="shrink-0 truncate text-amber-600 dark:text-amber-400">{t("accounts.imagineQuotaExhausted")}</span>
+                  ) : hasTotal ? (
+                    <span className="shrink-0 tabular-nums text-muted-foreground">{formatNumber(window.remaining, locale, 0)}/{formatNumber(window.total, locale, 0)}</span>
+                  ) : (
+                    <span className="shrink-0 tabular-nums text-muted-foreground">{t("accounts.imagineQuotaRemaining", { remaining: formatNumber(window.remaining, locale, 0) })}</span>
+                  )}
+                </div>
+                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                  {exhausted ? <div className="h-full w-full bg-amber-500" /> : hasTotal ? <div className="h-full bg-primary" style={{ width: `${percent}%` }} /> : null}
+                </div>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              <div>{exhausted ? t("accounts.imagineQuotaExhausted") : t("accounts.imagineQuotaRemaining", { remaining: formatNumber(window.remaining, locale, 0) })}</div>
+              <div className="text-muted-foreground">{window.resetAt ? t("accounts.quotaResetAt", { time: formatDateTime(window.resetAt, locale) }) : t("accounts.quotaResetUnknown")}</div>
+            </TooltipContent>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
 
 function WeeklyWebQuota({ window, locale, t }: { window: WebQuotaWindow; locale: string; t: TFunction }) {
   const usedPercent = Math.max(0, Math.min(100, window.usagePercent));
