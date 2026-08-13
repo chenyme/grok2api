@@ -657,6 +657,56 @@ func TestLiteChatRejectsInvalidImageConfigBeforeUpstream(t *testing.T) {
 	}
 }
 
+func TestLiteChatStreamFailsBeforeReturningSuccessResponse(t *testing.T) {
+	server := fhttptest.NewServer(fhttp.HandlerFunc(func(writer fhttp.ResponseWriter, request *fhttp.Request) {
+		if request.URL.Path != "/ws/mgw/" {
+			fhttp.NotFound(writer, request)
+			return
+		}
+		connection, err := (&websocket.Upgrader{CheckOrigin: func(*fhttp.Request) bool { return true }}).Upgrade(writer, request, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer connection.Close()
+		var initial map[string]any
+		if err := connection.ReadJSON(&initial); err != nil {
+			t.Errorf("read session.create: %v", err)
+			return
+		}
+		initialID := initial["event"].(map[string]any)["event_id"].(string)
+		_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "session.created", "client_event_id": initialID}})
+		_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "conv_1"}}})
+		for range 2 {
+			var event map[string]any
+			if err := connection.ReadJSON(&event); err != nil {
+				t.Errorf("read turn event: %v", err)
+				return
+			}
+		}
+		_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.done", "response": map[string]any{"id": "parent_1", "status": "completed"}}})
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual"}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, imageAssetStoreStub{})
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, UserID: "497f19f8-49d4-458a-bee4-43ec3dcaf8ca", EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/v1/chat/completions", Model: "grok-imagine-image", Operation: conversation.OperationChat,
+		Body: []byte(`{"model":"grok-imagine-image-lite","stream":true,"messages":[{"role":"user","content":"draw a cat"}]}`), Streaming: true,
+	})
+	if err == nil || response != nil || !strings.Contains(err.Error(), "未解析到最终图片") {
+		t.Fatalf("response=%#v error=%v", response, err)
+	}
+}
+
 func TestParseLiteImageCardAttachment(t *testing.T) {
 	parsed := &parsedChat{}
 	frame := map[string]any{"result": map[string]any{"response": map[string]any{

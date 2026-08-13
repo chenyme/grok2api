@@ -494,13 +494,6 @@ func (a *Adapter) forwardImageChatCompletion(ctx context.Context, request provid
 		return a.forwardQualityImageChatCompletion(ctx, request, input, normalized, count, format)
 	}
 	responseID := newWebID("resp")
-	streaming := input.Stream || request.Streaming
-	if streaming {
-		reader, writer := io.Pipe()
-		streamCtx, cancel := context.WithCancel(ctx)
-		go a.streamLiteChatImages(streamCtx, writer, request.Credential, spec, responseID, input.Model, request.Operation, normalized.Prompt, count, format)
-		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: &cancelBody{ReadCloser: reader, cancel: cancel}, QuotaUnits: count}, nil
-	}
 	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(normalized.Prompt)}
 	for range count {
 		rawURL, err := a.generateLiteImageURL(ctx, request.Credential, spec, normalized.Prompt)
@@ -521,40 +514,20 @@ func (a *Adapter) forwardImageChatCompletion(ctx context.Context, request provid
 		parsed.appendText(liteImageMarkdown(item))
 	}
 	payload := buildOpenAIResult(request.Operation, responseID, input.Model, parsed, false)
+	if input.Stream || request.Streaming {
+		var stream bytes.Buffer
+		writeStreamStart(&stream, request.Operation, responseID, input.Model, parsed.InputTokens)
+		if err := writeStreamDelta(&stream, request.Operation, responseID, input.Model, "text", parsed.Text.String()); err != nil {
+			return nil, err
+		}
+		writeStreamDone(&stream, request.Operation, responseID, input.Model, parsed, payload)
+		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: io.NopCloser(bytes.NewReader(stream.Bytes())), QuotaUnits: count}, nil
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(data)), QuotaUnits: count}, nil
-}
-
-func (a *Adapter) streamLiteChatImages(ctx context.Context, writer *io.PipeWriter, credential account.Credential, spec ModelSpec, responseID, model, operation, prompt string, count int, format string) {
-	parsed := parsedChat{ResponseID: responseID, InputTokens: estimateTokens(prompt)}
-	writeStreamStart(writer, operation, responseID, model, parsed.InputTokens)
-	for range count {
-		rawURL, err := a.generateLiteImageURL(ctx, credential, spec, prompt)
-		if err != nil {
-			_ = writer.CloseWithError(err)
-			return
-		}
-		item, err := a.imageDataItem(ctx, credential, imagineImageValue{URL: rawURL}, format)
-		if err != nil {
-			_ = writer.CloseWithError(err)
-			return
-		}
-		delta := liteImageMarkdown(item)
-		if parsed.Text.Len() > 0 {
-			delta = "\n\n" + delta
-		}
-		parsed.appendText(delta)
-		if err := writeStreamDelta(writer, operation, responseID, model, "text", delta); err != nil {
-			_ = writer.CloseWithError(err)
-			return
-		}
-	}
-	payload := buildOpenAIResult(operation, responseID, model, parsed, false)
-	writeStreamDone(writer, operation, responseID, model, parsed, payload)
-	_ = writer.Close()
 }
 
 func (a *Adapter) forwardQualityImageChatCompletion(ctx context.Context, request provider.ResponseResourceRequest, input openAIRequest, normalized normalizedChatInput, count int, format string) (*provider.Response, error) {
