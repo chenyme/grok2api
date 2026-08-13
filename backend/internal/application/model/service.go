@@ -153,9 +153,15 @@ func endpointCapabilitiesForDefinition(routes []modeldomain.Route, definition pr
 			available["image_edit"] = definition.Media.ImageEdit
 		case modeldomain.CapabilityVideo:
 			available["video"] = definition.Media.VideoGeneration
+		case modeldomain.CapabilityTTS:
+			available["tts"] = definition.Media.TTS
+		case modeldomain.CapabilitySTT:
+			available["stt"] = definition.Media.STT
+		case modeldomain.CapabilityRealtime:
+			available["realtime"] = definition.Media.Realtime
 		}
 	}
-	order := []string{"completions", "responses", "messages", "image", "image_edit", "video"}
+	order := []string{"completions", "responses", "messages", "image", "image_edit", "video", "tts", "stt", "realtime"}
 	result := make([]string, 0, len(order))
 	for _, capability := range order {
 		if available[capability] {

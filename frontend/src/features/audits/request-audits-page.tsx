@@ -407,7 +407,7 @@ function EgressValue({ audit }: { audit: AuditDTO }) {
 function BillingValue({ audit }: { audit: AuditDTO }) {
   const { t, i18n } = useTranslation();
   const billing = audit.billing ?? fallbackBillingBreakdown(audit);
-  const amount = billing ? formatUSDCost(billing.totalInUsdTicks, 2) : "-";
+  const amount = billing ? formatUSDCost(billing.totalInUsdTicks, 2) : t("audits.unbilled");
   return (
     <div className="max-w-full text-left">
       {billing ? (
@@ -417,7 +417,7 @@ function BillingValue({ audit }: { audit: AuditDTO }) {
             <BillingBreakdown billing={billing} locale={i18n.language} />
           </TooltipContent>
         </Tooltip>
-      ) : <span className="block text-xs text-muted-foreground">-</span>}
+      ) : <span className="block whitespace-nowrap text-xs text-muted-foreground">{amount}</span>}
       {audit.numServerSideToolsUsed > 0 ? (
         <span className="mt-0.5 block whitespace-nowrap text-[10px] text-muted-foreground">
           {t("audits.serverTools", { count: audit.numServerSideToolsUsed })}
@@ -583,6 +583,16 @@ function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
   }
   if (audit.operation === "video") {
     return <MediaUsage input={t("audits.imageCount", { count: audit.mediaInputImages })} output={t("audits.secondsCount", { count: audit.mediaOutputSeconds })} />;
+  }
+  if (audit.operation === "tts" || audit.operation === "stt" || audit.operation === "realtime" || audit.operation === "voice") {
+    return (
+      <div className="flex h-[52px] w-full items-center gap-2 rounded-md bg-muted/45 px-2.5 text-[11px]">
+        <div className="min-w-0">
+          <p className="truncate font-medium">{t(`audits.operations.${audit.operation}`)}</p>
+          <p className="truncate text-muted-foreground">{(audit.durationMs / 1000).toFixed(2)}s</p>
+        </div>
+      </div>
+    );
   }
   if (audit.operation === "image" || audit.operation === "image_edit" || audit.mediaInputImages > 0 || audit.mediaOutputImages > 0) {
     return <MediaUsage input={t("audits.imageCount", { count: audit.mediaInputImages })} output={t("audits.imageCount", { count: audit.mediaOutputImages })} />;

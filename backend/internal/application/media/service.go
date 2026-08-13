@@ -28,12 +28,12 @@ var (
 	ErrActiveVideoSelection  = errors.New("排队中或生成中的视频任务不能删除")
 	ErrInvalidFilter         = errors.New("媒体筛选条件无效")
 	ErrMediaJobsUnavailable  = errors.New("视频任务仓储未配置")
-	ErrInputImageNotFound    = errors.New("临时输入图片不存在或已过期")
+	ErrInputAssetNotFound    = errors.New("临时输入资产不存在或已过期")
 	ErrMediaCapacity         = errors.New("媒体存储容量不足")
 )
 
-// InputImageTTL 是临时输入的硬保留上限；无论任务状态如何，超过后都可回收。
-const InputImageTTL = 24 * time.Hour
+// InputAssetTTL 是临时输入的硬保留上限；无论任务状态如何，超过后都可回收。
+const InputAssetTTL = 24 * time.Hour
 
 // Service 负责图片/视频校验、文件落盘和元数据持久化的一致性收口。
 type Service struct {
@@ -112,7 +112,8 @@ func (s *Service) SaveImage(ctx context.Context, data []byte) (mediadomain.Asset
 // SaveInputImage 保存不会进入图库、不会公开读取并会自动过期的视频输入图片。
 func (s *Service) SaveInputImage(ctx context.Context, data []byte) (mediadomain.Asset, error) {
 	cfg := s.runtimeConfig()
-	if len(data) == 0 || int64(len(data)) > cfg.MaxImageBytes {
+	inputLimit := min(cfg.MaxImageBytes, int64(mediadomain.MaxInputAssetBytes))
+	if len(data) == 0 || inputLimit <= 0 || int64(len(data)) > inputLimit {
 		return mediadomain.Asset{}, ErrInvalidImage
 	}
 	s.inputSaveMu.Lock()
@@ -132,7 +133,7 @@ func (s *Service) SaveInputImage(ctx context.Context, data []byte) (mediadomain.
 		}
 		return mediadomain.Asset{}, ErrMediaCapacity
 	}
-	expiresAt := time.Now().UTC().Add(InputImageTTL)
+	expiresAt := time.Now().UTC().Add(InputAssetTTL)
 	return s.saveImage(ctx, data, &expiresAt, mediadomain.InputAssetIDPrefix)
 }
 
@@ -172,28 +173,28 @@ func (s *Service) saveImage(ctx context.Context, data []byte, expiresAt *time.Ti
 	return asset, nil
 }
 
-// OpenInputImage 读取未过期的临时输入；它从不通过公开图片路由暴露。
-func (s *Service) OpenInputImage(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error) {
+// OpenInputAsset 读取未过期的临时输入；它从不通过公开媒体路由暴露。
+func (s *Service) OpenInputAsset(ctx context.Context, id string) (mediadomain.Asset, io.ReadCloser, error) {
 	id = strings.TrimSpace(id)
 	if !mediadomain.IsInputAssetID(id) {
-		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+		return mediadomain.Asset{}, nil, ErrInputAssetNotFound
 	}
 	asset, err := s.assets.GetMediaAsset(ctx, id)
 	if errors.Is(err, repository.ErrNotFound) {
-		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+		return mediadomain.Asset{}, nil, ErrInputAssetNotFound
 	}
 	if err != nil {
 		return mediadomain.Asset{}, nil, err
 	}
-	if asset.Kind != "image" || asset.ExpiresAt == nil {
-		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+	if (asset.Kind != "image" && asset.Kind != "video") || asset.ExpiresAt == nil {
+		return mediadomain.Asset{}, nil, ErrInputAssetNotFound
 	}
 	if !asset.ExpiresAt.After(time.Now().UTC()) {
-		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+		return mediadomain.Asset{}, nil, ErrInputAssetNotFound
 	}
 	body, err := s.objects.Open(ctx, asset.StorageKey)
 	if errors.Is(err, os.ErrNotExist) {
-		return mediadomain.Asset{}, nil, ErrInputImageNotFound
+		return mediadomain.Asset{}, nil, ErrInputAssetNotFound
 	}
 	if err != nil {
 		return mediadomain.Asset{}, nil, err
@@ -201,8 +202,8 @@ func (s *Service) OpenInputImage(ctx context.Context, id string) (mediadomain.As
 	return asset, body, nil
 }
 
-// ReleaseInputImages 在任务进入终态后立即回收不再被其他活动任务引用的临时输入。
-func (s *Service) ReleaseInputImages(ctx context.Context, references []string) error {
+// ReleaseInputAssets 在任务进入终态后立即回收不再被其他活动任务引用的临时输入。
+func (s *Service) ReleaseInputAssets(ctx context.Context, references []string) error {
 	seen := make(map[string]struct{}, len(references))
 	for _, reference := range references {
 		id, ok := mediadomain.ParseInputReference(reference)
@@ -227,7 +228,7 @@ func (s *Service) ReleaseInputImages(ctx context.Context, references []string) e
 		if getErr != nil {
 			return getErr
 		}
-		if asset.ExpiresAt == nil || asset.Kind != "image" {
+		if asset.ExpiresAt == nil || (asset.Kind != "image" && asset.Kind != "video") {
 			continue
 		}
 		if deleteErr := s.objects.Delete(ctx, asset.StorageKey); deleteErr != nil && !errors.Is(deleteErr, os.ErrNotExist) {

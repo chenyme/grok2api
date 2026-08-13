@@ -3,7 +3,7 @@ export type ModelRouteDTO = {
   publicId: string;
   provider: "grok_build" | "grok_web" | "grok_console";
   upstreamModel: string;
-  capability: "responses" | "chat" | "image" | "image_edit" | "video";
+  capability: "responses" | "chat" | "image" | "image_edit" | "video" | "tts" | "stt" | "realtime";
   origin: "catalog" | "discovered" | "manual";
   enabled: boolean;
   accountIds: string[];
@@ -16,7 +16,7 @@ export type ModelRouteDTO = {
   lastSyncedAt?: string;
 };
 
-export type ModelEndpointCapability = "completions" | "responses" | "messages" | "image" | "image_edit" | "video";
+export type ModelEndpointCapability = "completions" | "responses" | "messages" | "image" | "image_edit" | "video" | "tts" | "stt" | "realtime";
 
 export type ModelRouteGroupDTO = {
   key: string;

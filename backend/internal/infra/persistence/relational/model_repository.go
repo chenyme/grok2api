@@ -747,13 +747,17 @@ func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (s
 		return upstreamModel, model.CapabilityResponses
 	case account.ProviderConsole:
 		switch upstreamModel {
-		case "grok-imagine-image", "grok-imagine-image-quality":
+		case "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-2.0":
 			// The catalog also registers image_edit for the same public model.
 			// Discovery only needs one existing managed capability to remain
 			// idempotent and must never synthesize a Responses route.
 			return upstreamModel, model.CapabilityImage
-		case "grok-imagine-video":
+		case "grok-imagine-video", "grok-imagine-video-1.5":
 			return upstreamModel, model.CapabilityVideo
+		case "grok-voice-latest", "grok-voice-think-fast-2.0", "grok-voice-think-fast-1.0":
+			return upstreamModel, model.CapabilityRealtime
+		case "grok-stt":
+			return upstreamModel, model.CapabilitySTT
 		default:
 			return upstreamModel, model.CapabilityResponses
 		}
@@ -879,6 +883,40 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 				continue
 			}
 			if err := tx.Delete(&modelRouteModel{}, row.ID).Error; err != nil {
+				return err
+			}
+		}
+		// A catalog name may have multiple capability rows. When a previous
+		// catalog rename preserved that name as an alias to one member, restoring
+		// it must promote the alias back to the formal group name before every
+		// matched capability row is validated. Aliases owned by another group
+		// remain conflicts and are never reclaimed.
+		matchedIDsByPublicID := make(map[string]map[uint64]struct{}, len(values))
+		for index, value := range values {
+			row, ok := matched[index]
+			if !ok {
+				continue
+			}
+			ids := matchedIDsByPublicID[value.PublicID]
+			if ids == nil {
+				ids = make(map[uint64]struct{})
+				matchedIDsByPublicID[value.PublicID] = ids
+			}
+			ids[row.ID] = struct{}{}
+		}
+		for publicID, routeIDs := range matchedIDsByPublicID {
+			var alias modelRouteAliasModel
+			err := tx.Where("alias = ?", publicID).First(&alias).Error
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if _, owned := routeIDs[alias.ModelRouteID]; !owned {
+				return fmt.Errorf("%w: 模型公开 ID %q 已被路由 %d 保留为兼容名称", repository.ErrConflict, publicID, alias.ModelRouteID)
+			}
+			if err := tx.Delete(&modelRouteAliasModel{}, "alias = ?", publicID).Error; err != nil {
 				return err
 			}
 		}

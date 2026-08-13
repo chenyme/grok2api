@@ -468,9 +468,14 @@ func (r *EgressRepository) SaveEgressOperationsConfig(ctx context.Context, value
 	row := fromEgressOperationsConfigDomain(value)
 	row.ID = 1
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if _, err := lockEgressOperationsConfig(tx); err != nil {
+		locked, err := lockEgressOperationsConfig(tx)
+		if err != nil {
 			return err
 		}
+		// This schema-only marker is deliberately outside the domain settings.
+		// Preserve it across ordinary configuration updates so the legacy proxy
+		// migration cannot run again and overwrite an intentionally direct source.
+		row.SubscriptionProxyMigrationCompleted = locked.SubscriptionProxyMigrationCompleted
 		if err := validateLockedEgressFallbackNodes(tx, row); err != nil {
 			return err
 		}
@@ -823,7 +828,7 @@ func probeFamilyFromRow(status string, testedAt *time.Time, latencyMS int, exitI
 
 func toEgressSubscriptionSourceDomain(row egressSubscriptionSourceModel) egress.SubscriptionSource {
 	return egress.SubscriptionSource{
-		ID: row.ID, Name: row.Name, Scope: egress.Scope(row.Scope), Enabled: row.Enabled, EncryptedURL: row.EncryptedURL,
+		ID: row.ID, Name: row.Name, Scope: egress.Scope(row.Scope), Enabled: row.Enabled, EncryptedURL: row.EncryptedURL, EncryptedProxyURL: row.EncryptedProxyURL,
 		RefreshIntervalSeconds: row.RefreshIntervalSeconds, DefaultAccountCapacity: row.DefaultAccountCapacity,
 		LastSyncedAt: row.LastSyncedAt, NextSyncAt: row.NextSyncAt, LastSyncImported: row.LastSyncImported, LastSyncError: row.LastSyncError,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
@@ -832,7 +837,7 @@ func toEgressSubscriptionSourceDomain(row egressSubscriptionSourceModel) egress.
 
 func fromEgressSubscriptionSourceDomain(value egress.SubscriptionSource) egressSubscriptionSourceModel {
 	return egressSubscriptionSourceModel{
-		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled, EncryptedURL: value.EncryptedURL,
+		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled, EncryptedURL: value.EncryptedURL, EncryptedProxyURL: value.EncryptedProxyURL,
 		RefreshIntervalSeconds: value.RefreshIntervalSeconds, DefaultAccountCapacity: value.DefaultAccountCapacity,
 		LastSyncedAt: value.LastSyncedAt, NextSyncAt: value.NextSyncAt, LastSyncImported: value.LastSyncImported, LastSyncError: value.LastSyncError,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
@@ -843,8 +848,7 @@ func toEgressOperationsConfigDomain(row egressOperationsConfigModel) egress.Oper
 	return egress.OperationsConfig{
 		ProbeProvider:        egress.ProbeProvider(row.ProbeProvider).Normalized(),
 		ProbeIntervalSeconds: row.ProbeIntervalSeconds, AutoAssignEnabled: row.AutoAssignEnabled, AutoBalanceEnabled: row.AutoBalanceEnabled,
-		AssignmentIntervalSeconds:         row.AssignmentIntervalSeconds,
-		EncryptedSubscriptionProxyURL:     row.EncryptedSubscriptionProxyURL,
+		AssignmentIntervalSeconds: row.AssignmentIntervalSeconds,
 		Fallbacks: map[egress.Scope]egress.FallbackConfig{
 			egress.ScopeBuild:        {Mode: egress.FallbackMode(row.BuildFallbackMode).Normalized(), NodeID: row.BuildFallbackNodeID},
 			egress.ScopeWeb:          {Mode: egress.FallbackMode(row.WebFallbackMode).Normalized(), NodeID: row.WebFallbackNodeID},
@@ -865,8 +869,7 @@ func fromEgressOperationsConfigDomain(value egress.OperationsConfig) egressOpera
 	return egressOperationsConfigModel{
 		ID: 1, ProbeProvider: string(value.ProbeProvider.Normalized()), ProbeIntervalSeconds: value.ProbeIntervalSeconds, AutoAssignEnabled: value.AutoAssignEnabled,
 		AutoBalanceEnabled: value.AutoBalanceEnabled, AssignmentIntervalSeconds: value.AssignmentIntervalSeconds,
-		EncryptedSubscriptionProxyURL: value.EncryptedSubscriptionProxyURL,
-		BuildFallbackMode:             string(buildFallback.Mode), BuildFallbackNodeID: buildFallback.NodeID,
+		BuildFallbackMode: string(buildFallback.Mode), BuildFallbackNodeID: buildFallback.NodeID,
 		WebFallbackMode: string(webFallback.Mode), WebFallbackNodeID: webFallback.NodeID,
 		ConsoleFallbackMode: string(consoleFallback.Mode), ConsoleFallbackNodeID: consoleFallback.NodeID,
 		WebAssetFallbackMode: string(webAssetFallback.Mode), WebAssetFallbackNodeID: webAssetFallback.NodeID,

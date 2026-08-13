@@ -87,6 +87,7 @@ export async function generateImage(input: {
   count: number;
   aspectRatio: string;
   resolution: string;
+  quality?: "low" | "medium";
   signal?: AbortSignal;
 }): Promise<ImageResult[]> {
   const payload = await publicApiRequest(
@@ -100,6 +101,7 @@ export async function generateImage(input: {
         n: input.count,
         aspect_ratio: input.aspectRatio,
         resolution: input.resolution,
+        ...(input.quality ? { quality: input.quality } : {}),
         response_format: "url",
         stream: false,
       },
@@ -117,6 +119,8 @@ export async function createVideo(input: {
   prompt: string;
   imageURL?: string;
   imageFileID?: string;
+  referenceImages?: Array<{ url?: string; fileId?: string }>;
+  referenceVoiceIds?: string[];
   duration: number;
   aspectRatio: string;
   resolution: string;
@@ -131,9 +135,73 @@ export async function createVideo(input: {
   };
   if (input.imageFileID) body.image = { file_id: input.imageFileID };
   else if (input.imageURL) body.image = { url: input.imageURL };
+  if (input.referenceImages && input.referenceImages.length > 0) {
+    body.reference_images = input.referenceImages.map((item) => {
+      if (item.fileId) return { file_id: item.fileId };
+      return { url: item.url };
+    });
+  }
+  if (input.referenceVoiceIds && input.referenceVoiceIds.length > 0) {
+    body.reference_audios = input.referenceVoiceIds.map((voiceId) => ({ voice_id: voiceId }));
+  }
   const payload = await publicApiRequest(
     input.apiKey,
     "/videos/generations",
+    { method: "POST", body, signal: input.signal },
+  );
+  const requestId = readVideoRequestID(payload);
+  if (!requestId) {
+    throw new CreativeApiError(200, "The video response did not contain a request ID", "invalid_response");
+  }
+  return requestId;
+}
+
+export async function editVideo(input: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  videoURL?: string;
+  videoFileID?: string;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const payload = await publicApiRequest(
+    input.apiKey,
+    "/videos/edits",
+    {
+      method: "POST",
+      body: {
+        model: input.model,
+        prompt: input.prompt,
+        video: input.videoFileID ? { file_id: input.videoFileID } : { url: input.videoURL },
+      },
+      signal: input.signal,
+    },
+  );
+  const requestId = readVideoRequestID(payload);
+  if (!requestId) {
+    throw new CreativeApiError(200, "The video response did not contain a request ID", "invalid_response");
+  }
+  return requestId;
+}
+
+export async function extendVideo(input: {
+  apiKey: string;
+  model: string;
+  prompt: string;
+  videoURL?: string;
+  videoFileID?: string;
+  duration?: number;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const body: Record<string, unknown> = {
+    model: input.model,
+    prompt: input.prompt,
+    video: input.videoFileID ? { file_id: input.videoFileID } : { url: input.videoURL },
+  };
+  if (typeof input.duration === "number") body.duration = input.duration;
+  const payload = await publicApiRequest(
+    input.apiKey,
+    "/videos/extensions",
     { method: "POST", body, signal: input.signal },
   );
   const requestId = readVideoRequestID(payload);
@@ -155,6 +223,145 @@ export async function getVideo(input: {
   );
   const status = readVideoStatus(payload);
   return status.video ? { ...status, video: { ...status.video, url: resolveMediaURL(status.video.url) } } : status;
+}
+
+
+export type VoiceInfo = {
+  voiceId: string;
+  name: string;
+  language?: string;
+};
+
+export type TTSResult = {
+  url: string;
+  contentType: string;
+  duration?: number;
+};
+
+export type STTResult = {
+  text: string;
+  language?: string;
+  duration?: number;
+  words?: Array<{ text: string; start: number; end: number; speaker?: number }>;
+};
+
+export async function listVoices(input: {
+  apiKey: string;
+  model?: string;
+  signal?: AbortSignal;
+}): Promise<VoiceInfo[]> {
+  const query = input.model ? `?model=${encodeURIComponent(input.model)}` : "";
+  const payload = await publicApiRequest(input.apiKey, `/tts/voices${query}`, { method: "GET", signal: input.signal });
+  if (!isRecord(payload) || !Array.isArray(payload.voices)) {
+    throw new CreativeApiError(200, "The voice list response was invalid", "invalid_response");
+  }
+  return payload.voices.map((item) => {
+    if (!isRecord(item) || typeof item.voice_id !== "string") {
+      throw new CreativeApiError(200, "The voice list response was invalid", "invalid_response");
+    }
+    return {
+      voiceId: item.voice_id,
+      name: typeof item.name === "string" ? item.name : item.voice_id,
+      language: typeof item.language === "string" ? item.language : undefined,
+    };
+  });
+}
+
+export async function synthesizeSpeech(input: {
+  apiKey: string;
+  model: string;
+  text: string;
+  voiceId: string;
+  language: string;
+  speed?: number;
+  signal?: AbortSignal;
+}): Promise<TTSResult> {
+  const response = await fetch("/v1/tts", {
+    method: "POST",
+    headers: new Headers({
+      Accept: "application/json, audio/*",
+      Authorization: `Bearer ${input.apiKey}`,
+      "Content-Type": "application/json",
+    }),
+    body: JSON.stringify({
+      model: input.model,
+      text: input.text,
+      voice_id: input.voiceId,
+      language: input.language,
+      ...(typeof input.speed === "number" ? { speed: input.speed } : {}),
+    }),
+    signal: input.signal,
+  });
+  const contentType = response.headers.get("content-type") || "";
+  if (!response.ok) {
+    const responseText = await response.text();
+    const payload = parseJSON(responseText);
+    const error = readError(payload);
+    throw new CreativeApiError(response.status, error.message ?? (responseText.trim() || response.statusText || `HTTP ${response.status}`), error.code);
+  }
+  if (contentType.includes("application/json")) {
+    const payload = await response.json();
+    if (!isRecord(payload) || typeof payload.audio !== "string") {
+      throw new CreativeApiError(200, "The TTS response was invalid", "invalid_response");
+    }
+    const mime = typeof payload.content_type === "string" ? payload.content_type : "audio/mpeg";
+    const url = `data:${mime};base64,${payload.audio}`;
+    return {
+      url,
+      contentType: mime,
+      duration: typeof payload.duration === "number" ? payload.duration : undefined,
+    };
+  }
+  const buffer = await response.arrayBuffer();
+  const mime = contentType || "audio/mpeg";
+  const blob = new Blob([buffer], { type: mime });
+  return { url: URL.createObjectURL(blob), contentType: mime };
+}
+
+export async function transcribeSpeech(input: {
+  apiKey: string;
+  model: string;
+  file: File;
+  language?: string;
+  signal?: AbortSignal;
+}): Promise<STTResult> {
+  const form = new FormData();
+  form.append("model", input.model);
+  if (input.language) form.append("language", input.language);
+  form.append("format", "true");
+  form.append("file", input.file, input.file.name);
+  const response = await fetch("/v1/stt", {
+    method: "POST",
+    headers: new Headers({ Accept: "application/json", Authorization: `Bearer ${input.apiKey}` }),
+    body: form,
+    signal: input.signal,
+  });
+  const responseText = await response.text();
+  const payload = parseJSON(responseText);
+  if (!response.ok) {
+    const error = readError(payload);
+    throw new CreativeApiError(response.status, error.message ?? (responseText.trim() || response.statusText || `HTTP ${response.status}`), error.code);
+  }
+  if (!isRecord(payload) || typeof payload.text !== "string") {
+    throw new CreativeApiError(200, "The STT response was invalid", "invalid_response");
+  }
+  const words = Array.isArray(payload.words)
+    ? payload.words.flatMap((item) => {
+        if (!isRecord(item) || typeof item.text !== "string") return [];
+        return [{
+          text: item.text,
+          start: typeof item.start === "number" ? item.start : 0,
+          end: typeof item.end === "number" ? item.end : 0,
+          speaker: typeof item.speaker === "number" ? item.speaker : undefined,
+        }];
+      })
+    : undefined;
+  return {
+    text: payload.text,
+    language: typeof payload.language === "string" ? payload.language : undefined,
+    duration: typeof payload.duration === "number" ? payload.duration : undefined,
+    words,
+  };
 }
 
 async function publicApiRequest(apiKey: string, path: string, options: RequestOptions): Promise<unknown> {

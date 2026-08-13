@@ -281,16 +281,3 @@ func TestOperationsConfigRequestRejectsInvalidFallbackNodeID(t *testing.T) {
 		t.Fatalf("invalid node ID error = %v", err)
 	}
 }
-
-func TestOperationsConfigResponseReportsSubscriptionProxyWithoutExposingIt(t *testing.T) {
-	response := newOperationsConfigResponse(egressdomain.OperationsConfig{
-		ProbeProvider:                 egressdomain.ProbeProviderCloudflare,
-		EncryptedSubscriptionProxyURL: "encrypted-secret-must-not-be-returned",
-	})
-	if !response.SubscriptionProxyConfigured {
-		t.Fatal("configured subscription proxy was not reported")
-	}
-	if response.ProbeProvider != "cloudflare" {
-		t.Fatalf("probe provider=%q", response.ProbeProvider)
-	}
-}
