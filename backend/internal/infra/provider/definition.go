@@ -55,6 +55,9 @@ type MediaSurface struct {
 	ImageGeneration bool
 	ImageEdit       bool
 	VideoGeneration bool
+	TTS             bool
+	STT             bool
+	Realtime        bool
 }
 
 // CredentialSurface 描述号池凭据的接入和维护方式。
@@ -131,7 +134,7 @@ func (d Definition) Validate() error {
 	capabilities := make(map[modeldomain.Capability]struct{}, len(d.ModelCapabilities))
 	for _, capability := range d.ModelCapabilities {
 		switch capability {
-		case modeldomain.CapabilityResponses, modeldomain.CapabilityChat, modeldomain.CapabilityImage, modeldomain.CapabilityImageEdit, modeldomain.CapabilityVideo:
+		case modeldomain.CapabilityResponses, modeldomain.CapabilityChat, modeldomain.CapabilityImage, modeldomain.CapabilityImageEdit, modeldomain.CapabilityVideo, modeldomain.CapabilityTTS, modeldomain.CapabilitySTT, modeldomain.CapabilityRealtime:
 		default:
 			return fmt.Errorf("Provider %s 声明了无效模型能力 %q", d.Provider, capability)
 		}
@@ -163,6 +166,9 @@ func (d Definition) Validate() error {
 		{enabled: d.Media.ImageGeneration, capability: modeldomain.CapabilityImage, name: "图像生成"},
 		{enabled: d.Media.ImageEdit, capability: modeldomain.CapabilityImageEdit, name: "图像编辑"},
 		{enabled: d.Media.VideoGeneration, capability: modeldomain.CapabilityVideo, name: "视频生成"},
+		{enabled: d.Media.TTS, capability: modeldomain.CapabilityTTS, name: "语音合成"},
+		{enabled: d.Media.STT, capability: modeldomain.CapabilitySTT, name: "语音识别"},
+		{enabled: d.Media.Realtime, capability: modeldomain.CapabilityRealtime, name: "实时语音"},
 	}
 	for _, item := range mediaCapabilities {
 		_, declared := capabilities[item.capability]

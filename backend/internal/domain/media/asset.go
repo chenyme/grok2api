@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	// InputAssetIDPrefix 标识不会公开展示、带生命周期的视频输入资产。
+	// InputAssetIDPrefix 标识不会公开展示、带生命周期的视频任务输入资产。
 	InputAssetIDPrefix = "input_"
 	// InputReferencePrefix 标识 media_jobs.input_json 中的本地临时输入引用。
 	InputReferencePrefix = "grok2api-input:"

@@ -12,6 +12,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const mediaJobInputMetadataPendingIndex = "CREATE INDEX IF NOT EXISTS idx_media_jobs_input_metadata_pending ON media_jobs(id) WHERE input_image_count IS NULL"
@@ -129,6 +130,7 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	hadProviderScope := hadClientKeys && db.Migrator().HasColumn(&clientKeyModel{}, "ProviderScopeMask")
 	hadTierScope := hadClientKeys && db.Migrator().HasColumn(&clientKeyModel{}, "TierScopeMask")
 	hadLegacyAccountPool := hadClientKeys && db.Migrator().HasColumn("client_keys", "account_pool")
+	hadGlobalSubscriptionProxy := db.Migrator().HasTable("egress_operations_config") && db.Migrator().HasColumn("egress_operations_config", "encrypted_subscription_proxy_url")
 	// all 作用域会让 Build 与 Web 共用 UA、健康度和冷却状态，升级时直接移除旧节点。
 	if db.Migrator().HasTable(&egressNodeModel{}) {
 		if err := db.Where("scope = ?", "all").Delete(&egressNodeModel{}).Error; err != nil {
@@ -149,6 +151,11 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if migrateErr != nil {
 		return fmt.Errorf("初始化数据库表: %w", migrateErr)
 	}
+	if hadGlobalSubscriptionProxy {
+		if err := d.migratePerSourceSubscriptionProxy(ctx); err != nil {
+			return fmt.Errorf("迁移代理订阅拉取代理: %w", err)
+		}
+	}
 	if err := d.migrateClientKeyAccountScopes(ctx, hadLegacyAccountPool, !hadProviderScope, !hadTierScope); err != nil {
 		return fmt.Errorf("迁移客户端 Key 调用范围: %w", err)
 	}
@@ -167,8 +174,14 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if err := d.ensureAuditOperationConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移请求审计操作约束: %w", err)
 	}
+	if err := d.ensureModelRouteCapabilityConstraints(ctx); err != nil {
+		return fmt.Errorf("迁移模型路由能力约束: %w", err)
+	}
 	if err := d.ensureMediaJobConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 数据库约束: %w", err)
+	}
+	if err := d.migrateMediaJobOperations(ctx); err != nil {
+		return fmt.Errorf("迁移 media job 操作类型: %w", err)
 	}
 	if err := d.ensureMediaJobInputConstraint(ctx); err != nil {
 		return fmt.Errorf("迁移 media job 输入长度约束: %w", err)
@@ -214,6 +227,43 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 		return fmt.Errorf("迁移模型 Provider 命名空间: %w", err)
 	}
 	return nil
+}
+
+func (d *Database) migratePerSourceSubscriptionProxy(ctx context.Context) error {
+	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var legacy struct {
+			EncryptedProxyURL  string `gorm:"column:encrypted_subscription_proxy_url"`
+			MigrationCompleted bool   `gorm:"column:subscription_proxy_migration_completed"`
+		}
+		err := tx.Table("egress_operations_config").
+			Select("encrypted_subscription_proxy_url", "subscription_proxy_migration_completed").
+			Where("id = ?", 1).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Take(&legacy).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if legacy.MigrationCompleted {
+			return nil
+		}
+		if strings.TrimSpace(legacy.EncryptedProxyURL) != "" {
+			if err := tx.Model(&egressSubscriptionSourceModel{}).Where("encrypted_proxy_url = ''").Updates(map[string]any{
+				"encrypted_proxy_url": legacy.EncryptedProxyURL,
+				"next_sync_at":        nil,
+				"last_sync_error":     "",
+			}).Error; err != nil {
+				return err
+			}
+		}
+		// Keep the encrypted legacy value for still-running old replicas and a
+		// rollback window. The marker prevents subsequent startups from applying
+		// it to sources that were later configured for direct fetching.
+		return tx.Table("egress_operations_config").Where("id = ?", 1).
+			Update("subscription_proxy_migration_completed", true).Error
+	})
 }
 
 // migrateClientKeyAccountScopes translates the short-lived account_pool
@@ -386,11 +436,19 @@ func (d *Database) ensureEgressAssetScopeConstraints(ctx context.Context) error 
 }
 
 // ensureAuditOperationConstraints upgrades existing databases so Codex remote
-// compaction can be recorded separately from ordinary Responses requests.
+// compaction and Console voice operations can be recorded separately.
 func (d *Database) ensureAuditOperationConstraints(ctx context.Context) error {
 	return d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &requestAuditModel{}, table: "request_audits", name: "chk_request_audits_operation"},
-	}, "compaction")
+	}, "tts")
+}
+
+// ensureModelRouteCapabilityConstraints upgrades existing databases so Console
+// TTS/STT/Realtime routes can be managed alongside image and video.
+func (d *Database) ensureModelRouteCapabilityConstraints(ctx context.Context) error {
+	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+		{model: &modelRouteModel{}, table: "model_routes", name: "chk_model_routes_capability"},
+	}, "tts")
 }
 
 // ensureMediaJobConstraints 将历史仅允许 grok_web 的 media job CHECK 升级到支持 Build 与 Console 视频。
@@ -401,9 +459,43 @@ func (d *Database) ensureMediaJobConstraints(ctx context.Context) error {
 	}, "grok_console"); err != nil {
 		return err
 	}
-	return d.ensureNamedConstraints(ctx, []consoleConstraint{
+	if err := d.ensureNamedConstraints(ctx, []consoleConstraint{
 		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_egress_scope"},
-	}, "grok_console")
+	}, "grok_console"); err != nil {
+		return err
+	}
+	for _, constraint := range []consoleConstraint{
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_operation"},
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_seconds"},
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_size"},
+		{model: &mediaJobModel{}, table: "media_jobs", name: "chk_media_jobs_quality"},
+	} {
+		marker := "0"
+		if constraint.name == "chk_media_jobs_operation" {
+			marker = "extend"
+		}
+		if err := d.ensureNamedConstraints(ctx, []consoleConstraint{constraint}, marker); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateMediaJobOperations preserves queued and in-progress edit/extension
+// jobs created before media_jobs.operation existed. Those releases persisted
+// the operation only in the compact JSON metadata; AutoMigrate necessarily
+// fills the new non-null column with "generate", which must not change the
+// request semantics when a job is recovered after an upgrade.
+func (d *Database) migrateMediaJobOperations(ctx context.Context) error {
+	editPattern := `%"operation":"edit"%`
+	extendPattern := `%"operation":"extend"%`
+	return d.db.WithContext(ctx).Exec(
+		`UPDATE media_jobs
+		 SET operation = CASE WHEN input_json LIKE ? THEN ? ELSE ? END
+		 WHERE operation = ? AND (input_json LIKE ? OR input_json LIKE ?)`,
+		editPattern, media.VideoOperationEdit, media.VideoOperationExtend,
+		media.VideoOperationGenerate, editPattern, extendPattern,
+	).Error
 }
 
 // ensureMediaJobInputConstraint 允许异步视频任务持久化 Base64 首图。

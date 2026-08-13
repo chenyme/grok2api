@@ -21,29 +21,44 @@ import (
 const weeklyQuotaMode = "weekly"
 
 func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) (provider.QuotaSnapshot, error) {
-	windows := make([]account.QuotaWindow, 0, 2)
+	chatWindows := make([]account.QuotaWindow, 0, 2)
 	autoWindow, autoErr := a.SyncQuotaMode(ctx, credential, "auto")
 	if errors.Is(autoErr, provider.ErrUnauthorized) {
 		return provider.QuotaSnapshot{}, autoErr
 	}
 	if autoErr == nil {
-		windows = append(windows, autoWindow)
+		chatWindows = append(chatWindows, autoWindow)
 	}
 	fastWindow, fastErr := a.SyncQuotaMode(ctx, credential, "fast")
 	if errors.Is(fastErr, provider.ErrUnauthorized) {
 		return provider.QuotaSnapshot{}, fastErr
 	}
 	if fastErr == nil {
-		windows = append(windows, fastWindow)
+		chatWindows = append(chatWindows, fastWindow)
 	}
-	if len(windows) > 0 {
-		tier, _ := resolveWebTierFromQuota(credential.WebTier, windows, false)
+	imagineSnapshot, imagineErr := a.SyncQuotaGroup(ctx, credential, account.QuotaGroupWebImagine)
+	if imagineErr != nil {
+		// A full refresh replaces every stored window. Never return a partial
+		// snapshot, otherwise a transient Imagine failure would erase the last
+		// known authoritative media quotas.
+		return provider.QuotaSnapshot{}, imagineErr
+	}
+	if len(chatWindows) > 0 {
+		tier, _ := resolveWebTierFromQuota(credential.WebTier, chatWindows, false)
+		var windows []account.QuotaWindow
 		// Basic/未知账号没有付费周池，避免为每次完整同步额外访问付费端点。
 		// 只有模式额度已经确认付费等级时才读取 weekly 作为权威额度。
 		if tier == account.WebTierSuper || tier == account.WebTierHeavy {
 			if weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential); weeklyErr == nil {
-				windows = []account.QuotaWindow{weekly}
+				// 周池覆盖 chat 模式窗口，但保留 imagine 窗口供前端展示与触顶判定。
+				kept := make([]account.QuotaWindow, 0, 1+len(imagineSnapshot.Windows))
+				kept = append(kept, weekly)
+				kept = append(kept, imagineSnapshot.Windows...)
+				windows = kept
 			}
+		}
+		if windows == nil {
+			windows = append(chatWindows, imagineSnapshot.Windows...)
 		}
 		return provider.QuotaSnapshot{Tier: tier, Windows: windows, SyncedAt: time.Now().UTC()}, nil
 	}
@@ -51,7 +66,8 @@ func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) 
 	// Basic/Auto 不能凭周额度探测提权，也不应制造无意义的付费端点流量。
 	if credential.WebTier == account.WebTierSuper || credential.WebTier == account.WebTierHeavy {
 		if weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential); weeklyErr == nil {
-			return provider.QuotaSnapshot{Tier: credential.WebTier, Windows: []account.QuotaWindow{weekly}, SyncedAt: time.Now().UTC()}, nil
+			kept := append([]account.QuotaWindow{weekly}, imagineSnapshot.Windows...)
+			return provider.QuotaSnapshot{Tier: credential.WebTier, Windows: kept, SyncedAt: time.Now().UTC()}, nil
 		} else {
 			return provider.QuotaSnapshot{}, weeklyErr
 		}
@@ -60,6 +76,141 @@ func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) 
 		return provider.QuotaSnapshot{}, fastErr
 	}
 	return provider.QuotaSnapshot{}, autoErr
+}
+
+// SyncQuotaGroup refreshes the authoritative Web Imagine quota group. The
+// upstream endpoint returns every media product in one response, so callers
+// must persist the snapshot atomically instead of treating its fields as four
+// independent requests.
+func (a *Adapter) SyncQuotaGroup(ctx context.Context, credential account.Credential, group string) (provider.QuotaGroupSnapshot, error) {
+	if group != account.QuotaGroupWebImagine {
+		return provider.QuotaGroupSnapshot{}, fmt.Errorf("unsupported Web quota group %q", group)
+	}
+	cfg := a.config()
+	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
+	if err != nil {
+		return provider.QuotaGroupSnapshot{}, err
+	}
+	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, credential)
+	if err != nil {
+		return provider.QuotaGroupSnapshot{}, err
+	}
+	defer lease.Release()
+	endpoint := cfg.BaseURL + "/rest/media/imagine/quota_info"
+	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.QuotaTimeoutSeconds)*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return provider.QuotaGroupSnapshot{}, err
+	}
+	request.Header = buildHeaders(token, lease, "application/json")
+	applyAppHeaders(request.Header, cfg.BaseURL, cfg.BaseURL+"/imagine")
+	a.applySignedStatsig(requestCtx, request, token, lease)
+	response, err := lease.DoDeferredForbidden(request)
+	if err != nil {
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
+		return provider.QuotaGroupSnapshot{}, err
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	_ = response.Body.Close()
+	if err != nil {
+		return provider.QuotaGroupSnapshot{}, err
+	}
+	if response.StatusCode == http.StatusUnauthorized {
+		return provider.QuotaGroupSnapshot{}, provider.ErrUnauthorized
+	}
+	if response.StatusCode == http.StatusForbidden && provider.IsDefinitiveAccountBlockBody(body) {
+		return provider.QuotaGroupSnapshot{}, fmt.Errorf("%w: account blocked", provider.ErrUnauthorized)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+		return provider.QuotaGroupSnapshot{}, fmt.Errorf("Grok Web Imagine 配额接口返回 %d", response.StatusCode)
+	}
+	a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, response.StatusCode, nil)
+	now := time.Now().UTC()
+	windows, err := decodeImagineQuotaSnapshot(body, credential.ID, now)
+	if err != nil {
+		return provider.QuotaGroupSnapshot{}, err
+	}
+	return provider.QuotaGroupSnapshot{
+		Group: account.QuotaGroupWebImagine, Modes: account.WebImagineQuotaModes(), Windows: windows, SyncedAt: now,
+	}, nil
+}
+
+type imagineQuotaProduct struct {
+	Available         *bool      `json:"available"`
+	RemainingQueries  *int       `json:"remainingQueries"`
+	WindowSizeSeconds *int       `json:"windowSizeSeconds"`
+	NextAvailableAt   *time.Time `json:"nextAvailableAt"`
+}
+
+func isImagineQuotaMode(mode string) bool {
+	return account.IsWebImagineQuotaMode(mode)
+}
+
+func decodeImagineQuotaSnapshot(body []byte, accountID uint64, now time.Time) ([]account.QuotaWindow, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, fmt.Errorf("解析 Grok Web Imagine 配额: %w", err)
+	}
+	products := []struct {
+		field string
+		mode  string
+	}{
+		{"image", ""}, // lite uses the chat fast/weekly quota path.
+		{"imagePro", account.QuotaModeWebImagePro},
+		{"imageEdit", account.QuotaModeWebImageEdit},
+		{"video", account.QuotaModeWebVideo},
+		{"video720p", account.QuotaModeWebVideo720p},
+	}
+	windows := make([]account.QuotaWindow, 0, 4)
+	for _, item := range products {
+		raw, ok := fields[item.field]
+		if !ok {
+			return nil, fmt.Errorf("Grok Web Imagine 配额响应缺少字段 %s", item.field)
+		}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			continue
+		}
+		var product imagineQuotaProduct
+		if err := json.Unmarshal(raw, &product); err != nil {
+			return nil, fmt.Errorf("解析 Grok Web Imagine 配额字段 %s: %w", item.field, err)
+		}
+		if product.Available == nil {
+			return nil, fmt.Errorf("Grok Web Imagine 配额字段 %s 结构不完整", item.field)
+		}
+		if item.mode == "" {
+			continue
+		}
+		if *product.Available && (product.RemainingQueries == nil || product.WindowSizeSeconds == nil) {
+			return nil, fmt.Errorf("Grok Web Imagine 配额字段 %s 结构不完整", item.field)
+		}
+		remaining := 0
+		if product.RemainingQueries != nil {
+			remaining = max(0, *product.RemainingQueries)
+		}
+		windowSeconds := 86400
+		if product.WindowSizeSeconds != nil {
+			windowSeconds = *product.WindowSizeSeconds
+		}
+		if windowSeconds <= 0 {
+			return nil, fmt.Errorf("Grok Web Imagine 配额字段 %s 的 windowSizeSeconds 无效", item.field)
+		}
+		var resetAt *time.Time
+		if product.NextAvailableAt != nil {
+			value := product.NextAvailableAt.UTC()
+			resetAt = &value
+		} else if !*product.Available || remaining == 0 {
+			value := now.Add(time.Duration(windowSeconds) * time.Second)
+			resetAt = &value
+		}
+		windows = append(windows, account.QuotaWindow{
+			AccountID: accountID, Mode: item.mode, Remaining: remaining, Total: 0,
+			WindowSeconds: windowSeconds, ResetAt: resetAt, SyncedAt: &now,
+			Source: account.QuotaSourceUpstream, UpdatedAt: now,
+		})
+	}
+	return windows, nil
 }
 
 func resolveWebTierFromQuota(current account.WebTier, windows []account.QuotaWindow, weeklyAvailable bool) (account.WebTier, bool) {
@@ -125,6 +276,18 @@ func inferWebTierFromQuota(windows []account.QuotaWindow) (account.WebTier, bool
 func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credential, mode string) (account.QuotaWindow, error) {
 	if mode == weeklyQuotaMode {
 		return a.syncWeeklyCredits(ctx, credential)
+	}
+	if account.IsWebImagineQuotaMode(mode) {
+		snapshot, err := a.SyncQuotaGroup(ctx, credential, account.QuotaGroupWebImagine)
+		if err != nil {
+			return account.QuotaWindow{}, err
+		}
+		for _, w := range snapshot.Windows {
+			if w.Mode == mode {
+				return w, nil
+			}
+		}
+		return account.QuotaWindow{}, fmt.Errorf("imagine 配额响应缺少 %s", mode)
 	}
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
