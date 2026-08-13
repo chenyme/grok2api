@@ -29,9 +29,15 @@ const (
 	consoleMediaOutputAttempts  = 3
 	consoleVideoPollEvery       = 2 * time.Second
 	consoleMaxEditImages        = 3
-	// Align with the gateway ceiling and official xAI video inputs:
-	// image = first frame; reference_images = style/content references (may be length 1).
-	consoleMaxVideoImages = mediadomain.MaxInputImages
+	// Upstream enforces the two video image inputs separately (measured against
+	// console.x.ai on both grok-imagine-video and grok-imagine-video-1.5):
+	//   image            = first frame, image-to-video, at most 1
+	//   reference_images = style/content references, reference-to-video, at most 7
+	//     8 references answer 400 "Too many reference images: 8. Maximum allowed is 7."
+	// The two are mutually exclusive below and their limits are never summed, so a
+	// combined ceiling would accept payloads that upstream then rejects.
+	consoleMaxVideoFirstFrames     = 1
+	consoleMaxVideoReferenceImages = 7
 )
 
 type consoleMediaUpstreamError struct {
@@ -458,13 +464,24 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if operation != provider.VideoOperationGenerate && modelName != "grok-imagine-video" {
 		return provider.VideoResult{}, fmt.Errorf("%s 仅支持 grok-imagine-video", operation)
 	}
-	totalImages := consoleVideoImageCount(request)
-	if totalImages > consoleMaxVideoImages {
-		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张输入图，当前为 %d 张", modelName, consoleMaxVideoImages, totalImages)
+	firstFrames, referenceImages := consoleVideoImageCounts(request)
+	if firstFrames > consoleMaxVideoFirstFrames {
+		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张首帧图，当前为 %d 张", modelName, consoleMaxVideoFirstFrames, firstFrames)
+	}
+	if referenceImages > consoleMaxVideoReferenceImages {
+		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张参考图，当前为 %d 张", modelName, consoleMaxVideoReferenceImages, referenceImages)
 	}
 	if operation == provider.VideoOperationGenerate {
 		if request.Duration < 1 || request.Duration > 15 {
 			return provider.VideoResult{}, errors.New("duration 必须在 1 到 15 秒之间")
+		}
+		// reference-to-video on the base model caps at 10s upstream; measured:
+		//   grok-imagine-video + reference_images + duration=15
+		//   -> 400 "Duration 15s exceeds the maximum allowed for reference-to-video, which is 10s."
+		// image-to-video (the image field) and grok-imagine-video-1.5 both keep 15s,
+		// so the cap keys on reference_images plus the base model, not on duration alone.
+		if modelName == "grok-imagine-video" && referenceImages > 0 && request.Duration > 10 {
+			return provider.VideoResult{}, fmt.Errorf("%s 的参考图生视频最长 10 秒，当前为 %d 秒", modelName, request.Duration)
 		}
 	} else if operation == provider.VideoOperationExtend {
 		// Official /v1/videos/extensions defaults to 6s and accepts 2-10s.
@@ -920,15 +937,14 @@ func trustedConsoleVideoHost(host string) bool {
 	return host == "vidgen.x.ai" || strings.HasSuffix(host, ".vidgen.x.ai")
 }
 
-func consoleVideoImageCount(request provider.VideoRequest) int {
-	count := 0
+func consoleVideoImageCounts(request provider.VideoRequest) (firstFrames int, referenceImages int) {
 	if strings.TrimSpace(request.ImageURL) != "" {
-		count++
+		firstFrames++
 	}
 	for _, raw := range request.ReferenceURLs {
 		if strings.TrimSpace(raw) != "" {
-			count++
+			referenceImages++
 		}
 	}
-	return count
+	return firstFrames, referenceImages
 }
