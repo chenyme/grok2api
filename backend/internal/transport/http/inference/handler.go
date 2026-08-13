@@ -960,7 +960,76 @@ func (h *Handler) handleVideoCreate(c *gin.Context, operation, label string) {
 		writeGatewayError(c, err)
 		return
 	}
+	if hasJSONValue(request.Messages) {
+		h.writeVideoChatAccepted(c, job.ID, model, request.Stream != nil && *request.Stream)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"request_id": job.ID})
+}
+
+func (h *Handler) writeVideoChatAccepted(c *gin.Context, jobID, model string, stream bool) {
+	created := time.Now().Unix()
+	content := fmt.Sprintf(
+		"视频生成任务已提交。\n任务 ID: %s\n状态查询: %s\n视频地址: %s",
+		jobID,
+		h.videoStatusURL(jobID),
+		h.videoContentURL(jobID),
+	)
+	if !stream {
+		c.JSON(http.StatusOK, gin.H{
+			"id":      jobID,
+			"object":  "chat.completion",
+			"created": created,
+			"model":   model,
+			"choices": []gin.H{{
+				"index":         0,
+				"message":       gin.H{"role": "assistant", "content": content},
+				"finish_reason": "stop",
+			}},
+		})
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+	writeVideoChatChunk(c.Writer, gin.H{
+		"id":      jobID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []gin.H{{
+			"index":         0,
+			"delta":         gin.H{"role": "assistant", "content": content},
+			"finish_reason": nil,
+		}},
+	})
+	writeVideoChatChunk(c.Writer, gin.H{
+		"id":      jobID,
+		"object":  "chat.completion.chunk",
+		"created": created,
+		"model":   model,
+		"choices": []gin.H{{
+			"index":         0,
+			"delta":         gin.H{},
+			"finish_reason": "stop",
+		}},
+	})
+	_, _ = c.Writer.WriteString("data: [DONE]\n\n")
+	c.Writer.Flush()
+}
+
+func writeVideoChatChunk(writer gin.ResponseWriter, chunk gin.H) {
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		return
+	}
+	_, _ = writer.WriteString("data: ")
+	_, _ = writer.Write(data)
+	_, _ = writer.WriteString("\n\n")
+	writer.Flush()
 }
 
 func mergeVideoOptionHints(duration int, hasDuration bool, aspectRatio string, hasAspectRatio bool, resolution string, hasResolution bool, hints gateway.VideoOptionHints) (int, bool, string, bool, string, bool) {
@@ -1036,7 +1105,15 @@ func (h *Handler) getVideo(c *gin.Context) {
 }
 
 func (h *Handler) videoContentURL(jobID string) string {
-	path := "/v1/videos/" + url.PathEscape(jobID) + "/content"
+	return h.videoURL(jobID, "/content")
+}
+
+func (h *Handler) videoStatusURL(jobID string) string {
+	return h.videoURL(jobID, "")
+}
+
+func (h *Handler) videoURL(jobID, suffix string) string {
+	path := "/v1/videos/" + url.PathEscape(jobID) + suffix
 	baseURL := h.publicAPIBaseURL
 	if h.publicBaseURL != nil {
 		baseURL = strings.TrimRight(strings.TrimSpace(h.publicBaseURL()), "/")

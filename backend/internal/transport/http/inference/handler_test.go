@@ -235,6 +235,70 @@ func TestVideoContentURLFollowsRuntimePublicAPIBase(t *testing.T) {
 	}
 }
 
+func TestWriteVideoChatAcceptedReturnsChatCompletion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com")
+
+	handler.writeVideoChatAccepted(context, "video_request_1", "grok-imagine-video", false)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Object != "chat.completion" || len(response.Choices) != 1 || response.Choices[0].Message.Role != "assistant" || response.Choices[0].FinishReason != "stop" {
+		t.Fatalf("response=%#v", response)
+	}
+	content := response.Choices[0].Message.Content
+	for _, want := range []string{
+		"video_request_1",
+		"https://api.example.com/v1/videos/video_request_1",
+		"https://api.example.com/v1/videos/video_request_1/content",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("content %q does not contain %q", content, want)
+		}
+	}
+}
+
+func TestWriteVideoChatAcceptedReturnsChatCompletionStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com")
+
+	handler.writeVideoChatAccepted(context, "video_request_2", "grok-imagine-video", true)
+
+	if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("status=%d content-type=%q", recorder.Code, recorder.Header().Get("Content-Type"))
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`"object":"chat.completion.chunk"`,
+		`"role":"assistant"`,
+		`"finish_reason":"stop"`,
+		"https://api.example.com/v1/videos/video_request_2/content",
+		"data: [DONE]\n\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("stream %q does not contain %q", body, want)
+		}
+	}
+}
+
 func TestGatewayErrorDoesNotExposeInternalDetails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
