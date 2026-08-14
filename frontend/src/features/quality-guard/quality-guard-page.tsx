@@ -18,6 +18,8 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DegradeAccountsPanel } from "@/features/quality-guard/degrade-accounts-panel";
 import { getQualityGuardStatus, runQualityTest, updateQualityGuardPolicy, type QualityGuardEvent, type QualityGuardNodeState, type QualityGuardPolicy, type QualityGuardStatistics, type QualityGuardStatus, type QualityTestResult } from "@/features/quality-guard/quality-guard-api";
 import { createEgressNode, deleteEgressNodes, listAllEgressNodes, updateEgressNode, updateEgressNodesEnabled, type EgressNodeDTO, type EgressNodeInput } from "@/features/settings/settings-api";
 import { ErrorState } from "@/shared/components/data-state";
@@ -159,6 +161,20 @@ export function QualityGuardPage() {
         )}
       />
 
+      <Tabs defaultValue="nodes">
+        <TabsList>
+          <TabsTrigger value="nodes">{t("qualityGuard.nodesTab")}</TabsTrigger>
+          <TabsTrigger value="accounts">{t("qualityGuard.degrade.tab")}</TabsTrigger>
+        </TabsList>
+        <TabsContent value="accounts" className="mt-6">
+          <DegradeAccountsPanel
+            softTPS={status?.config?.soft_tps}
+            hardTPS={status?.config?.hard_tps}
+            failClosed={status?.config?.fail_closed}
+            minGenMs={status?.config?.min_generation_ms}
+          />
+        </TabsContent>
+        <TabsContent value="nodes" className="mt-6 space-y-6">
       {!status?.available ? <UnavailableState /> : (
         <>
           <section className="grid overflow-hidden rounded-lg bg-card sm:grid-cols-2 xl:grid-cols-4" aria-label={t("qualityGuard.overview")}>
@@ -224,6 +240,8 @@ export function QualityGuardPage() {
           </AlertDialog>
         </>
       )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

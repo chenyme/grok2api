@@ -143,6 +143,122 @@ func TestNormalizeOpenAIInputSeparatesTextAndImages(t *testing.T) {
 	}
 }
 
+func TestNormalizeLatestImageInputIgnoresHistoricalAssistantImage(t *testing.T) {
+	historical, _ := json.Marshal([]any{
+		map[string]any{"type": "text", "text": "first result"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/first.png"}},
+	})
+	latest, _ := json.Marshal("生成另一张蓝色的图片")
+	value, err := normalizeLatestImageInput(openAIRequest{Messages: []chatMessage{
+		{Role: "user", Content: json.RawMessage(`"生成第一张图片"`)},
+		{Role: "assistant", Content: historical},
+		{Role: "user", Content: latest},
+	}}, conversation.OperationChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Prompt != "生成另一张蓝色的图片" || len(value.Attachments) != 0 {
+		t.Fatalf("normalized latest image input = %#v", value)
+	}
+}
+
+func TestNormalizeLatestResponsesImageInputIgnoresHistory(t *testing.T) {
+	input, _ := json.Marshal([]any{
+		map[string]any{"type": "message", "role": "assistant", "content": []any{
+			map[string]any{"type": "output_text", "text": "![image](https://example.com/first.png)"},
+			map[string]any{"type": "input_image", "image_url": "https://example.com/first.png"},
+		}},
+		map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "input_text", "text": "generate a different image"},
+		}},
+	})
+	value, err := normalizeLatestImageInput(openAIRequest{Input: input}, conversation.OperationResponses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Prompt != "generate a different image" || len(value.Attachments) != 0 {
+		t.Fatalf("normalized latest responses input = %#v", value)
+	}
+}
+
+func TestImageChatRejectsOnlyCurrentTurnAttachment(t *testing.T) {
+	content, _ := json.Marshal([]any{
+		map[string]any{"type": "text", "text": "make it blue"},
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/input.png"}},
+	})
+	response, err := (&Adapter{}).ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Method: http.MethodPost, Model: "grok-imagine-image", Operation: conversation.OperationChat,
+		Body: []byte(fmt.Sprintf(`{"model":"grok-imagine-image-lite","messages":[{"role":"user","content":%s}]}`, content)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "/v1/images/edits") {
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+}
+
+func TestQualityImageResponsesUsesImageCompatibilityValidation(t *testing.T) {
+	response, err := (&Adapter{}).ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Method: http.MethodPost, Model: "grok-imagine-image-quality", Operation: conversation.OperationResponses,
+		Body: []byte(`{"model":"grok-imagine-image-quality-lite","input":[{"role":"user","content":[{"type":"input_text","text":"draw"}]}],"image_config":{"n":0}}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "image_config.n") || strings.Contains(string(body), "模型不支持文本对话") {
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+}
+
+func TestImageCompatibilityResponsesStreamUsesOutputStateMachine(t *testing.T) {
+	parsed := parsedChat{ResponseID: "resp_image", InputTokens: 3}
+	parsed.appendText("![image](https://example.com/generated.png)")
+	body, err := buildImageCompatibilityStream(
+		conversation.OperationResponses,
+		parsed.ResponseID,
+		"grok-imagine-image-lite",
+		&parsed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := string(body)
+	for _, event := range []string{
+		"response.created",
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.output_text.delta",
+		"response.output_text.done",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.completed",
+	} {
+		if !strings.Contains(stream, "event: "+event+"\n") {
+			t.Fatalf("stream missing %s: %s", event, stream)
+		}
+	}
+	if strings.Contains(stream, "chat.completion.chunk") || strings.Contains(stream, "data: [DONE]") {
+		t.Fatalf("Responses stream contains Chat Completions envelope: %s", stream)
+	}
+	if len(parsed.ResponseOutput) != 1 {
+		t.Fatalf("response output = %#v", parsed.ResponseOutput)
+	}
+	item := parsed.ResponseOutput[0].(map[string]any)
+	if item["type"] != "message" || item["status"] != "completed" {
+		t.Fatalf("response output item = %#v", item)
+	}
+	itemID, _ := item["id"].(string)
+	completedAt := strings.Index(stream, "event: response.completed\n")
+	if itemID == "" || completedAt < 0 || !strings.Contains(stream[completedAt:], `"id":"`+itemID+`"`) {
+		t.Fatalf("completed response does not reuse output item %q: %s", itemID, stream)
+	}
+}
+
 func TestNormalizeResponsesInputImage(t *testing.T) {
 	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	input, _ := json.Marshal([]any{map[string]any{
@@ -582,6 +698,56 @@ func TestLiteChatRejectsInvalidImageConfigBeforeUpstream(t *testing.T) {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d", response.StatusCode)
+	}
+}
+
+func TestLiteChatStreamFailsBeforeReturningSuccessResponse(t *testing.T) {
+	server := fhttptest.NewServer(fhttp.HandlerFunc(func(writer fhttp.ResponseWriter, request *fhttp.Request) {
+		if request.URL.Path != "/ws/mgw/" {
+			fhttp.NotFound(writer, request)
+			return
+		}
+		connection, err := (&websocket.Upgrader{CheckOrigin: func(*fhttp.Request) bool { return true }}).Upgrade(writer, request, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer connection.Close()
+		var initial map[string]any
+		if err := connection.ReadJSON(&initial); err != nil {
+			t.Errorf("read session.create: %v", err)
+			return
+		}
+		initialID := initial["event"].(map[string]any)["event_id"].(string)
+		_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "session.created", "client_event_id": initialID}})
+		_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "conversation.attached", "conversation": map[string]any{"id": "conv_1"}}})
+		for range 2 {
+			var event map[string]any
+			if err := connection.ReadJSON(&event); err != nil {
+				t.Errorf("read turn event: %v", err)
+				return
+			}
+		}
+		_ = connection.WriteJSON(map[string]any{"session_id": "conv_1", "event": map[string]any{"type": "response.done", "response": map[string]any{"id": "parent_1", "status": "completed"}}})
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual"}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, imageAssetStoreStub{})
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, UserID: "497f19f8-49d4-458a-bee4-43ec3dcaf8ca", EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/v1/chat/completions", Model: "grok-imagine-image", Operation: conversation.OperationChat,
+		Body: []byte(`{"model":"grok-imagine-image-lite","stream":true,"messages":[{"role":"user","content":"draw a cat"}]}`), Streaming: true,
+	})
+	if err == nil || response != nil || !strings.Contains(err.Error(), "未解析到最终图片") {
+		t.Fatalf("response=%#v error=%v", response, err)
 	}
 }
 
@@ -1433,6 +1599,58 @@ func TestParseVideoStreamPreservesUpstreamStatus(t *testing.T) {
 	status, ok := provider.ErrorHTTPStatus(err)
 	if !ok || status != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, ok = %v, err = %v", status, ok, err)
+	}
+}
+
+func TestGenerateVideoClassifiesOnlyExplicitHTTPRejectionAsCreateFailure(t *testing.T) {
+	status := http.StatusOK
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/rest/media/post/create":
+			_, _ = io.WriteString(writer, `{"post":{"id":"post_1"}}`)
+		case "/rest/app-chat/conversations/new":
+			writer.WriteHeader(status)
+			if status == http.StatusOK {
+				_, _ = io.WriteString(writer, `{}`)
+			} else {
+				_, _ = io.WriteString(writer, `{"error":"rate limited"}`)
+			}
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := infraegress.NewManager(egressRepositoryStub{}, cipher)
+	adapter := NewAdapter(Config{BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test"}, manager, cipher, nil, nil)
+	request := provider.VideoRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
+		Prompt:     "test",
+		Duration:   5,
+	}
+
+	_, err = adapter.GenerateVideo(context.Background(), request)
+	if stage, ok := provider.VideoErrorStage(err); !ok || stage != provider.VideoStagePoll {
+		t.Fatalf("successful response without a completed video stage = %q, ok=%t, err=%v", stage, ok, err)
+	}
+	status = http.StatusTooManyRequests
+	_, err = adapter.GenerateVideo(context.Background(), request)
+	if stage, ok := provider.VideoErrorStage(err); !ok || stage != provider.VideoStageCreate {
+		t.Fatalf("explicit HTTP rejection stage = %q, ok=%t, err=%v", stage, ok, err)
+	}
+	status = http.StatusInternalServerError
+	_, err = adapter.GenerateVideo(context.Background(), request)
+	if stage, ok := provider.VideoErrorStage(err); !ok || stage != provider.VideoStageSubmitted {
+		t.Fatalf("server failure stage = %q, ok=%t, err=%v", stage, ok, err)
 	}
 }
 

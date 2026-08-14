@@ -27,6 +27,7 @@ export function SettingsPage() {
   const [autoCleanConfirm, setAutoCleanConfirm] = useState<"enabled" | "includeDisabled" | null>(null);
   const [unlimitedAttemptsConfirm, setUnlimitedAttemptsConfirm] = useState(false);
   const limitedRoutingAttemptsRef = useRef(3);
+  const limitedVideoRoutingAttemptsRef = useRef(999);
   const autoCleanEnabled = form.watch("accounts.autoCleanReauthEnabled") === true;
   const buildForbiddenReauthEnabled = form.watch("accounts.markBuildForbiddenReauth") === true;
   const segmentedSelectorEnabled = form.watch("routing.segmentedSelector.enabled") === true;
@@ -266,6 +267,44 @@ export function SettingsPage() {
                               return;
                             }
                             field.onChange(limitedRoutingAttemptsRef.current);
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                }} />
+              </SettingsField>
+              <SettingsField controlId="routing-video-max-attempts" label={t("settings.routing.videoMaxAttempts")} description={t("settings.routing.videoMaxAttemptsHelp")} error={form.formState.errors.routing?.videoMaxAttempts?.message}>
+                <Controller control={form.control} name="routing.videoMaxAttempts" render={({ field }) => {
+                  const unlimited = field.value === UNLIMITED_ROUTING_ATTEMPTS;
+                  return (
+                    <div className="flex h-9 items-center gap-3">
+                      <Input
+                        id="routing-video-max-attempts"
+                        ref={field.ref}
+                        name={field.name}
+                        type="number"
+                        min={1}
+                        max={MAX_ROUTING_ATTEMPTS}
+                        disabled={unlimited}
+                        value={unlimited || !Number.isFinite(field.value) || field.value <= 0 ? "" : field.value}
+                        placeholder={t("settingsRoutingAttempts.unlimited")}
+                        onBlur={field.onBlur}
+                        onChange={(event) => field.onChange(event.currentTarget.valueAsNumber)}
+                      />
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="text-xs text-muted-foreground">{t("settingsRoutingAttempts.unlimited")}</span>
+                        <Switch
+                          id="routing-video-max-attempts-unlimited"
+                          aria-label={t("settingsRoutingAttempts.unlimited")}
+                          checked={unlimited}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              if (field.value > 0) limitedVideoRoutingAttemptsRef.current = field.value;
+                              field.onChange(UNLIMITED_ROUTING_ATTEMPTS);
+                              return;
+                            }
+                            field.onChange(limitedVideoRoutingAttemptsRef.current);
                           }}
                         />
                       </div>
