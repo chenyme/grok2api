@@ -189,8 +189,10 @@ func TestDegradeAccountsListsHardHitsAndRejectsUnknownWindow(t *testing.T) {
 	NewHandler(auditapp.NewService(repo, slog.Default(), 8, 4, time.Second)).Register(router.Group("/api/admin/v1"))
 
 	ok := httptest.NewRecorder()
-	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/admin/v1/request-audits/degrade-accounts?window=24h&softTPS=500&hardTPS=1000", nil))
-	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), `"id":"11"`) || !strings.Contains(ok.Body.String(), `"hard":1`) {
+	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/admin/v1/request-audits/degrade-accounts?window=24h&softTPS=500&hardTPS=1000&failClosed=false&page=1&pageSize=20", nil))
+	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), `"id":"11"`) || !strings.Contains(ok.Body.String(), `"hard":1`) ||
+		!strings.Contains(ok.Body.String(), `"found":false`) || !strings.Contains(ok.Body.String(), `"deleted":1`) ||
+		!strings.Contains(ok.Body.String(), `"accountPage":{"page":1,"pageSize":20,"total":1,"hasMore":false}`) {
 		t.Fatalf("status=%d body=%s", ok.Code, ok.Body.String())
 	}
 

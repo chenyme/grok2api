@@ -337,7 +337,19 @@ func (h *Handler) summary(c *gin.Context) {
 func (h *Handler) degradeAccounts(c *gin.Context) {
 	softTPS, _ := strconv.ParseFloat(c.Query("softTPS"), 64)
 	hardTPS, _ := strconv.ParseFloat(c.Query("hardTPS"), 64)
-	result, err := h.service.DegradeSummary(c.Request.Context(), c.DefaultQuery("window", "24h"), auditapp.DegradeThresholds{SoftTPS: softTPS, HardTPS: hardTPS})
+	minGenMS, _ := strconv.ParseInt(c.Query("minGenMs"), 10, 64)
+	failClosed, _ := strconv.ParseBool(c.Query("failClosed"))
+	minHits, _ := strconv.Atoi(c.Query("minHits"))
+	page, _ := strconv.Atoi(c.Query("page"))
+	pageSize, _ := strconv.Atoi(c.Query("pageSize"))
+	result, err := h.service.DegradeSummary(
+		c.Request.Context(), c.DefaultQuery("window", "24h"),
+		auditapp.DegradeThresholds{SoftTPS: softTPS, HardTPS: hardTPS, MinGenMS: minGenMS, FailClosed: failClosed},
+		auditapp.DegradeAccountFilter{
+			Search: c.Query("search"), Status: c.Query("status"), Class: c.Query("class"), MinHits: minHits,
+			Page: page, PageSize: pageSize,
+		},
+	)
 	if errors.Is(err, auditapp.ErrInvalidPeriod) {
 		response.Error(c, http.StatusBadRequest, "invalidAuditPeriod", "window 仅支持 1h、6h、24h、7d")
 		return
@@ -351,7 +363,7 @@ func (h *Handler) degradeAccounts(c *gin.Context) {
 		accounts = append(accounts, degradeAccountResponse{
 			ID: strconv.FormatUint(account.ID, 10), Name: account.Name, Email: account.Email, Hits: account.Hits,
 			MaxTPS: account.MaxTPS, Classes: account.Classes, Nodes: account.Nodes, Last: account.Last,
-			Enabled: account.Enabled, BFS: account.BFS,
+			Enabled: account.Enabled, Found: account.Found, BFS: account.BFS,
 		})
 	}
 	events := make([]degradeEventResponse, 0, len(result.Events))
@@ -372,21 +384,35 @@ func (h *Handler) degradeAccounts(c *gin.Context) {
 		Thresholds: degradeThresholdsResponse{SoftTPS: result.Thresholds.SoftTPS, HardTPS: result.Thresholds.HardTPS, MinGenMS: result.Thresholds.MinGenMS, MinOut: result.Thresholds.MinOut},
 		Totals: degradeTotalsResponse{
 			Hits: result.Totals.Hits, Accounts: result.Totals.Accounts, StillEnabled: result.Totals.StillEnabled,
-			Disabled: result.Totals.Disabled, Hard: result.Totals.Hard, Soft: result.Totals.Soft, Burst: result.Totals.Burst, MaxTPS: result.Totals.MaxTPS,
+			Disabled: result.Totals.Disabled, Deleted: result.Totals.Deleted, Hard: result.Totals.Hard,
+			Soft: result.Totals.Soft, Burst: result.Totals.Burst, MaxTPS: result.Totals.MaxTPS,
 		},
-		Series: result.Series, Nodes: result.Nodes, Accounts: accounts, Events: events,
+		Series: result.Series, Nodes: result.Nodes, Accounts: accounts,
+		AccountPage: degradeAccountPageResponse{
+			Page: result.AccountPage.Page, PageSize: result.AccountPage.PageSize,
+			Total: result.AccountPage.Total, HasMore: result.AccountPage.HasMore,
+		},
+		Events: events,
 	})
 }
 
 type degradeSummaryResponse struct {
-	Window      string                    `json:"window"`
-	GeneratedAt time.Time                 `json:"generatedAt"`
-	Thresholds  degradeThresholdsResponse `json:"thresholds"`
-	Totals      degradeTotalsResponse     `json:"totals"`
-	Series      []auditapp.DegradeBucket  `json:"series"`
-	Nodes       []auditapp.DegradeNode    `json:"nodes"`
-	Accounts    []degradeAccountResponse  `json:"accounts"`
-	Events      []degradeEventResponse    `json:"events"`
+	Window      string                     `json:"window"`
+	GeneratedAt time.Time                  `json:"generatedAt"`
+	Thresholds  degradeThresholdsResponse  `json:"thresholds"`
+	Totals      degradeTotalsResponse      `json:"totals"`
+	Series      []auditapp.DegradeBucket   `json:"series"`
+	Nodes       []auditapp.DegradeNode     `json:"nodes"`
+	Accounts    []degradeAccountResponse   `json:"accounts"`
+	AccountPage degradeAccountPageResponse `json:"accountPage"`
+	Events      []degradeEventResponse     `json:"events"`
+}
+
+type degradeAccountPageResponse struct {
+	Page     int   `json:"page"`
+	PageSize int   `json:"pageSize"`
+	Total    int64 `json:"total"`
+	HasMore  bool  `json:"hasMore"`
 }
 
 type degradeThresholdsResponse struct {
@@ -397,27 +423,29 @@ type degradeThresholdsResponse struct {
 }
 
 type degradeTotalsResponse struct {
-	Hits         int     `json:"hits"`
-	Accounts     int     `json:"accounts"`
-	StillEnabled int     `json:"stillEnabled"`
-	Disabled     int     `json:"disabled"`
-	Hard         int     `json:"hard"`
-	Soft         int     `json:"soft"`
-	Burst        int     `json:"burst"`
+	Hits         int64   `json:"hits"`
+	Accounts     int64   `json:"accounts"`
+	StillEnabled int64   `json:"stillEnabled"`
+	Disabled     int64   `json:"disabled"`
+	Deleted      int64   `json:"deleted"`
+	Hard         int64   `json:"hard"`
+	Soft         int64   `json:"soft"`
+	Burst        int64   `json:"burst"`
 	MaxTPS       float64 `json:"maxTPS"`
 }
 
 type degradeAccountResponse struct {
-	ID      string         `json:"id"`
-	Name    string         `json:"name"`
-	Email   string         `json:"email"`
-	Hits    int            `json:"hits"`
-	MaxTPS  float64        `json:"maxTPS"`
-	Classes map[string]int `json:"classes"`
-	Nodes   []string       `json:"nodes"`
-	Last    time.Time      `json:"last"`
-	Enabled bool           `json:"enabled"`
-	BFS     int            `json:"bfs"`
+	ID      string           `json:"id"`
+	Name    string           `json:"name"`
+	Email   string           `json:"email"`
+	Hits    int64            `json:"hits"`
+	MaxTPS  float64          `json:"maxTPS"`
+	Classes map[string]int64 `json:"classes"`
+	Nodes   []string         `json:"nodes"`
+	Last    time.Time        `json:"last"`
+	Enabled bool             `json:"enabled"`
+	Found   bool             `json:"found"`
+	BFS     int              `json:"bfs"`
 }
 
 type degradeEventResponse struct {

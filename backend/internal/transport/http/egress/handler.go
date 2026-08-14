@@ -139,6 +139,8 @@ type qualityGuardConfig struct {
 	QuarantineSeconds     int      `json:"quarantine_seconds"`
 	MinHealthyNodes       int      `json:"min_healthy_nodes"`
 	MaxOutputTokens       int      `json:"max_output_tokens"`
+	FailClosed            bool     `json:"fail_closed"`
+	MinGenerationMS       int      `json:"min_generation_ms"`
 	Prompt                string   `json:"prompt"`
 	Expected              string   `json:"expected"`
 }
@@ -194,6 +196,7 @@ func (h *Handler) qualityGuardStatus(c *gin.Context) {
 			"hard_tps": state.Guard.HardTPS, "consecutive_soft": state.Guard.ConsecutiveSoft,
 			"consecutive_errors": state.Guard.ConsecutiveErrors, "quarantine_seconds": state.Guard.QuarantineSeconds,
 			"min_healthy_nodes": state.Guard.MinHealthyNodes, "max_output_tokens": state.Guard.MaxOutputTokens,
+			"fail_closed": state.Guard.FailClosed, "min_generation_ms": state.Guard.MinGenerationMS,
 		},
 		"nodes": state.Nodes, "protectedNodeIds": state.ProtectedNodeIDs, "recentEvents": state.RecentEvents,
 	}

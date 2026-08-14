@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Gauge, Power, PowerOff, RefreshCw, Search, Users } from "lucide-react";
+import { AlertTriangle, Gauge, PowerOff, RefreshCw, Search, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -13,33 +13,40 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { updateAccountsEnabled } from "@/features/accounts/accounts-api";
 import { getDegradeAccounts, type DegradeAccountDTO, type DegradeClass, type DegradeSummaryDTO, type DegradeWindow } from "@/features/quality-guard/quality-guard-api";
 import { EmptyState, ErrorState } from "@/shared/components/data-state";
+import { Pagination } from "@/shared/components/pagination";
+import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { cn } from "@/shared/lib/cn";
 import { formatCompactDateTime } from "@/shared/lib/format";
 
 const MUTE_TOAST_ID = "quality-guard-degrade-mute";
 
-export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; hardTPS?: number }) {
+export function DegradeAccountsPanel({ softTPS, hardTPS, failClosed, minGenMs }: { softTPS?: number; hardTPS?: number; failClosed?: boolean; minGenMs?: number }) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [period, setPeriod] = useState<DegradeWindow>("24h");
   const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<"all" | "on" | "off">("all");
+  const debouncedSearch = useDebouncedValue(search);
+  const [status, setStatus] = useState<"all" | "enabled" | "disabled" | "deleted">("all");
   const [cls, setCls] = useState<"all" | DegradeClass>("all");
   const [hitsMin, setHitsMin] = useState(1);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
 
   const query = useQuery({
-    queryKey: ["quality-guard-degrade-accounts", period, softTPS, hardTPS],
-    queryFn: () => getDegradeAccounts({ window: period, softTPS, hardTPS }),
+    queryKey: ["quality-guard-degrade-accounts", period, softTPS, hardTPS, failClosed, minGenMs, debouncedSearch, status, cls, hitsMin, page, pageSize],
+    queryFn: () => getDegradeAccounts({
+      window: period, softTPS, hardTPS, failClosed, minGenMs, search: debouncedSearch || undefined,
+      status: status === "all" ? undefined : status, class: cls === "all" ? undefined : cls,
+      minHits: hitsMin, page, pageSize,
+    }),
     refetchInterval: 15_000,
   });
 
   const data = query.data;
-  const rows = useMemo(() => filterAccounts(data, { search, status, cls, hitsMin }), [data, search, status, cls, hitsMin]);
-  const selectable = rows;
+  const rows = useMemo(() => data?.accounts ?? [], [data?.accounts]);
+  const selectable = useMemo(() => rows.filter((account) => account.found && account.enabled), [rows]);
   const selectedRows = selectable.filter((account) => selected.has(account.id));
-  const selectedEnabled = selectedRows.filter((account) => account.enabled);
-  const selectedMuted = selectedRows.filter((account) => !account.enabled);
   const allSelected = selectable.length > 0 && selectedRows.length === selectable.length;
 
   const muteMutation = useMutation({
@@ -53,18 +60,7 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
     },
     onError: (error) => toast.error(error instanceof Error ? error.message : t("qualityGuard.degrade.muteFailed"), { id: MUTE_TOAST_ID }),
   });
-  const unmuteMutation = useMutation({
-    mutationFn: (ids: string[]) => updateAccountsEnabled(ids, true, "grok_build"),
-    onMutate: () => toast.loading(t("qualityGuard.degrade.unmuting"), { id: MUTE_TOAST_ID }),
-    onSuccess: (_, ids) => {
-      setSelected(new Set());
-      void queryClient.invalidateQueries({ queryKey: ["quality-guard-degrade-accounts"] });
-      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
-      toast.success(t("qualityGuard.degrade.unmuted", { count: ids.length }), { id: MUTE_TOAST_ID });
-    },
-    onError: (error) => toast.error(error instanceof Error ? error.message : t("qualityGuard.degrade.unmuteFailed"), { id: MUTE_TOAST_ID }),
-  });
-  const busy = muteMutation.isPending || unmuteMutation.isPending;
+  const busy = muteMutation.isPending;
 
   const toggleAll = (checked: boolean) => {
     setSelected((current) => {
@@ -84,7 +80,7 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
     <div className="space-y-4">
       <section className="grid overflow-hidden rounded-lg bg-card sm:grid-cols-2 xl:grid-cols-4" aria-label={t("qualityGuard.degrade.overview")}>
         <Metric icon={AlertTriangle} label={t("qualityGuard.degrade.hits")} value={String(data.totals.hits)} detail={t("qualityGuard.degrade.hitsHelp", { burst: data.totals.burst, soft: data.totals.soft, hard: data.totals.hard })} tone={data.totals.hits ? "bad" : "good"} />
-        <Metric icon={Users} label={t("qualityGuard.degrade.accounts")} value={String(data.totals.accounts)} detail={t("qualityGuard.degrade.accountsHelp")} />
+        <Metric icon={Users} label={t("qualityGuard.degrade.accounts")} value={String(data.totals.accounts)} detail={t("qualityGuard.degrade.accountsHelp", { deleted: data.totals.deleted })} />
         <Metric icon={PowerOff} label={t("qualityGuard.degrade.stillEnabled")} value={String(data.totals.stillEnabled)} detail={t("qualityGuard.degrade.stillEnabledHelp")} tone={data.totals.stillEnabled ? "bad" : "good"} />
         <Metric icon={Gauge} label={t("qualityGuard.degrade.maxTPS")} value={Math.round(data.totals.maxTPS).toString()} detail={t("qualityGuard.degrade.maxTPSHelp")} tone={data.totals.maxTPS >= data.thresholds.hardTPS ? "bad" : undefined} />
       </section>
@@ -100,30 +96,24 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
             <h2 className="text-sm font-medium">{t("qualityGuard.degrade.accountsTitle")}</h2>
             <p className="mt-1 text-xs text-muted-foreground">
               {hitsMin > 1
-                ? t("qualityGuard.degrade.accountsHintFiltered", { shown: rows.length, total: data.accounts.length, min: hitsMin })
-                : t("qualityGuard.degrade.accountsHint", { shown: rows.length, total: data.accounts.length })}
+                ? t("qualityGuard.degrade.accountsHintFiltered", { shown: rows.length, total: data.accountPage.total, min: hitsMin })
+                : t("qualityGuard.degrade.accountsHint", { shown: rows.length, total: data.accountPage.total })}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input className="h-8 w-44 pl-8" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("qualityGuard.degrade.search")} />
+              <Input className="h-8 w-44 pl-8" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); setSelected(new Set()); }} placeholder={t("qualityGuard.degrade.search")} />
             </div>
-            <FilterSelect value={period} onChange={(value) => { setSelected(new Set()); setPeriod(value as DegradeWindow); }} items={[["1h", t("qualityGuard.degrade.windows.1h")], ["6h", t("qualityGuard.degrade.windows.6h")], ["24h", t("qualityGuard.degrade.windows.24h")], ["7d", t("qualityGuard.degrade.windows.7d")]]} />
-            <FilterSelect value={status} onChange={(value) => setStatus(value as "all" | "on" | "off")} items={[["all", t("qualityGuard.degrade.statusAll")], ["on", t("qualityGuard.degrade.statusOn")], ["off", t("qualityGuard.degrade.statusOff")]]} />
-            <FilterSelect value={cls} onChange={(value) => setCls(value as "all" | DegradeClass)} items={[["all", t("qualityGuard.degrade.classAll")], ["buffered_burst", "burst"], ["soft_tps", "soft"], ["hard_tps", "hard"]]} />
-            <FilterSelect value={String(hitsMin)} onChange={(value) => setHitsMin(Number(value))} items={[["1", t("qualityGuard.degrade.hitsAll")], ["2", t("qualityGuard.degrade.hitsMin", { count: 2 })], ["3", t("qualityGuard.degrade.hitsMin", { count: 3 })], ["5", t("qualityGuard.degrade.hitsMin", { count: 5 })], ["10", t("qualityGuard.degrade.hitsMin", { count: 10 })]]} />
-            <Button type="button" variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={selectedEnabled.length === 0 || busy} onClick={() => {
-              if (!window.confirm(t("qualityGuard.degrade.muteConfirm", { count: selectedEnabled.length }))) return;
-              muteMutation.mutate(selectedEnabled.map((account) => account.id));
+            <FilterSelect value={period} onChange={(value) => { setSelected(new Set()); setPage(1); setPeriod(value as DegradeWindow); }} items={[["1h", t("qualityGuard.degrade.windows.1h")], ["6h", t("qualityGuard.degrade.windows.6h")], ["24h", t("qualityGuard.degrade.windows.24h")], ["7d", t("qualityGuard.degrade.windows.7d")]]} />
+            <FilterSelect value={status} onChange={(value) => { setStatus(value as "all" | "enabled" | "disabled" | "deleted"); setPage(1); setSelected(new Set()); }} items={[["all", t("qualityGuard.degrade.statusAll")], ["enabled", t("qualityGuard.degrade.statusOn")], ["disabled", t("qualityGuard.degrade.statusOff")], ["deleted", t("qualityGuard.degrade.statusDeleted")]]} />
+            <FilterSelect value={cls} onChange={(value) => { setCls(value as "all" | DegradeClass); setPage(1); setSelected(new Set()); }} items={[["all", t("qualityGuard.degrade.classAll")], ["buffered_burst", "burst"], ["soft_tps", "soft"], ["hard_tps", "hard"]]} />
+            <FilterSelect value={String(hitsMin)} onChange={(value) => { setHitsMin(Number(value)); setPage(1); setSelected(new Set()); }} items={[["1", t("qualityGuard.degrade.hitsAll")], ["2", t("qualityGuard.degrade.hitsMin", { count: 2 })], ["3", t("qualityGuard.degrade.hitsMin", { count: 3 })], ["5", t("qualityGuard.degrade.hitsMin", { count: 5 })], ["10", t("qualityGuard.degrade.hitsMin", { count: 10 })]]} />
+            <Button type="button" variant="secondary" size="sm" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={selectedRows.length === 0 || busy} onClick={() => {
+              if (!window.confirm(t("qualityGuard.degrade.muteConfirm", { count: selectedRows.length }))) return;
+              muteMutation.mutate(selectedRows.map((account) => account.id));
             }}>
-              <PowerOff />{selectedEnabled.length ? t("qualityGuard.degrade.muteSelectedCount", { count: selectedEnabled.length }) : t("qualityGuard.degrade.muteSelected")}
-            </Button>
-            <Button type="button" variant="secondary" size="sm" disabled={selectedMuted.length === 0 || busy} onClick={() => {
-              if (!window.confirm(t("qualityGuard.degrade.unmuteConfirm", { count: selectedMuted.length }))) return;
-              unmuteMutation.mutate(selectedMuted.map((account) => account.id));
-            }}>
-              <Power />{selectedMuted.length ? t("qualityGuard.degrade.unmuteSelectedCount", { count: selectedMuted.length }) : t("qualityGuard.degrade.unmuteSelected")}
+              <PowerOff />{selectedRows.length ? t("qualityGuard.degrade.muteSelectedCount", { count: selectedRows.length }) : t("qualityGuard.degrade.muteSelected")}
             </Button>
             <Button type="button" variant="ghost" size="icon" className="size-8" onClick={() => void query.refetch()} disabled={query.isFetching} aria-label={t("common.refresh")}>
               <RefreshCw className={cn("size-4", query.isFetching && "animate-spin")} />
@@ -147,43 +137,63 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow><TableCell colSpan={8}><EmptyState message={t("qualityGuard.degrade.noAccounts")} /></TableCell></TableRow>
-              ) : rows.map((account) => (
-                <TableRow key={account.id} className="cursor-pointer" onClick={() => {
-                  setSelected((current) => {
-                    const next = new Set(current);
-                    if (next.has(account.id)) next.delete(account.id);
-                    else next.add(account.id);
-                    return next;
-                  });
-                }}>
-                  <TableCell className="px-3" onClick={(event) => event.stopPropagation()}>
-                    <label className="flex size-8 cursor-pointer items-center justify-center">
-                      <Checkbox checked={selected.has(account.id)} onCheckedChange={(checked) => setSelected((current) => {
-                        const next = new Set(current);
-                        if (checked === true) next.add(account.id);
-                        else next.delete(account.id);
-                        return next;
-                      })} />
-                    </label>
-                  </TableCell>
-                  <TableCell>
-                    <div className="font-mono text-xs text-muted-foreground">#{account.id}</div>
-                    <div className="text-sm">{account.email || account.name || "-"}</div>
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap">
-                    {account.enabled ? <Badge variant="outline" className="whitespace-nowrap text-destructive">{t("qualityGuard.degrade.scheduling")}</Badge> : <Badge variant="outline" className="whitespace-nowrap text-emerald-600 dark:text-emerald-400">{t("qualityGuard.degrade.mutedStatus")}</Badge>}
-                    {account.bfs ? <Badge variant="outline" className="ml-1 whitespace-nowrap text-muted-foreground">bfs {account.bfs}</Badge> : null}
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums">{account.hits}</TableCell>
-                  <TableCell className={cn("text-right font-mono tabular-nums", account.maxTPS >= data.thresholds.hardTPS ? "text-destructive" : account.maxTPS >= data.thresholds.softTPS ? "text-amber-600 dark:text-amber-400" : "")}>{account.maxTPS}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{classSummary(account.classes)}</TableCell>
-                  <TableCell className="text-xs">{account.nodes.join(" · ") || "-"}</TableCell>
-                  <TableCell className="font-mono text-xs">{account.last ? formatCompactDateTime(account.last, i18n.language) : "-"}</TableCell>
-                </TableRow>
-              ))}
+              ) : rows.map((account) => {
+                const canMute = account.found && account.enabled;
+                return (
+                  <TableRow key={account.id} className={canMute ? "cursor-pointer" : undefined} onClick={() => {
+                    if (!canMute) return;
+                    setSelected((current) => {
+                      const next = new Set(current);
+                      if (next.has(account.id)) next.delete(account.id);
+                      else next.add(account.id);
+                      return next;
+                    });
+                  }}>
+                    <TableCell className="px-3" onClick={(event) => event.stopPropagation()}>
+                      <label className="flex size-8 cursor-pointer items-center justify-center">
+                        <Checkbox disabled={!canMute} checked={selected.has(account.id)} onCheckedChange={(checked) => setSelected((current) => {
+                          const next = new Set(current);
+                          if (checked === true) next.add(account.id);
+                          else next.delete(account.id);
+                          return next;
+                        })} />
+                      </label>
+                    </TableCell>
+                    <TableCell>
+                      <div className="font-mono text-xs text-muted-foreground">#{account.id}</div>
+                      <div className="text-sm">{account.email || account.name || "-"}</div>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      {!account.found
+                        ? <Badge variant="outline" className="whitespace-nowrap text-muted-foreground">{t("qualityGuard.degrade.deletedStatus")}</Badge>
+                        : account.enabled
+                          ? <Badge variant="outline" className="whitespace-nowrap text-destructive">{t("qualityGuard.degrade.scheduling")}</Badge>
+                          : <Badge variant="outline" className="whitespace-nowrap text-emerald-600 dark:text-emerald-400">{t("qualityGuard.degrade.disabledStatus")}</Badge>}
+                      {account.bfs ? <Badge variant="outline" className="ml-1 whitespace-nowrap text-muted-foreground">bfs {account.bfs}</Badge> : null}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">{account.hits}</TableCell>
+                    <TableCell className={cn("text-right font-mono tabular-nums", account.maxTPS >= data.thresholds.hardTPS ? "text-destructive" : account.maxTPS >= data.thresholds.softTPS ? "text-amber-600 dark:text-amber-400" : "")}>{account.maxTPS}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{classSummary(account.classes)}</TableCell>
+                    <TableCell className="text-xs">{account.nodes.join(" · ") || "-"}</TableCell>
+                    <TableCell className="font-mono text-xs">{account.last ? formatCompactDateTime(account.last, i18n.language) : "-"}</TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </div>
+        {data.accountPage.total > 0 ? (
+          <div className="border-t px-4 py-3 sm:px-5">
+            <Pagination
+              page={data.accountPage.page}
+              pageSize={data.accountPage.pageSize}
+              total={data.accountPage.total}
+              pageSizeOptions={[20, 50, 100]}
+              onPageChange={(value) => { setPage(value); setSelected(new Set()); }}
+              onPageSizeChange={(value) => { setPageSize(value); setPage(1); setSelected(new Set()); }}
+            />
+          </div>
+        ) : null}
       </section>
 
       <section className="overflow-hidden rounded-lg bg-card">
@@ -203,19 +213,6 @@ export function DegradeAccountsPanel({ softTPS, hardTPS }: { softTPS?: number; h
       </section>
     </div>
   );
-}
-
-function filterAccounts(data: DegradeSummaryDTO | undefined, filters: { search: string; status: "all" | "on" | "off"; cls: "all" | DegradeClass; hitsMin: number }) {
-  if (!data) return [];
-  const search = filters.search.trim().toLowerCase();
-  return data.accounts.filter((account) => {
-    if (account.hits < filters.hitsMin) return false;
-    if (filters.status === "on" && !account.enabled) return false;
-    if (filters.status === "off" && account.enabled) return false;
-    if (filters.cls !== "all" && (account.classes[filters.cls] ?? 0) <= 0) return false;
-    if (search && !`${account.id} ${account.email} ${account.name}`.toLowerCase().includes(search)) return false;
-    return true;
-  });
 }
 
 function classSummary(classes: DegradeAccountDTO["classes"]) {

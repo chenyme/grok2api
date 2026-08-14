@@ -167,7 +167,12 @@ export function QualityGuardPage() {
           <TabsTrigger value="accounts">{t("qualityGuard.degrade.tab")}</TabsTrigger>
         </TabsList>
         <TabsContent value="accounts" className="mt-6">
-          <DegradeAccountsPanel softTPS={status?.config?.soft_tps} hardTPS={status?.config?.hard_tps} />
+          <DegradeAccountsPanel
+            softTPS={status?.config?.soft_tps}
+            hardTPS={status?.config?.hard_tps}
+            failClosed={status?.config?.fail_closed}
+            minGenMs={status?.config?.min_generation_ms}
+          />
         </TabsContent>
         <TabsContent value="nodes" className="mt-6 space-y-6">
       {!status?.available ? <UnavailableState /> : (

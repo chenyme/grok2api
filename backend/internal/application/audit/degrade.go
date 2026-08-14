@@ -3,7 +3,7 @@ package audit
 import (
 	"context"
 	"math"
-	"sort"
+	"strings"
 	"time"
 
 	auditdomain "github.com/chenyme/grok2api/backend/internal/domain/audit"
@@ -11,19 +11,31 @@ import (
 )
 
 const (
-	degradeWindow1h       = "1h"
-	degradeWindow6h       = "6h"
-	degradeWindow24h      = "24h"
-	degradeWindow7d       = "7d"
-	degradeEventLimit     = 20_000
-	degradeRecentEventCap = 80
+	degradeWindow1h        = "1h"
+	degradeWindow6h        = "6h"
+	degradeWindow24h       = "24h"
+	degradeWindow7d        = "7d"
+	degradeRecentEventCap  = 80
+	degradeDefaultPage     = 1
+	degradeDefaultPageSize = 50
+	degradeMaxPageSize     = 100
 )
 
 type DegradeThresholds struct {
-	SoftTPS  float64
-	HardTPS  float64
-	MinGenMS int64
-	MinOut   int64
+	SoftTPS    float64
+	HardTPS    float64
+	MinGenMS   int64
+	MinOut     int64
+	FailClosed bool
+}
+
+type DegradeAccountFilter struct {
+	Search   string
+	Status   string
+	Class    string
+	MinHits  int
+	Page     int
+	PageSize int
 }
 
 type DegradeSummary struct {
@@ -34,30 +46,39 @@ type DegradeSummary struct {
 	Series      []DegradeBucket
 	Nodes       []DegradeNode
 	Accounts    []DegradeAccount
+	AccountPage DegradeAccountPage
 	Events      []DegradeEventView
 }
 
 type DegradeTotals struct {
-	Hits         int
-	Accounts     int
-	StillEnabled int
-	Disabled     int
-	Hard         int
-	Soft         int
-	Burst        int
+	Hits         int64
+	Accounts     int64
+	StillEnabled int64
+	Disabled     int64
+	Deleted      int64
+	Hard         int64
+	Soft         int64
+	Burst        int64
 	MaxTPS       float64
+}
+
+type DegradeAccountPage struct {
+	Page     int
+	PageSize int
+	Total    int64
+	HasMore  bool
 }
 
 type DegradeBucket struct {
 	Label  string `json:"label"`
-	Count  int    `json:"count"`
-	Severe int    `json:"severe"`
+	Count  int64  `json:"count"`
+	Severe int64  `json:"severe"`
 }
 
 type DegradeNode struct {
 	Name     string  `json:"name"`
-	Hits     int     `json:"hits"`
-	Accounts int     `json:"accounts"`
+	Hits     int64   `json:"hits"`
+	Accounts int64   `json:"accounts"`
 	MaxTPS   float64 `json:"maxTPS"`
 }
 
@@ -65,14 +86,14 @@ type DegradeAccount struct {
 	ID      uint64
 	Name    string
 	Email   string
-	Hits    int
+	Hits    int64
 	MaxTPS  float64
-	Classes map[string]int
+	Classes map[string]int64
 	Nodes   []string
 	Last    time.Time
 	Enabled bool
-	BFS     int
 	Found   bool
+	BFS     int
 }
 
 type DegradeEventView struct {
@@ -88,19 +109,34 @@ type DegradeEventView struct {
 	Model        string
 }
 
-func (s *Service) DegradeSummary(ctx context.Context, window string, thresholds DegradeThresholds) (DegradeSummary, error) {
+type degradeBucketSpec struct {
+	Range repository.DegradeBucketRange
+	Label string
+}
+
+func (s *Service) DegradeSummary(ctx context.Context, window string, thresholds DegradeThresholds, filter DegradeAccountFilter) (DegradeSummary, error) {
 	window, start, end, err := resolveDegradeWindow(window, s.now().UTC())
 	if err != nil {
 		return DegradeSummary{}, err
 	}
 	thresholds = normalizeDegradeThresholds(thresholds)
-	events, err := s.audits.ListDegradeEvents(ctx, repository.DegradeEventQuery{
-		Start: start, End: end, MinOutputTokens: thresholds.MinOut, Limit: degradeEventLimit,
+	filter = normalizeDegradeAccountFilter(filter)
+	bucketSpecs := degradeBucketSpecs(window, start, end)
+	bucketRanges := make([]repository.DegradeBucketRange, 0, len(bucketSpecs))
+	for _, spec := range bucketSpecs {
+		bucketRanges = append(bucketRanges, spec.Range)
+	}
+	data, err := s.audits.SummarizeDegrade(ctx, repository.DegradeSummaryQuery{
+		Start: start, End: end, SoftTPS: thresholds.SoftTPS, HardTPS: thresholds.HardTPS,
+		MinGenerationMS: thresholds.MinGenMS, MinOutputTokens: thresholds.MinOut, FailClosed: thresholds.FailClosed,
+		AccountSearch: filter.Search, AccountStatus: filter.Status, AccountClass: filter.Class, MinHits: filter.MinHits,
+		AccountOffset: (filter.Page - 1) * filter.PageSize, AccountLimit: filter.PageSize,
+		Buckets: bucketRanges, RecentLimit: degradeRecentEventCap,
 	})
 	if err != nil {
 		return DegradeSummary{}, err
 	}
-	return buildDegradeSummary(window, end, thresholds, events), nil
+	return buildDegradeSummary(window, end, thresholds, filter, bucketSpecs, data), nil
 }
 
 func resolveDegradeWindow(value string, now time.Time) (string, time.Time, time.Time, error) {
@@ -143,189 +179,109 @@ func normalizeDegradeThresholds(value DegradeThresholds) DegradeThresholds {
 	return value
 }
 
-func buildDegradeSummary(window string, now time.Time, thresholds DegradeThresholds, events []repository.DegradeEvent) DegradeSummary {
-	type accAgg struct {
-		hits    int
-		maxTPS  float64
-		classes map[string]int
-		nodes   map[string]struct{}
-		last    time.Time
-		name    string
-		email   string
-		enabled bool
-		found   bool
-		bfs     int
+func normalizeDegradeAccountFilter(value DegradeAccountFilter) DegradeAccountFilter {
+	value.Search = strings.TrimSpace(value.Search)
+	if value.Status != "enabled" && value.Status != "disabled" && value.Status != "deleted" {
+		value.Status = ""
 	}
-	type nodeAgg struct {
-		hits     int
-		accounts map[uint64]struct{}
-		maxTPS   float64
+	if value.Class != auditdomain.DegradeClassBurst && value.Class != auditdomain.DegradeClassSoft && value.Class != auditdomain.DegradeClassHard {
+		value.Class = ""
 	}
-	accounts := map[uint64]*accAgg{}
-	nodes := map[string]*nodeAgg{}
-	classCounts := map[string]int{}
-	var classified []DegradeEventView
-	var maxTPS float64
+	if value.MinHits < 1 {
+		value.MinHits = 1
+	}
+	if value.Page < 1 {
+		value.Page = degradeDefaultPage
+	}
+	if value.PageSize < 1 || value.PageSize > degradeMaxPageSize {
+		value.PageSize = degradeDefaultPageSize
+	}
+	return value
+}
 
-	for _, event := range events {
-		class, tps, _ := auditdomain.ClassifyOutputSpeed(event.OutputTokens, event.FirstTokenMS, event.DurationMS, thresholds.SoftTPS, thresholds.HardTPS, thresholds.MinGenMS)
-		if class == "" {
-			continue
-		}
-		classCounts[class]++
-		if tps > maxTPS {
-			maxTPS = tps
-		}
-		nodeName := event.EgressNodeName
+func buildDegradeSummary(window string, now time.Time, thresholds DegradeThresholds, filter DegradeAccountFilter, bucketSpecs []degradeBucketSpec, data repository.DegradeSummaryResult) DegradeSummary {
+	accounts := make([]DegradeAccount, 0, len(data.Accounts))
+	for _, value := range data.Accounts {
+		accounts = append(accounts, DegradeAccount{
+			ID: value.ID, Name: value.Name, Email: value.Email, Hits: value.Hits, MaxTPS: round(value.MaxTPS, 1),
+			Classes: map[string]int64{
+				auditdomain.DegradeClassBurst: value.Burst,
+				auditdomain.DegradeClassSoft:  value.Soft,
+				auditdomain.DegradeClassHard:  value.Hard,
+			},
+			Nodes: value.Nodes, Last: value.Last, Enabled: value.Enabled, Found: value.Found, BFS: value.BuildBotFlagSource,
+		})
+	}
+	nodes := make([]DegradeNode, 0, len(data.Nodes))
+	for _, value := range data.Nodes {
+		nodes = append(nodes, DegradeNode{Name: value.Name, Hits: value.Hits, Accounts: value.Accounts, MaxTPS: round(value.MaxTPS, 1)})
+	}
+	events := make([]DegradeEventView, 0, len(data.Events))
+	for _, value := range data.Events {
+		nodeName := value.EgressNodeName
 		if nodeName == "" {
 			nodeName = "?"
 		}
-		classified = append(classified, DegradeEventView{
-			ID: event.ID, RequestID: event.RequestID, AccountID: event.AccountID, AccountName: event.AccountName,
-			NodeName: nodeName, OutputTokens: event.OutputTokens, TPS: math.Round(tps*100) / 100, Class: class,
-			CreatedAt: event.CreatedAt, Model: event.Model,
-		})
-		if event.AccountID == nil || *event.AccountID == 0 {
-			continue
-		}
-		id := *event.AccountID
-		rec := accounts[id]
-		if rec == nil {
-			rec = &accAgg{classes: map[string]int{}, nodes: map[string]struct{}{}}
-			accounts[id] = rec
-		}
-		rec.hits++
-		if tps > rec.maxTPS {
-			rec.maxTPS = tps
-		}
-		rec.classes[class]++
-		rec.nodes[nodeName] = struct{}{}
-		if event.CreatedAt.After(rec.last) {
-			rec.last = event.CreatedAt
-			rec.name = event.AccountName
-		}
-		if rec.name == "" {
-			rec.name = event.AccountName
-		}
-		if event.Email != "" {
-			rec.email = event.Email
-		}
-		if event.Enabled != nil {
-			rec.enabled = *event.Enabled
-			rec.found = true
-		}
-		if event.BuildBotFlagSource > rec.bfs {
-			rec.bfs = event.BuildBotFlagSource
-		}
-		nd := nodes[nodeName]
-		if nd == nil {
-			nd = &nodeAgg{accounts: map[uint64]struct{}{}}
-			nodes[nodeName] = nd
-		}
-		nd.hits++
-		nd.accounts[id] = struct{}{}
-		if tps > nd.maxTPS {
-			nd.maxTPS = tps
-		}
-	}
-
-	accountViews := make([]DegradeAccount, 0, len(accounts))
-	enabled, disabled := 0, 0
-	for id, rec := range accounts {
-		if rec.found && rec.enabled {
-			enabled++
-		} else {
-			disabled++
-		}
-		nodeNames := make([]string, 0, len(rec.nodes))
-		for name := range rec.nodes {
-			nodeNames = append(nodeNames, name)
-		}
-		sort.Strings(nodeNames)
-		email := rec.email
-		if email == "" {
-			email = rec.name
-		}
-		accountViews = append(accountViews, DegradeAccount{
-			ID: id, Name: rec.name, Email: email, Hits: rec.hits, MaxTPS: math.Round(rec.maxTPS*10) / 10,
-			Classes: rec.classes, Nodes: nodeNames, Last: rec.last, Enabled: rec.found && rec.enabled, BFS: rec.bfs, Found: rec.found,
+		events = append(events, DegradeEventView{
+			ID: value.ID, RequestID: value.RequestID, AccountID: value.AccountID, AccountName: value.AccountName,
+			NodeName: nodeName, OutputTokens: value.OutputTokens, TPS: round(value.TPS, 2), Class: value.Class,
+			CreatedAt: value.CreatedAt, Model: value.Model,
 		})
 	}
-	sort.Slice(accountViews, func(i, j int) bool {
-		if accountViews[i].Hits != accountViews[j].Hits {
-			return accountViews[i].Hits > accountViews[j].Hits
+	series := make([]DegradeBucket, len(bucketSpecs))
+	for index, spec := range bucketSpecs {
+		series[index].Label = spec.Label
+	}
+	for _, value := range data.Buckets {
+		if value.Index >= 0 && value.Index < len(series) {
+			series[value.Index].Count = value.Count
+			series[value.Index].Severe = value.Severe
 		}
-		return accountViews[i].MaxTPS > accountViews[j].MaxTPS
-	})
-
-	nodeViews := make([]DegradeNode, 0, len(nodes))
-	for name, rec := range nodes {
-		nodeViews = append(nodeViews, DegradeNode{Name: name, Hits: rec.hits, Accounts: len(rec.accounts), MaxTPS: math.Round(rec.maxTPS*10) / 10})
 	}
-	sort.Slice(nodeViews, func(i, j int) bool { return nodeViews[i].Hits > nodeViews[j].Hits })
-
-	recent := classified
-	if len(recent) > degradeRecentEventCap {
-		recent = recent[:degradeRecentEventCap]
-	}
-
 	return DegradeSummary{
 		Window: window, GeneratedAt: now, Thresholds: thresholds,
 		Totals: DegradeTotals{
-			Hits: len(classified), Accounts: len(accounts), StillEnabled: enabled, Disabled: disabled,
-			Hard: classCounts[auditdomain.DegradeClassHard], Soft: classCounts[auditdomain.DegradeClassSoft],
-			Burst: classCounts[auditdomain.DegradeClassBurst], MaxTPS: maxTPS,
+			Hits: data.Totals.Hits, Accounts: data.Totals.Accounts, StillEnabled: data.Totals.StillEnabled,
+			Disabled: data.Totals.Disabled, Deleted: data.Totals.Deleted, Hard: data.Totals.Hard,
+			Soft: data.Totals.Soft, Burst: data.Totals.Burst, MaxTPS: round(data.Totals.MaxTPS, 2),
 		},
-		Series: bucketDegradeSeries(classified, window, now),
-		Nodes:  nodeViews, Accounts: accountViews, Events: recent,
+		Series: series, Nodes: nodes, Accounts: accounts,
+		AccountPage: DegradeAccountPage{
+			Page: data.AccountOffset/filter.PageSize + 1, PageSize: filter.PageSize, Total: data.AccountTotal,
+			HasMore: int64(data.AccountOffset+filter.PageSize) < data.AccountTotal,
+		},
+		Events: events,
 	}
 }
 
-func bucketDegradeSeries(events []DegradeEventView, window string, now time.Time) []DegradeBucket {
-	var step time.Duration
-	var start time.Time
-	var label func(time.Time) string
+func degradeBucketSpecs(window string, start, end time.Time) []degradeBucketSpec {
+	step := 5 * time.Minute
+	label := func(value time.Time) string { return value.Format("15:04") }
 	switch window {
 	case degradeWindow7d:
 		step = 2 * time.Hour
-		start = now.Add(-7 * 24 * time.Hour)
-		label = func(t time.Time) string { return t.Format("01-02 15:00") }
+		label = func(value time.Time) string { return value.Format("01-02 15:00") }
 	case degradeWindow24h:
 		step = time.Hour
-		start = now.Add(-24 * time.Hour)
-		label = func(t time.Time) string { return t.Format("15:00") }
+		label = func(value time.Time) string { return value.Format("15:00") }
 	case degradeWindow6h:
 		step = 20 * time.Minute
-		start = now.Add(-6 * time.Hour)
-		label = func(t time.Time) string { return t.Format("15:04") }
-	default:
-		step = 5 * time.Minute
-		start = now.Add(-time.Hour)
-		label = func(t time.Time) string { return t.Format("15:04") }
 	}
-	var buckets []time.Time
-	for cursor := start; cursor.Before(now); cursor = cursor.Add(step) {
-		buckets = append(buckets, cursor)
-	}
-	if len(buckets) == 0 {
-		return nil
-	}
-	counts := make([]int, len(buckets))
-	severe := make([]int, len(buckets))
-	stepSeconds := step.Seconds()
-	for _, event := range events {
-		idx := int(event.CreatedAt.Sub(start).Seconds() / stepSeconds)
-		if idx < 0 || idx >= len(counts) {
-			continue
+	var result []degradeBucketSpec
+	for cursor := start; cursor.Before(end); cursor = cursor.Add(step) {
+		bucketEnd := cursor.Add(step)
+		if bucketEnd.After(end) {
+			bucketEnd = end
 		}
-		counts[idx]++
-		if event.Class == auditdomain.DegradeClassHard || event.Class == auditdomain.DegradeClassBurst {
-			severe[idx]++
-		}
+		result = append(result, degradeBucketSpec{
+			Range: repository.DegradeBucketRange{Start: cursor, End: bucketEnd},
+			Label: label(cursor),
+		})
 	}
-	out := make([]DegradeBucket, len(buckets))
-	for i, bucket := range buckets {
-		out[i] = DegradeBucket{Label: label(bucket), Count: counts[i], Severe: severe[i]}
-	}
-	return out
+	return result
+}
+
+func round(value float64, places int) float64 {
+	factor := math.Pow10(places)
+	return math.Round(value*factor) / factor
 }
