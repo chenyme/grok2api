@@ -78,6 +78,9 @@ func (a *Adapter) QuotaMode(upstreamModel string) string {
 	if ResolveMedia(upstreamModel, modeldomain.CapabilityVideo) {
 		return QuotaModeVideo
 	}
+	if ResolveMedia(upstreamModel, modeldomain.CapabilityTTS) || ResolveMedia(upstreamModel, modeldomain.CapabilitySTT) || ResolveMedia(upstreamModel, modeldomain.CapabilityRealtime) {
+		return QuotaMode
+	}
 	return ""
 }
 

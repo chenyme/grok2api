@@ -274,6 +274,9 @@ func numberAsInt(value any) (int, bool) {
 }
 
 func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
+	if strings.TrimSpace(request.Quality) != "" {
+		return invalidImageRequest("Grok Web 图片模型不支持 quality")
+	}
 	count := request.Count
 	if count <= 0 {
 		count = 1
@@ -675,6 +678,9 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 }
 
 func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
+	if strings.TrimSpace(request.Quality) != "" {
+		return invalidImageRequest("Grok Web 图片模型不支持 quality")
+	}
 	if len(request.ImageURLs) == 0 || len(request.ImageURLs) > 8 {
 		return jsonProviderResponse(http.StatusBadRequest, map[string]any{"error": map[string]any{"message": "image 数量必须在 1 到 8 之间", "type": "invalid_request_error"}}), nil
 	}

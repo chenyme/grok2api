@@ -198,7 +198,7 @@ func (s *Service) ReceiveVideoUpload(ctx context.Context, rawToken string, conte
 		}
 	}()
 
-	asset, err := s.commitStagedVideo(ctx, staged, now)
+	asset, err := s.commitStagedVideo(ctx, staged, now, nil)
 	if err != nil {
 		return mediadomain.Asset{}, err
 	}
@@ -240,7 +240,7 @@ func (s *Service) SaveVideo(ctx context.Context, jobID, contentType string, body
 		return mediadomain.Asset{}, err
 	}
 	defer func() { _ = s.objects.AbortVideoUpload(context.WithoutCancel(ctx), staged.TempPath) }()
-	asset, err := s.commitStagedVideo(ctx, staged, time.Now().UTC())
+	asset, err := s.commitStagedVideo(ctx, staged, time.Now().UTC(), nil)
 	if err == nil {
 		saved = true
 	}
@@ -294,13 +294,54 @@ func (s *Service) stageVideo(ctx context.Context, id, mimeType string, body io.R
 	return stagedVideo{ID: id, TempPath: tempPath, StorageKey: storageKey, MIMEType: mimeType, SizeBytes: written, SHA256: hex.EncodeToString(hasher.Sum(nil))}, nil
 }
 
-func (s *Service) commitStagedVideo(ctx context.Context, staged stagedVideo, createdAt time.Time) (mediadomain.Asset, error) {
+// SaveInputVideo stores a private, expiring video input for edit/extension jobs.
+func (s *Service) SaveInputVideo(ctx context.Context, contentType string, body io.Reader) (mediadomain.Asset, error) {
+	mimeType := normalizeVideoMIME(contentType)
+	if mimeType == "" {
+		mimeType = "video/mp4"
+	}
+	if !supportedVideoMIME(mimeType) {
+		return mediadomain.Asset{}, fmt.Errorf("%w: Content-Type 无效", ErrInvalidVideoUpload)
+	}
+	id, err := newAssetID(mediadomain.InputAssetIDPrefix)
+	if err != nil {
+		return mediadomain.Asset{}, err
+	}
+	staged, err := s.stageVideo(ctx, id, mimeType, body, mediadomain.MaxInputAssetBytes)
+	if err != nil {
+		return mediadomain.Asset{}, err
+	}
+	defer func() { _ = s.objects.AbortVideoUpload(context.WithoutCancel(ctx), staged.TempPath) }()
+
+	s.inputSaveMu.Lock()
+	defer s.inputSaveMu.Unlock()
+	cfg := s.runtimeConfig()
+	total, err := s.assets.TotalMediaAssetBytes(ctx)
+	if err != nil {
+		return mediadomain.Asset{}, err
+	}
+	capacityLimit := cleanupThresholdBytes(cfg)
+	if capacityLimit <= 0 || capacityLimit > cfg.MaxTotalBytes {
+		capacityLimit = cfg.MaxTotalBytes
+	}
+	if staged.SizeBytes > capacityLimit || total > capacityLimit-staged.SizeBytes {
+		select {
+		case s.cleanupSignal <- struct{}{}:
+		default:
+		}
+		return mediadomain.Asset{}, ErrMediaCapacity
+	}
+	expiresAt := time.Now().UTC().Add(InputAssetTTL)
+	return s.commitStagedVideo(ctx, staged, time.Now().UTC(), &expiresAt)
+}
+
+func (s *Service) commitStagedVideo(ctx context.Context, staged stagedVideo, createdAt time.Time, expiresAt *time.Time) (mediadomain.Asset, error) {
 	if err := s.objects.CommitVideoUpload(ctx, staged.TempPath, staged.StorageKey); err != nil {
 		return mediadomain.Asset{}, err
 	}
 	asset := mediadomain.Asset{
 		ID: staged.ID, Kind: "video", StorageKey: staged.StorageKey, MIMEType: staged.MIMEType,
-		SizeBytes: staged.SizeBytes, SHA256: staged.SHA256, CreatedAt: createdAt,
+		SizeBytes: staged.SizeBytes, SHA256: staged.SHA256, ExpiresAt: expiresAt, CreatedAt: createdAt,
 	}
 	if err := s.assets.CreateMediaAsset(ctx, asset); err != nil {
 		_ = s.objects.Delete(context.WithoutCancel(ctx), staged.StorageKey)
@@ -324,7 +365,7 @@ func (s *Service) OpenVideo(ctx context.Context, id string) (mediadomain.Asset, 
 	if err != nil {
 		return mediadomain.Asset{}, nil, err
 	}
-	if asset.Kind != "video" {
+	if asset.Kind != "video" || asset.ExpiresAt != nil {
 		return mediadomain.Asset{}, nil, ErrAssetNotFound
 	}
 	body, err := s.objects.Open(ctx, asset.StorageKey)
