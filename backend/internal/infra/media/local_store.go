@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/chenyme/grok2api/backend/internal/pkg/mediafile"
 )
 
 // LocalStore 将媒体对象限制在单一根目录内，并使用临时文件与原子硬链接完成提交。
@@ -35,7 +37,7 @@ func (s *LocalStore) SaveImage(ctx context.Context, id, mimeType string, data []
 
 // SaveVideo 将视频对象写入 videos/ 子目录，提交语义与图片一致（原子硬链接、no-replace）。
 func (s *LocalStore) SaveVideo(ctx context.Context, id, mimeType string, data []byte) (string, error) {
-	return s.saveObject(ctx, "videos", ".video-*", id, mimeType, data, videoExtension)
+	return s.saveObject(ctx, "videos", ".video-*", id, mimeType, data, mediafile.VideoExtension)
 }
 
 // BeginVideoUpload 创建视频临时文件，供流式限长写入后 CommitVideoUpload 提交。
@@ -43,7 +45,7 @@ func (s *LocalStore) BeginVideoUpload(ctx context.Context, id, mimeType string) 
 	if err := ctx.Err(); err != nil {
 		return "", "", err
 	}
-	extension, ok := videoExtension(mimeType)
+	extension, ok := mediafile.VideoExtension(mimeType)
 	if !ok || len(id) < 2 {
 		return "", "", fmt.Errorf("视频存储参数无效")
 	}
@@ -232,19 +234,6 @@ func imageExtension(mimeType string) (string, bool) {
 		return ".webp", true
 	case "image/gif":
 		return ".gif", true
-	default:
-		return "", false
-	}
-}
-
-func videoExtension(mimeType string) (string, bool) {
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "video/mp4":
-		return ".mp4", true
-	case "video/webm":
-		return ".webm", true
-	case "video/quicktime":
-		return ".mov", true
 	default:
 		return "", false
 	}

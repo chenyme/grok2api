@@ -20,11 +20,11 @@ import (
 )
 
 const (
-	buildVideoModel             = "grok-imagine-video-1.5"
-	xaiVideoModel               = "grok-imagine-video-1.5-preview"
+	buildVideoModel = "grok-imagine-video-1.5"
+	xaiVideoModel   = "grok-imagine-video-1.5-preview"
 	// Align with the gateway ceiling and official xAI video inputs:
 	// image = first frame; reference_images = style/content references (may be length 1).
-	buildVideoMaxImages = mediadomain.MaxInputImages
+	buildVideoMaxImages         = mediadomain.MaxInputImages
 	buildVideoPollEvery         = 2 * time.Second
 	buildVideoMaxBodySize       = 2 << 20
 	buildVideoErrorSummaryLimit = 256
@@ -157,11 +157,11 @@ func boundDiagnosticText(value string, limit int) string {
 // 其他 auto Super 账号仅在当次 Build 创建返回 403 后探测 XAI。
 func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
 	if total := buildVideoImageCount(request); total > buildVideoMaxImages {
-		return provider.VideoResult{}, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 %d 张输入图，当前为 %d 张", buildVideoMaxImages, total)
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("Build grok-imagine-video-1.5 最多支持 %d 张输入图，当前为 %d 张", buildVideoMaxImages, total))
 	}
 	accessToken, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	credential := request.Credential
 	routeMode := normalizedBuildRouteMode(credential)
@@ -173,17 +173,17 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	primaryBase := a.primaryBaseURL()
 	payload, err := videoCreatePayload(request, "", buildVideoRequestProfile)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	createResp, createErr := a.doVideoJSON(ctx, credential, accessToken, http.MethodPost, primaryBase, "/videos/generations", body, buildVideoRequestProfile, true)
 	if createErr == nil {
 		jobID, parseErr := parseVideoCreateResponse(createResp)
 		if parseErr != nil {
-			return provider.VideoResult{}, parseErr
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageSubmitted, 0, parseErr)
 		}
 		if request.Progress != nil {
 			request.Progress(1)
@@ -192,10 +192,10 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	var upstream *videoUpstreamError
 	if !asVideoUpstreamError(createErr, &upstream) || !isHTTPForbidden(upstream.status) {
-		return provider.VideoResult{}, createErr
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(createErr), 0, createErr)
 	}
 	if routeMode == account.BuildRouteBuild || !xaiEligible {
-		return provider.VideoResult{}, createErr
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(createErr), 0, createErr)
 	}
 	// 已确认 Super 的主地址 403：签发 upload_url 后探测 XAI；创建成功才标记降级。
 	return a.generateVideoOnXAI(ctx, request, credential, accessToken, true)
@@ -204,7 +204,7 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 func (a *Adapter) generateVideoOnXAI(ctx context.Context, request provider.VideoRequest, credential account.Credential, accessToken string, recordFallback bool) (provider.VideoResult, error) {
 	issuer := a.uploadIssuerRef()
 	if issuer == nil {
-		return provider.VideoResult{}, fmt.Errorf("XAI 视频需要媒体上传接收服务")
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("XAI 视频需要媒体上传接收服务"))
 	}
 	jobKey := strings.TrimSpace(request.JobID)
 	if jobKey == "" {
@@ -213,25 +213,25 @@ func (a *Adapter) generateVideoOnXAI(ctx context.Context, request provider.Video
 	uploadURL, assetID, err := issuer.IssueVideoUpload(ctx, jobKey)
 	if err != nil {
 		// 配置错误（例如 PublicAPIBaseURL 不可用）不得误标降级。
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	payload, err := videoCreatePayload(request, uploadURL, xaiVideoRequestProfile)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	base := a.fallbackBaseURL()
 	createResp, err := a.doVideoJSON(ctx, credential, accessToken, http.MethodPost, base, "/videos/generations", body, xaiVideoRequestProfile, true)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 	}
 	// 必须先解析到可用 job ID，再标记降级；畸形 2xx 不得激活或本地置位。
 	jobID, err := parseVideoCreateResponse(createResp)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageSubmitted, 0, err)
 	}
 	if recordFallback {
 		a.activateBuildAPIFallback(ctx, &credential)
@@ -354,17 +354,17 @@ func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credentia
 	for {
 		statusBody, err := a.doVideoJSON(ctx, credential, accessToken, http.MethodGet, base, "/videos/"+url.PathEscape(jobID), nil, profile, false)
 		if err != nil {
-			return provider.VideoResult{}, err
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, err)
 		}
 		result, done, pollErr := parseVideoStatusResponse(statusBody, progress, assetID != "")
 		if pollErr != nil {
-			return provider.VideoResult{}, pollErr
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, pollErr)
 		}
 		if done {
 			if assetID != "" {
 				issuer := a.uploadIssuerRef()
 				if issuer == nil {
-					return provider.VideoResult{}, fmt.Errorf("XAI 视频需要媒体上传接收服务")
+					return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, fmt.Errorf("XAI 视频需要媒体上传接收服务"))
 				}
 				contentType, waitErr := issuer.WaitVideoUpload(ctx, assetID)
 				if waitErr != nil {
@@ -372,7 +372,7 @@ func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credentia
 					if result.URL != "" {
 						return result, nil
 					}
-					return provider.VideoResult{}, waitErr
+					return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, waitErr)
 				}
 				if contentType == "" {
 					contentType = "video/mp4"
@@ -383,7 +383,7 @@ func (a *Adapter) pollVideoJob(ctx context.Context, credential account.Credentia
 		}
 		select {
 		case <-ctx.Done():
-			return provider.VideoResult{}, ctx.Err()
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, ctx.Err())
 		case <-ticker.C:
 		}
 	}

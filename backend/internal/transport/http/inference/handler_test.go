@@ -119,9 +119,29 @@ func TestWriteVideoContentRejectsDeclaredOversizeMedia(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	writeVideoContent(context, strings.NewReader("ignored"), "video/mp4", maxMediaResponseTransferBytes+1)
+	writeVideoContent(context, strings.NewReader("ignored"), "video/mp4", maxMediaResponseTransferBytes+1, "video_request_1")
 	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "media_too_large") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// A saved response needs an extension or the file will not open in a player.
+func TestWriteVideoContentNamesDownloadWithExtension(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, testCase := range []struct {
+		contentType string
+		want        string
+	}{
+		{"video/mp4", `inline; filename="video_request_1.mp4"`},
+		{"video/webm", `inline; filename="video_request_1.webm"`},
+		{"video/quicktime", `inline; filename="video_request_1.mov"`},
+	} {
+		recorder := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(recorder)
+		writeVideoContent(context, strings.NewReader("body"), testCase.contentType, 4, "video_request_1")
+		if got := recorder.Header().Get("Content-Disposition"); got != testCase.want {
+			t.Fatalf("%s disposition = %q, want %q", testCase.contentType, got, testCase.want)
+		}
 	}
 }
 
@@ -443,7 +463,7 @@ func TestVideoContentRejectsUnsafeContentType(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	writeVideoContent(context, strings.NewReader(`<script id="must-not-reflect">alert(1)</script>`), "text/html", -1)
+	writeVideoContent(context, strings.NewReader(`<script id="must-not-reflect">alert(1)</script>`), "text/html", -1, "video_request_1")
 	if recorder.Code != http.StatusBadGateway || strings.Contains(recorder.Body.String(), "must-not-reflect") {
 		t.Fatalf("status=%d headers=%#v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
 	}
