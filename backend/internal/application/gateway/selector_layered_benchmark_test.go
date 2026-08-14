@@ -52,7 +52,7 @@ func BenchmarkSelectorMultiModelCandidateLoad(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for range b.N {
-				selector := NewSelector(accounts, nil, nil, nil, time.Hour, time.Second, time.Minute)
+				selector := NewSelector(accounts, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 				for _, upstreamModel := range models[:modelCount] {
 					candidates, loadErr := selector.loadCandidates(ctx, account.ProviderBuild, 0, upstreamModel, "", time.Now().UTC())
 					if loadErr != nil {

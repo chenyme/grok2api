@@ -77,7 +77,7 @@ func TestSelectorPrioritizesDueQuotaProbeOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-test", "", "", map[uint64]bool{}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -136,7 +136,7 @@ func TestSelectorQualityProbePinsAccountToRequestedEgressNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	lease, err := selector.AcquireForKeyOnEgressNode(ctx, account.ProviderBuild, 0, "grok-test", "", "", nil, false, clientkeydomain.AccountScope{}, secondNode.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestSelectorQualityProbeBorrowsHealthyAccountForUnavailableNode(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	lease, err := selector.AcquireForKeyOnEgressNode(ctx, account.ProviderBuild, 0, "grok-test", "", "ordinary-affinity", nil, false, clientkeydomain.AccountScope{}, targetNode.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func TestSelectorQualityProbeBorrowsHealthyAccountForUnavailableNode(t *testing.
 func BenchmarkSelectorCandidatePlanning(b *testing.B) {
 	ctx := context.Background()
 	limiter := memory.NewConcurrencyLimiter()
-	selector := NewSelector(nil, limiter, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, limiter, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	now := time.Now().UTC()
 	candidates := make([]account.RoutingCandidate, 3000)
 	for index := range candidates {
@@ -255,7 +255,7 @@ func TestSelectorSkipsQuotaProbeBeforeDue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	if _, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-test", "", "", map[uint64]bool{}, true); err == nil {
 		t.Fatal("expected no account before next probe time")
 	}
@@ -280,7 +280,7 @@ func TestSelectorQuotaRecoveryUsesFixedFreeAndUpstreamPaidReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 
 	paidPeriodEnd := now.Add(7 * time.Hour).Truncate(time.Second)
 	selector.MarkPaymentQuotaExhausted(ctx, value, quotaRecoveryHints{Billing: &account.Billing{
@@ -323,7 +323,7 @@ func TestSelectorModelQuotaUsesFixedFreeAndUpstreamPaidDelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	freeStarted := time.Now().UTC()
 	selector.MarkModelQuotaExhausted(ctx, value, &account.Billing{PlanName: "free"}, "free-model", time.Hour)
 	freeCandidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "free-model", "")
@@ -373,7 +373,7 @@ func TestSelectorModelQuotaPreservesSessionAffinity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute, 0)
 	selector.MarkModelQuotaExhausted(ctx, credential, nil, "model-a", time.Hour)
 
 	for _, key := range []string{"model-a-session", "model-b-session"} {
@@ -450,7 +450,7 @@ func TestSelectorUsesPaidWeeklyPoolAsWebQuotaGate(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	if _, err := selector.Acquire(ctx, account.ProviderWeb, 0, "", "fast", "", nil, false); err == nil {
 		t.Fatal("exhausted weekly pool must take precedence over a stale fast quota window")
 	}
@@ -491,7 +491,7 @@ func TestSelectorClaimsPaidBillingProbeAfterPeriodEnd(t *testing.T) {
 	if err := accounts.SaveQuotaRecovery(ctx, account.QuotaRecovery{AccountID: value.ID, Kind: account.QuotaRecoveryKindPaid, Status: account.QuotaRecoveryStatusExhausted, NextProbeAt: &due, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "", "", "", map[uint64]bool{}, true)
 	if err != nil {
 		t.Fatal(err)
@@ -543,7 +543,7 @@ func TestSelectorOnlyUsesAccountsSupportingRequestedModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	selector.UpdatePreferFreeBuild(true)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-premium", "", "", map[uint64]bool{}, true)
 	if err != nil {
@@ -581,7 +581,7 @@ func TestSelectorKeepsWebQuotaModesIsolated(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	if _, err := selector.Acquire(ctx, account.ProviderWeb, 0, "grok-chat", "fast", "", nil, false); err == nil {
 		t.Fatal("exhausted fast mode should not be selected")
 	}
@@ -615,7 +615,7 @@ func TestSelectorHonorsWebTierPoolOrderBeforeAccountPriority(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierHeavy, account.WebTierSuper, account.WebTierBasic}}, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierHeavy, account.WebTierSuper, account.WebTierBasic}}, time.Hour, 0, time.Second, time.Minute)
 	selector.UpdatePreferFreeBuild(true)
 	lease, err := selector.Acquire(ctx, account.ProviderWeb, 0, "fast-prefer-best", "fast", "", nil, false)
 	if err != nil {
@@ -663,7 +663,7 @@ func TestSelectorEnforcesClientKeyAccountScopeAcrossProvidersAndTiers(t *testing
 	_ = create(account.Credential{Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierAuto, Name: "web-unknown", SourceKey: "web-unknown", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 2})
 	console := create(account.Credential{Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "console", SourceKey: "console", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 2})
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}}, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}}, time.Hour, 0, time.Second, time.Minute)
 	providerScope := func(provider account.Provider) clientkeydomain.ProviderScope {
 		switch provider {
 		case account.ProviderBuild:
@@ -732,7 +732,7 @@ func TestSelectorPropagatesConcurrencyStoreFailure(t *testing.T) {
 	}
 
 	runtimeErr := errors.New("runtime store unavailable")
-	selector := NewSelector(accounts, failingConcurrencyLimiter{err: runtimeErr}, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, failingConcurrencyLimiter{err: runtimeErr}, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	if _, err := selector.Acquire(ctx, account.ProviderBuild, 0, "", "", "", map[uint64]bool{}, true); !errors.Is(err, runtimeErr) {
 		t.Fatalf("Acquire error = %v, want wrapped runtime error", err)
 	}
@@ -753,7 +753,7 @@ func TestStickySessionKeyIsFixedLengthAndStable(t *testing.T) {
 
 func TestSelectorUsesBatchConcurrencySnapshot(t *testing.T) {
 	limiter := &batchConcurrencyLimiter{values: map[string]int{"account:1": 2, "account:2": 1}}
-	selector := NewSelector(nil, limiter, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, limiter, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	values := []account.RoutingCandidate{
 		{Credential: account.Credential{ID: 1, Priority: 1}},
 		{Credential: account.Credential{ID: 2, Priority: 1}},
@@ -827,7 +827,7 @@ func TestSelectionSessionReusesCandidatePlanAcrossAccountSwitches(t *testing.T) 
 		t.Fatal(err)
 	}
 	limiter := &batchConcurrencyLimiter{values: map[string]int{}}
-	selector := NewSelector(accounts, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	excluded := map[uint64]bool{}
 	session, err := selector.beginSelectionSession(ctx, account.ProviderBuild, 0, "model", "", "", excluded, false)
 	if err != nil {
@@ -902,7 +902,7 @@ func TestSelectorPreferFreeBuildHotReloadAndSaturationFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	lease, err := selector.Acquire(ctx, account.ProviderBuild, 0, "grok-4.5", "", "existing-session", nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -988,7 +988,7 @@ func TestCandidatePlanPrefersKnownRemainingQuota(t *testing.T) {
 
 func TestCandidatePlanDoesNotTreatEstimatedQuotaAsAuthoritative(t *testing.T) {
 	now := time.Now().UTC()
-	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute, 0)
 	values := []account.RoutingCandidate{
 		{Credential: account.Credential{ID: 1, Priority: 100}, QuotaWindow: &account.QuotaWindow{AccountID: 1, Mode: "console_image", Remaining: 5, Total: 5, Source: account.QuotaSourceEstimated}},
 		{Credential: account.Credential{ID: 2, Priority: 1}, QuotaWindow: &account.QuotaWindow{AccountID: 2, Mode: "console_image", Remaining: 1, Total: 5, Source: account.QuotaSourceUpstream}},
@@ -1005,7 +1005,7 @@ func TestCandidatePlanDoesNotTreatEstimatedQuotaAsAuthoritative(t *testing.T) {
 
 func TestCandidatePlanDoesNotTreatLegacyDefaultQuotaAsAuthoritative(t *testing.T) {
 	now := time.Now().UTC()
-	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute, 0)
 	values := []account.RoutingCandidate{
 		{Credential: account.Credential{ID: 1, Priority: 100}, QuotaWindow: &account.QuotaWindow{AccountID: 1, Mode: "console_image", Remaining: 5, Total: 5, Source: account.QuotaSourceDefault}},
 		{Credential: account.Credential{ID: 2, Priority: 1}, QuotaWindow: &account.QuotaWindow{AccountID: 2, Mode: "console_image", Remaining: 1, Total: 5, Source: account.QuotaSourceUpstream}},
@@ -1062,7 +1062,7 @@ func TestSelectorWaitsBrieflyForAccountCapacity(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 300*time.Millisecond)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0, 300*time.Millisecond)
 	first, err := selector.Acquire(ctx, account.ProviderBuild, 0, "model", "", "", nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -1270,7 +1270,7 @@ func newStickySelectorFixture(t *testing.T, sticky repository.StickySessionRepos
 			t.Fatal(err)
 		}
 	}
-	return NewSelector(accounts, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute, capacityWait), primary, fallback
+	return NewSelector(accounts, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute, 0, capacityWait), primary, fallback
 }
 
 func TestSelectorAppliesPersistedCooldownOnlyToMatchingModel(t *testing.T) {
@@ -1298,7 +1298,7 @@ func TestSelectorAppliesPersistedCooldownOnlyToMatchingModel(t *testing.T) {
 	if err := accounts.UpsertModelQuotaBlock(ctx, account.ModelQuotaBlock{AccountID: credential.ID, UpstreamModel: "limited-model", Reason: "shorter", CooldownUntil: time.Now().UTC().Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 	if _, err := selector.Acquire(ctx, account.ProviderBuild, 0, "limited-model", "", "", nil, false); err == nil {
 		t.Fatal("matching model cooldown was ignored")
 	} else {
@@ -1357,7 +1357,7 @@ func TestMarkFailureSoftNetworkCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, 30*time.Second, 30*time.Minute, 500*time.Millisecond)
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, 30*time.Second, 30*time.Minute, 0, 500*time.Millisecond)
 	before := time.Now().UTC()
 	selector.MarkFailure(ctx, credential, 0, 0)
 	updated, err := accounts.Get(ctx, credential.ID)

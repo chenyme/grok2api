@@ -118,7 +118,7 @@ func (r *layeredAccountRepository) callCounts(model string) (int, int) {
 
 func TestSelectorLayeredCacheReusesBaseAcrossModels(t *testing.T) {
 	repo := newLayeredRepositoryFixture()
-	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	now := time.Now().UTC()
 	for _, model := range []string{"model-a", "model-b"} {
 		values, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, model, "", now)
@@ -153,7 +153,7 @@ func TestSelectorLayeredCacheReusesBaseAcrossModels(t *testing.T) {
 
 func TestSelectorLayeredCacheUsesLastGoodSnapshotOnTransientLoadFailure(t *testing.T) {
 	repo := newLayeredRepositoryFixture()
-	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	now := time.Now().UTC()
 	initial, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, "model-a", "", now)
 	if err != nil || len(initial) != 1 {
@@ -204,7 +204,7 @@ func TestSelectorStaleSnapshotDoesNotMaskCancellationOrPermanentFailure(t *testi
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			repo := newLayeredRepositoryFixture()
-			selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+			selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 			now := time.Now().UTC()
 			if _, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, "model-a", "", now); err != nil {
 				t.Fatal(err)
@@ -266,7 +266,7 @@ func TestCanUseStaleRoutingSnapshotClassifiesFailuresConservatively(t *testing.T
 
 func TestSelectorInvalidationNeverFallsBackToStaleSnapshot(t *testing.T) {
 	repo := newLayeredRepositoryFixture()
-	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	if _, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, "model-a", "", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestSelectorInvalidationNeverFallsBackToStaleSnapshot(t *testing.T) {
 }
 
 func TestSelectorCacheSnapshotCountsAreBoundedAndLRU(t *testing.T) {
-	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	now := time.Now().UTC()
 	selector.candidateMu.Lock()
 	for index := 0; index < maxCandidateCacheSnapshots+5; index++ {
@@ -313,7 +313,7 @@ func TestSelectorLargePoolCacheUsesCandidateValueBudget(t *testing.T) {
 			ID: uint64(index + 1), Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive,
 		}
 	}
-	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	now := time.Now().UTC()
 	for _, model := range []string{"model-a", "model-b", "model-c"} {
 		values, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 0, model, "", now)
@@ -349,7 +349,7 @@ func TestSelectorLargePoolCacheUsesCandidateValueBudget(t *testing.T) {
 func TestSelectorQuotaConsumptionUsesDeltaWithoutMutatingLargeSnapshots(t *testing.T) {
 	repo := newLayeredRepositoryFixture()
 	repo.bases[0].QuotaWindow = &account.QuotaWindow{AccountID: 1, Mode: "fast", Remaining: 1}
-	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	if _, err := selector.beginSelectionSession(context.Background(), account.ProviderBuild, 0, "model-a", "fast", "", nil, false); err != nil {
 		t.Fatal(err)
 	}
@@ -388,7 +388,7 @@ func TestSelectorLayeredCacheSeparatesRoutesSharingUpstream(t *testing.T) {
 		101: {HasBindings: true, Values: []account.RoutingAccountOverlay{{AccountID: 1, Bound: true, ModelCapabilityKnown: true, SupportsModel: true}}},
 		202: {HasBindings: true, Values: []account.RoutingAccountOverlay{{AccountID: 2, Bound: true, ModelCapabilityKnown: true, SupportsModel: true}}},
 	}
-	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	now := time.Now().UTC()
 	first, err := selector.loadCandidates(context.Background(), account.ProviderBuild, 101, "shared-model", "", now)
 	if err != nil || len(first) != 1 || first[0].Credential.ID != 1 {
@@ -409,7 +409,7 @@ func TestSelectorLayeredLoadRetriesInsteadOfMixingVersions(t *testing.T) {
 	}}
 	repo.firstBaseStart = make(chan struct{})
 	repo.firstBaseReady = make(chan struct{})
-	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	type result struct {
 		values []account.RoutingCandidate
 		err    error
@@ -433,7 +433,7 @@ func TestSelectorLayeredLoadRetriesInsteadOfMixingVersions(t *testing.T) {
 }
 
 func TestSelectorAppliesOutOfOrderInvalidationsSafely(t *testing.T) {
-	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	event := repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderBuild, Revision: 2}
 	selector.ApplyInvalidation(event)
 	first := selector.routingBaseVersion(account.ProviderBuild)
@@ -446,7 +446,7 @@ func TestSelectorAppliesOutOfOrderInvalidationsSafely(t *testing.T) {
 }
 
 func TestSelectorIgnoresClientKeyInvalidation(t *testing.T) {
-	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	expiresAt := time.Now().Add(time.Hour)
 	selector.routingBases[routingBaseCacheKey{provider: account.ProviderBuild}] = routingBaseSnapshot{expiresAt: expiresAt}
 	selector.routingOverlays[routingOverlayCacheKey{provider: account.ProviderBuild}] = routingOverlaySnapshot{expiresAt: expiresAt}
@@ -460,7 +460,7 @@ func TestSelectorIgnoresClientKeyInvalidation(t *testing.T) {
 }
 
 func TestSelectorScopesAccountInvalidationToCachedProvider(t *testing.T) {
-	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	expiresAt := time.Now().Add(time.Hour)
 	selector.routingBases[routingBaseCacheKey{provider: account.ProviderBuild}] = routingBaseSnapshot{expiresAt: expiresAt}
 	selector.routingBases[routingBaseCacheKey{provider: account.ProviderWeb}] = routingBaseSnapshot{expiresAt: expiresAt}
@@ -482,7 +482,7 @@ func TestSelectorScopesAccountInvalidationToCachedProvider(t *testing.T) {
 }
 
 func TestSelectorFallsBackToGlobalInvalidationForUnknownAccount(t *testing.T) {
-	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	expiresAt := time.Now().Add(time.Hour)
 	selector.routingBases[routingBaseCacheKey{provider: account.ProviderBuild}] = routingBaseSnapshot{expiresAt: expiresAt}
 	selector.routingBases[routingBaseCacheKey{provider: account.ProviderWeb}] = routingBaseSnapshot{expiresAt: expiresAt}
@@ -499,7 +499,7 @@ func TestSelectorFallsBackToGlobalInvalidationForUnknownAccount(t *testing.T) {
 func TestSelectorFallsBackWhenLayerVersionsKeepChanging(t *testing.T) {
 	repo := newLayeredRepositoryFixture()
 	repo.combined = []account.RoutingCandidate{{Credential: account.Credential{ID: 9, Provider: account.ProviderBuild}}}
-	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	repo.baseHook = func() {
 		selector.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: account.ProviderBuild})
 	}
@@ -524,7 +524,7 @@ func TestSelectorHydratesOnlyClaimedCredentialAndSkipsStaleCandidate(t *testing.
 	repo.materials = map[uint64]account.CredentialMaterial{
 		2: {AccountID: 2, Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, EncryptedAccessToken: "selected-secret"},
 	}
-	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 
 	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
 	if err != nil {
@@ -542,7 +542,7 @@ func TestSelectorHydratesOnlyClaimedCredentialAndSkipsStaleCandidate(t *testing.
 func TestSelectorReportsNoAccountsWhenEveryCredentialIsStale(t *testing.T) {
 	repo := newLayeredRepositoryFixture()
 	repo.materialErrors = map[uint64]error{1: repository.ErrNotFound}
-	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 
 	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
 	var unavailable *SelectionUnavailableError
@@ -557,7 +557,7 @@ func TestSelectorPinnedCredentialDoesNotSwitchWhenMaterialIsStale(t *testing.T) 
 		account.RoutingAccountBase{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive}},
 	)
 	repo.materialErrors = map[uint64]error{1: repository.ErrNotFound}
-	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 
 	_, err := selector.AcquirePinned(context.Background(), account.ProviderBuild, 1, 0, "model-a", "", true)
 	var unavailable *SelectionUnavailableError
@@ -581,7 +581,7 @@ func TestSelectorRebindsStickySessionAfterCredentialBecomesStale(t *testing.T) {
 	if err := sticky.Set(context.Background(), stickySessionKey(affinity), 1, time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute, 0)
 
 	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", affinity, nil, false)
 	if err != nil {
@@ -602,7 +602,7 @@ func TestSelectorReleasesCapacityWhenCredentialHydrationFails(t *testing.T) {
 	loadErr := errors.New("credential storage unavailable")
 	repo.materialErrors = map[uint64]error{1: loadErr}
 	limiter := memory.NewConcurrencyLimiter()
-	selector := NewSelector(repo, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 
 	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
 	if !errors.Is(err, loadErr) {
@@ -623,7 +623,7 @@ func TestSelectorRejectsCrossProviderCredentialMaterial(t *testing.T) {
 		1: {AccountID: 1, Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, EncryptedAccessToken: "wrong-provider-secret"},
 	}
 	limiter := memory.NewConcurrencyLimiter()
-	selector := NewSelector(repo, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(repo, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0)
 
 	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
 	var unavailable *SelectionUnavailableError

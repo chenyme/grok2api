@@ -99,7 +99,7 @@ func TestSelectionSessionUsesSegmentedActiveWindow(t *testing.T) {
 }
 
 func TestSegmentedActiveCursorIsIndependentPerRouteShard(t *testing.T) {
-	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute, 0)
 	selector.UpdateSegmentedSelector(true, 100, 8)
 	firstModel := "model-a"
 	firstShard := segmentedSelectorShard(account.ProviderBuild, firstModel, "")
@@ -234,7 +234,7 @@ func TestSegmentedPlannerUsesOnePreferFreeBuildSnapshot(t *testing.T) {
 			Billing:    &account.Billing{PlanName: "Free", SyncedAt: now},
 		},
 	}
-	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute)
+	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute, 0)
 	selector.UpdatePreferFreeBuild(true)
 	plan, err := selector.planCandidateIndexesWithHints(context.Background(), values, nil, now, nil, nil, false)
 	if err != nil {
@@ -500,7 +500,7 @@ func newSegmentedActiveTestSelectorWithWait(count int, limiter repository.Concur
 		}}
 	}
 	repository := &layeredAccountRepository{bases: bases, overlays: map[string]account.RoutingOverlaySnapshot{"model": {}}}
-	return NewSelector(repository, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, capacityWait)
+	return NewSelector(repository, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 0, capacityWait)
 }
 
 func activeSegmentedCursorCount(selector *Selector) uint64 {

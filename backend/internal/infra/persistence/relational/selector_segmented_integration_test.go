@@ -96,7 +96,7 @@ func TestPostgresRedisSegmentedSelectorIntegration(t *testing.T) {
 	limiter := redisruntime.NewConcurrencyLimiter(store)
 
 	newSelector := func() *gateway.Selector {
-		selector := gateway.NewSelector(accounts, limiter, store, nil, time.Hour, time.Second, time.Minute, 100*time.Millisecond)
+		selector := gateway.NewSelector(accounts, limiter, store, nil, time.Hour, time.Second, time.Minute, 0, 100*time.Millisecond)
 		selector.UpdateSegmentedSelector(true, 3000, 64)
 		return selector
 	}

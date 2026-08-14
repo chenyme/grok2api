@@ -8,7 +8,7 @@ import (
 )
 
 func TestApplyBuildBotFlaggedFilterOnlyAffectsBuild(t *testing.T) {
-	selector := NewSelector(nil, nil, nil, nil, 0, 0, 0)
+	selector := NewSelector(nil, nil, nil, nil, 0, 0, 0, 0)
 	selector.UpdateExcludeBuildBotFlaggedFromScheduling(true)
 
 	values := []account.RoutingCandidate{
