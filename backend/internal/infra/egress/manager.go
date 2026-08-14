@@ -435,6 +435,31 @@ func (m *Manager) UpdateClearanceConfig(value ClearanceConfig) {
 	m.clearanceMu.Unlock()
 }
 
+// SolveClearance 通过已配置的 FlareSolverr 为指定目标 URL 现解 Cloudflare Clearance。
+// 结果不写节点缓存也不持久化，避免与节点既有 Clearance（如 grok.com）互相覆盖；
+// 调用方必须通过同一 proxyURL 出口发送后续请求，保证 Clearance 与出口 IP 一致。
+func (m *Manager) SolveClearance(ctx context.Context, proxyURL, targetURL string) (string, string, error) {
+	m.clearanceMu.Lock()
+	cfg := m.clearanceConfig
+	solver := m.solver
+	m.clearanceMu.Unlock()
+	if cfg.Mode != "flaresolverr" && cfg.Mode != "on_demand" {
+		return "", "", errors.New("FlareSolverr Clearance 未启用")
+	}
+	cfg.TargetURL = strings.TrimRight(strings.TrimSpace(targetURL), "/")
+	if cfg.TargetURL == "" {
+		cfg.TargetURL = "https://grok.com"
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = time.Minute
+	}
+	solution, err := solver.Solve(ctx, cfg, proxyURL)
+	if err != nil {
+		return "", "", err
+	}
+	return solution.Cookies, solution.UserAgent, nil
+}
+
 func (m *Manager) Acquire(ctx context.Context, scope domain.Scope, affinity string) (*Lease, error) {
 	lease, _, err := m.acquire(ctx, scope, affinity, true, "", egressNodeFromContext(ctx))
 	return lease, err
