@@ -995,7 +995,7 @@ const resources = {
         codesInvalid: "请填写 1–32 个有效错误码，仅支持字母、数字、点、下划线、冒号和连字符。",
         codesPlaceholder: "permission-denied",
       },
-      settingsRoutingSegmented: { enabled: "启用分段选号", enabledHelp: "仅对达到阈值且没有会话粘性的账号池生效；连续四个窗口满载后自动回退完整池选号。", minCandidates: "启用账号数阈值", minCandidatesHelp: "可用候选账号达到该数量后启用分段选号。", windowSize: "选号窗口大小", windowSizeHelp: "每个分段窗口检查的候选账号数量。" },
+      settingsRoutingSegmented: { enabled: "启用分段选号", enabledHelp: "对达到阈值的账号池生效，兼容会话粘性；连续四个窗口满载后自动回退完整池选号。", minCandidates: "启用账号数阈值", minCandidatesHelp: "可用候选账号达到该数量后启用分段选号。", windowSize: "选号窗口大小", windowSizeHelp: "每个分段窗口检查的候选账号数量。" },
       settingsRoutingAttempts: {
         help: "有限模式控制单次请求的路由尝试轮次：初次选择计 1 次，切号或出口重试各增加 1 次，范围为 1–65535；无限制模式会在账号级可切换失败时遍历当前可用账号。",
         unlimited: "无限制",
@@ -1643,7 +1643,7 @@ const resources = {
 
       settingsBuildTransport: { responseHeaderTimeout: "Response header timeout", responseHeaderTimeoutHelp: "Maximum time to wait for the first Grok Build response headers after the request body is sent.", streamIdleTimeout: "Stream idle timeout", streamIdleTimeoutHelp: "Maximum wait for new data on an open streaming response before aborting. Covers upstream connections that succeed but go silent mid-stream." },
       settingsBuildForbidden: { markInvalid: "Invalidate matching error codes", markInvalidHelp: "When enabled, a Grok Build 403 with a matching error code marks the account invalid and removes it from scheduling.", codes: "Invalidation error codes", codesHelp: "Enter one code per line. Codes match the complete code or error.code value case-insensitively, up to 32 entries.", codesInvalid: "Enter 1–32 valid codes using letters, numbers, dots, underscores, colons, or hyphens.", codesPlaceholder: "permission-denied" },
-      settingsRoutingSegmented: { enabled: "Enable segmented selection", enabledHelp: "Applies only above the threshold without session affinity and falls back to full-pool selection after four saturated windows.", minCandidates: "Account threshold", minCandidatesHelp: "Enables segmented selection when the eligible account pool reaches this size.", windowSize: "Selection window", windowSizeHelp: "Number of candidate accounts inspected in each segmented window." },
+      settingsRoutingSegmented: { enabled: "Enable segmented selection", enabledHelp: "Applies above the threshold, supports session affinity, and falls back to full-pool selection after four saturated windows.", minCandidates: "Account threshold", minCandidatesHelp: "Enables segmented selection when the eligible account pool reaches this size.", windowSize: "Selection window", windowSizeHelp: "Number of candidate accounts inspected in each segmented window." },
       settingsRoutingAttempts: {
         help: "A finite value limits routing-attempt rounds: initial selection counts as one, and account failover or egress retry adds another. Range: 1–65535. Unlimited mode can traverse all currently eligible accounts after account-scoped failures.",
         unlimited: "Unlimited",
