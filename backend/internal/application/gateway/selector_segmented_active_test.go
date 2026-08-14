@@ -191,11 +191,13 @@ func TestSegmentedActiveCohortOrderingMatchesFullPlannerHardOrder(t *testing.T) 
 				for _, tier := range []int{0, 2} {
 					for _, priority := range []int{1, 10} {
 						for _, billingFresh := range []bool{false, true} {
-							cohorts = append(cohorts, segmentedSelectorCohort{
-								supportsModel: supportsModel, capabilityKnown: capabilityKnown,
-								preferFreeBuild: preferFreeBuild, tier: tier, priority: priority,
-								billingFresh: billingFresh,
-							})
+							for _, recentlyCreated := range []bool{false, true} {
+								cohorts = append(cohorts, segmentedSelectorCohort{
+									supportsModel: supportsModel, capabilityKnown: capabilityKnown,
+									preferFreeBuild: preferFreeBuild, tier: tier, priority: priority,
+									billingFresh: billingFresh, recentlyCreated: recentlyCreated,
+								})
+							}
 						}
 					}
 				}
@@ -212,8 +214,8 @@ func TestSegmentedActiveCohortOrderingMatchesFullPlannerHardOrder(t *testing.T) 
 				{Credential: account.Credential{ID: 2, Priority: right.priority}, SupportsModel: right.supportsModel, ModelCapabilityKnown: right.capabilityKnown},
 			}
 			scores := []candidateScore{
-				{index: 0, tier: left.tier, preferFreeBuild: left.preferFreeBuild, billingFresh: left.billingFresh},
-				{index: 1, tier: right.tier, preferFreeBuild: right.preferFreeBuild, billingFresh: right.billingFresh},
+				{index: 0, tier: left.tier, preferFreeBuild: left.preferFreeBuild, billingFresh: left.billingFresh, recentlyCreated: left.recentlyCreated},
+				{index: 1, tier: right.tier, preferFreeBuild: right.preferFreeBuild, billingFresh: right.billingFresh, recentlyCreated: right.recentlyCreated},
 			}
 			if got, want := segmentedSelectorCohortBetter(left, right), candidateScoreBetter(values, scores[0], scores[1]); got != want {
 				t.Fatalf("cohort order mismatch at %d/%d: got %t want %t", leftIndex, rightIndex, got, want)

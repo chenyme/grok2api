@@ -975,6 +975,71 @@ func TestCandidatePlanPreservesSelectorOrdering(t *testing.T) {
 	}
 }
 
+func TestCandidatePlanDeprioritizesAccountsCreatedWithinWarmupWindow(t *testing.T) {
+	now := time.Now().UTC()
+	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute)
+	values := []account.RoutingCandidate{
+		{
+			Credential: account.Credential{ID: 2, Priority: 1, CreatedAt: now.Add(-time.Minute)},
+			Billing:    &account.Billing{AccountID: 2, MonthlyLimit: 100, SyncedAt: now},
+		},
+		{
+			Credential: account.Credential{ID: 1, Priority: 1, CreatedAt: now.Add(-time.Hour)},
+			Billing:    &account.Billing{AccountID: 1, MonthlyLimit: 10, Used: 5, SyncedAt: now.Add(-time.Hour)},
+		},
+	}
+	plan, err := selector.planCandidates(context.Background(), values, now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := plan.Next()
+	if !ok || first.Credential.ID != 1 {
+		t.Fatalf("first candidate = %#v, want warmed-up account 1", first)
+	}
+}
+
+func TestCandidatePlanKeepsKnownQuotaAheadOfRecentlyCreatedAccounts(t *testing.T) {
+	now := time.Now().UTC()
+	selector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, nil, time.Hour, time.Second, time.Minute)
+	values := []account.RoutingCandidate{
+		{Credential: account.Credential{ID: 1, Priority: 1, CreatedAt: now.Add(-time.Hour)}},
+		{
+			Credential:  account.Credential{ID: 2, Priority: 1, CreatedAt: now.Add(-time.Minute)},
+			QuotaWindow: &account.QuotaWindow{AccountID: 2, Mode: "console_image", Remaining: 2, Total: 5, Source: account.QuotaSourceUpstream},
+		},
+	}
+	plan, err := selector.planCandidates(context.Background(), values, now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := plan.Next()
+	if !ok || first.Credential.ID != 2 {
+		t.Fatalf("first candidate = %#v, want recently created account with known quota", first)
+	}
+}
+
+func TestAccountCreatedWithinWarmup(t *testing.T) {
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		createdAt time.Time
+		want      bool
+	}{
+		{name: "zero created at is warmed up", want: false},
+		{name: "created one minute ago is warming up", createdAt: now.Add(-time.Minute), want: true},
+		{name: "created exactly at warmup window is warmed up", createdAt: now.Add(-accountCreationWarmup), want: false},
+		{name: "created before warmup window is warmed up", createdAt: now.Add(-accountCreationWarmup - time.Second), want: false},
+		{name: "future created at is treated as warming up", createdAt: now.Add(time.Minute), want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := accountCreatedWithinWarmup(test.createdAt, now); got != test.want {
+				t.Fatalf("accountCreatedWithinWarmup() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCandidatePlanPrefersKnownRemainingQuota(t *testing.T) {
 	values := []account.RoutingCandidate{
 		{Credential: account.Credential{ID: 1, Priority: 100}},

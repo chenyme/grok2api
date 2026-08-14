@@ -27,6 +27,7 @@ type segmentedSelectorCohort struct {
 	tier            int
 	priority        int
 	billingFresh    bool
+	recentlyCreated bool
 }
 
 type selectorLeaseObservation struct {
@@ -103,6 +104,9 @@ func segmentedSelectorCohortBetter(left, right segmentedSelectorCohort) bool {
 	}
 	if left.priority != right.priority {
 		return left.priority > right.priority
+	}
+	if left.recentlyCreated != right.recentlyCreated {
+		return !left.recentlyCreated
 	}
 	if left.billingFresh != right.billingFresh {
 		return left.billingFresh

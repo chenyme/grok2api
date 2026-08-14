@@ -18,6 +18,7 @@ type candidateScore struct {
 	quotaKnown      bool
 	quotaAvailable  bool
 	billingFresh    bool
+	recentlyCreated bool
 	inFlight        int
 	remaining       float64
 	lastSelected    time.Time
@@ -84,6 +85,11 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 	}
 	if left.Priority != right.Priority {
 		return left.Priority > right.Priority
+	}
+	// Fresh imports otherwise win on billing freshness, remaining quota, and a
+	// zero lastSelectedAt. Keep them behind warmed-up peers until snapshots settle.
+	if leftScore.recentlyCreated != rightScore.recentlyCreated {
+		return !leftScore.recentlyCreated
 	}
 	if leftScore.billingFresh != rightScore.billingFresh {
 		return leftScore.billingFresh
@@ -185,6 +191,7 @@ func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []a
 		score := candidateScore{
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
+			recentlyCreated: accountCreatedWithinWarmup(candidate.Credential.CreatedAt, now),
 			inFlight:        inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
 		}
 		// 只有真实上游快照能够证明账号具备该模式额度。历史默认值和

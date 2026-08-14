@@ -185,6 +185,7 @@ func segmentedCandidateCohorts(values []account.RoutingCandidate, indexes []int,
 			supportsModel: candidate.SupportsModel, capabilityKnown: candidate.ModelCapabilityKnown,
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
 			tier:            tierOrderRank(tierOrder, candidate.Credential.WebTier), priority: candidate.Credential.Priority,
+			recentlyCreated: accountCreatedWithinWarmup(candidate.Credential.CreatedAt, now),
 		}
 		if candidate.Billing != nil {
 			cohort.billingFresh = now.Sub(candidate.Billing.SyncedAt) <= 30*time.Minute
