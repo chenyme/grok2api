@@ -23,6 +23,7 @@ import (
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/pkg/mediafile"
 	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
@@ -934,10 +935,10 @@ func (h *Handler) getVideoContent(c *gin.Context) {
 		return
 	}
 	defer func() { _ = body.Close() }()
-	writeVideoContent(c, body, contentType, size)
+	writeVideoContent(c, body, contentType, size, strings.TrimSpace(c.Param("requestId")))
 }
 
-func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size int64) {
+func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size int64, downloadName string) {
 	if size > maxMediaResponseTransferBytes {
 		writeOpenAIError(c, http.StatusBadGateway, "media_too_large", "上游媒体超过 2 GiB 安全上限")
 		return
@@ -947,7 +948,8 @@ func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size 
 		writeOpenAIError(c, http.StatusBadGateway, "invalid_media_type", "上游视频服务返回了不受支持的内容类型")
 		return
 	}
-	c.Header("Content-Disposition", "inline")
+	// Clients that save the response need an extension to get a playable file.
+	c.Header("Content-Disposition", mediafile.VideoContentDisposition(downloadName, contentType))
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Security-Policy", "default-src 'none'; sandbox")
