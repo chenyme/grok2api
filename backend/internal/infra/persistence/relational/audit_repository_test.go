@@ -538,4 +538,15 @@ func TestAuditRepositoryStreamFailureKeepsHTTPStatusAndFiltersAsOther(t *testing
 	}
 }
 
+func TestDegradeTimestampScansPostgresTimeValue(t *testing.T) {
+	expected := time.Date(2026, time.August, 14, 8, 30, 0, 123, time.UTC)
+	var value degradeTimestamp
+	if err := value.Scan(expected); err != nil {
+		t.Fatal(err)
+	}
+	if actual := time.Time(value); !actual.Equal(expected) {
+		t.Fatalf("scanned timestamp = %s, want %s", actual, expected)
+	}
+}
+
 func uint64Pointer(value uint64) *uint64 { return &value }
