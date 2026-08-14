@@ -611,11 +611,11 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	created, err := a.doConsoleVideoJSON(ctx, request.Credential, token, lease, http.MethodPost, consoleV1Endpoint(baseURL, createPath), body)
 	if err != nil {
-		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageCreate, 0, err)
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 	}
 	requestID, err := parseConsoleVideoCreate(created)
 	if err != nil {
-		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageCreate, 0, err)
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageSubmitted, 0, err)
 	}
 	if request.Progress != nil {
 		request.Progress(1)

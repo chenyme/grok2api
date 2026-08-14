@@ -452,6 +452,8 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
 	attemptPolicy := s.videoAttemptPolicy()
 	excluded := make(map[uint64]bool)
+	forbiddenEgressRetried := make(map[uint64]bool)
+	var retryPinnedAccountID uint64
 	failureAttempts := newFailureAttemptRecorder(http.MethodPost, "/videos/generations")
 	var selection *selectionSession
 	var lease *accountLease
@@ -467,10 +469,15 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		}
 		// First try stays on the account chosen when the local job was created.
 		// Create-stage failures may switch accounts; poll failures never reach here as retries.
-		if attempt == 0 && job.AccountID > 0 && !excluded[job.AccountID] {
-			lease, err = s.selector.AcquirePinned(ctx, route.Provider, job.AccountID, route.ID, route.UpstreamModel, quotaMode, true)
+		pinnedAccountID := retryPinnedAccountID
+		retryPinnedAccountID = 0
+		if attempt == 0 {
+			pinnedAccountID = job.AccountID
+		}
+		if pinnedAccountID > 0 && !excluded[pinnedAccountID] {
+			lease, err = s.selector.AcquirePinned(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
 			if err != nil {
-				excluded[job.AccountID] = true
+				excluded[pinnedAccountID] = true
 				lease = nil
 			}
 		}
@@ -548,26 +555,29 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		failureHandled := false
 		retriableCreate := false
 		stage, hasStage := provider.VideoErrorStage(err)
+		safeCreateFailure := hasStage && stage == provider.VideoStageCreate
 		status, hasStatus := provider.ErrorHTTPStatus(err)
 		if errors.Is(err, provider.ErrUnauthorized) {
 			if lease.Credential.AuthType == account.AuthTypeSSO {
 				s.markSSOCredentialRejected(failureCtx, lease.Credential, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
 			}
 			failureHandled = true
-			retriableCreate = !hasStage || stage == provider.VideoStageCreate
+			retriableCreate = safeCreateFailure
 		} else if hasStatus {
 			switch {
 			case status == http.StatusUnauthorized && lease.Credential.AuthType == account.AuthTypeSSO:
 				s.markSSOCredentialRejected(failureCtx, lease.Credential, fmt.Sprintf("%s SSO credential rejected", lease.Credential.Provider))
 				failureHandled = true
-				retriableCreate = !hasStage || stage == provider.VideoStageCreate
+				retriableCreate = safeCreateFailure
 			case status == http.StatusForbidden && s.providers.RetryForbiddenAsEgress(lease.Credential.Provider):
-				// Web anti-bot 403 is egress-scoped. Retry create on same account once via policy budget.
+				// Web anti-bot 403 is egress-scoped. Retry the same account once so
+				// egress invalidation can rebuild the route, then move on normally.
 				failureHandled = true
-				if !hasStage || stage == provider.VideoStageCreate {
-					delete(excluded, lease.Credential.ID)
-					if selection != nil {
-						selection.RetryAccount(lease.Credential.ID)
+				if safeCreateFailure {
+					if !forbiddenEgressRetried[lease.Credential.ID] {
+						forbiddenEgressRetried[lease.Credential.ID] = true
+						retryPinnedAccountID = lease.Credential.ID
+						delete(excluded, lease.Credential.ID)
 					}
 					retriableCreate = true
 				}
@@ -576,7 +586,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
 				}
 				failureHandled = true
-				retriableCreate = (!hasStage || stage == provider.VideoStageCreate) && !account.IsBuildSuper(lease.Credential, lease.Billing)
+				retriableCreate = safeCreateFailure && !account.IsBuildSuper(lease.Credential, lease.Billing)
 			case (status == http.StatusPaymentRequired || status == http.StatusTooManyRequests) && lease.QuotaMode != "":
 				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(failureCtx, lease.Credential.ID, lease.QuotaMode, 0)
 				s.selector.MarkQuotaStateChanged(lease.Credential.Provider, lease.Credential.ID)
@@ -584,24 +594,25 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 					s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
 				}
 				failureHandled = true
-				retriableCreate = !hasStage || stage == provider.VideoStageCreate
+				retriableCreate = safeCreateFailure
 			case status == http.StatusTooManyRequests || status == http.StatusPaymentRequired:
 				s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
 				failureHandled = true
-				retriableCreate = !hasStage || stage == provider.VideoStageCreate
+				retriableCreate = safeCreateFailure
 			case status >= http.StatusInternalServerError:
-				// 5xx is provider-level; keep the account and allow create-stage failover.
+				// A 5xx may be returned after the upstream accepted the job. Never
+				// switch accounts without an idempotency guarantee.
 				failureHandled = true
-				retriableCreate = !hasStage || stage == provider.VideoStageCreate
+				retriableCreate = false
 			default:
 				s.selector.MarkFailure(failureCtx, lease.Credential, status, 0)
 				failureHandled = true
-				retriableCreate = (!hasStage || stage == provider.VideoStageCreate) && status != http.StatusBadRequest && status != http.StatusUnprocessableEntity
+				retriableCreate = false
 			}
 		}
 		if !failureHandled && !provider.IsMediaPostProcessingError(err) {
 			s.selector.MarkFailure(failureCtx, lease.Credential, 0, 0)
-			retriableCreate = !hasStage || stage == provider.VideoStageCreate
+			retriableCreate = safeCreateFailure
 		}
 		failureCancel()
 		applyMediaJobEgress(&job, egressTrace, route.Provider)

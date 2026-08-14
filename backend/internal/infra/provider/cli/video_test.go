@@ -187,12 +187,12 @@ func TestBuildVideoCreatePayloadRejectsImageWithReferences(t *testing.T) {
 
 func TestBuildVideoCreatePayloadReferenceAudios(t *testing.T) {
 	payload, err := videoCreatePayload(provider.VideoRequest{
-		Prompt:           "speak",
-		Duration:         8,
-		AspectRatio:      "9:16",
-		Resolution:       "720p",
-		ReferenceURLs:    []string{"https://cdn.example.com/person.png"},
-		ReferenceAudios:  []string{"eve"},
+		Prompt:          "speak",
+		Duration:        8,
+		AspectRatio:     "9:16",
+		Resolution:      "720p",
+		ReferenceURLs:   []string{"https://cdn.example.com/person.png"},
+		ReferenceAudios: []string{"eve"},
 	}, "", buildVideoRequestProfile)
 	if err != nil {
 		t.Fatal(err)
@@ -209,7 +209,6 @@ func TestBuildVideoCreatePayloadReferenceAudios(t *testing.T) {
 		t.Fatalf("reference_audios = %#v", payload["reference_audios"])
 	}
 }
-
 
 func TestGenerateVideoRejectsTooManyImagesBeforeUpstream(t *testing.T) {
 	adapter, encrypted := newTestBuildVideoAdapter(t)
@@ -604,6 +603,57 @@ func TestGenerateVideoRespectsContextCancelDuringPoll(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel err = %v", err)
+	}
+}
+
+func TestBuildVideoCreateFailureStagesPreserveRetrySafety(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport func(*http.Request) (*http.Response, error)
+		wantStage provider.VideoStage
+	}{
+		{
+			name: "transport result unknown",
+			transport: func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("connection reset after request write")
+			},
+			wantStage: provider.VideoStageSubmitted,
+		},
+		{
+			name: "malformed successful response",
+			transport: func(request *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, `{"status":"queued"}`, request), nil
+			},
+			wantStage: provider.VideoStageSubmitted,
+		},
+		{
+			name: "explicit rate limit rejection",
+			transport: func(request *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusTooManyRequests, `{"error":"rate limited"}`, request), nil
+			},
+			wantStage: provider.VideoStageCreate,
+		},
+		{
+			name: "server failure result unknown",
+			transport: func(request *http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusInternalServerError, `{"error":"failed"}`, request), nil
+			},
+			wantStage: provider.VideoStageSubmitted,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, encrypted := newTestBuildVideoAdapter(t)
+			adapter.http.Transport = roundTripFunc(test.transport)
+			_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+				Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+				Prompt:     "test", Duration: 5,
+			})
+			stage, ok := provider.VideoErrorStage(err)
+			if !ok || stage != test.wantStage {
+				t.Fatalf("stage = %q, ok=%t, err=%v; want %q", stage, ok, err, test.wantStage)
+			}
+		})
 	}
 }
 

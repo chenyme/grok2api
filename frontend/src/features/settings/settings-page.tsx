@@ -27,6 +27,7 @@ export function SettingsPage() {
   const [autoCleanConfirm, setAutoCleanConfirm] = useState<"enabled" | "includeDisabled" | null>(null);
   const [unlimitedAttemptsConfirm, setUnlimitedAttemptsConfirm] = useState(false);
   const limitedRoutingAttemptsRef = useRef(3);
+  const limitedVideoRoutingAttemptsRef = useRef(999);
   const autoCleanEnabled = form.watch("accounts.autoCleanReauthEnabled") === true;
   const buildForbiddenReauthEnabled = form.watch("accounts.markBuildForbiddenReauth") === true;
   const segmentedSelectorEnabled = form.watch("routing.segmentedSelector.enabled") === true;
@@ -299,10 +300,11 @@ export function SettingsPage() {
                           checked={unlimited}
                           onCheckedChange={(checked) => {
                             if (checked) {
+                              if (field.value > 0) limitedVideoRoutingAttemptsRef.current = field.value;
                               field.onChange(UNLIMITED_ROUTING_ATTEMPTS);
                               return;
                             }
-                            field.onChange(limitedRoutingAttemptsRef.current > 0 ? limitedRoutingAttemptsRef.current : 999);
+                            field.onChange(limitedVideoRoutingAttemptsRef.current);
                           }}
                         />
                       </div>

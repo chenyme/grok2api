@@ -67,12 +67,23 @@ func ErrorHTTPStatus(err error) (int, bool) {
 type VideoStage string
 
 const (
+	// VideoStagePrepare is local work performed before the create request is sent.
+	// It is not account-failover eligible because retrying deterministic local
+	// validation or configuration failures against another credential is useless.
+	VideoStagePrepare VideoStage = "prepare"
+	// VideoStageCreate means the upstream explicitly rejected the create request.
+	// Account failover is safe only for the retryable 4xx statuses selected by
+	// the gateway; 5xx responses remain indeterminate because work may already
+	// have been accepted before the server failed.
 	VideoStageCreate VideoStage = "create"
-	VideoStagePoll   VideoStage = "poll"
+	// VideoStageSubmitted means the create request may have reached upstream but
+	// no usable job identifier was obtained. Retrying could duplicate work.
+	VideoStageSubmitted VideoStage = "submitted"
+	VideoStagePoll      VideoStage = "poll"
 )
 
-// VideoStageError marks whether a video failure happened before the upstream
-// job was created (safe to switch accounts) or while polling an existing job.
+// VideoStageError records the asynchronous video phase without treating every
+// create-path error as safe for account failover.
 type VideoStageError struct {
 	Stage  VideoStage
 	Status int
@@ -125,6 +136,20 @@ func VideoErrorStage(err error) (VideoStage, bool) {
 		return "", false
 	}
 	return stageErr.Stage, true
+}
+
+// VideoCreateFailureStage distinguishes an explicit upstream rejection from an
+// indeterminate POST result. Explicit 4xx responses (including the 401
+// sentinel) are rejections; transport errors and 5xx responses remain
+// submitted because the upstream may already have accepted the job.
+func VideoCreateFailureStage(err error) VideoStage {
+	if errors.Is(err, ErrUnauthorized) {
+		return VideoStageCreate
+	}
+	if status, ok := ErrorHTTPStatus(err); ok && status >= http.StatusBadRequest && status < http.StatusInternalServerError {
+		return VideoStageCreate
+	}
+	return VideoStageSubmitted
 }
 
 // WrapVideoStage annotates err with the video phase and optional HTTP status.
