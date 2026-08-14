@@ -1,5 +1,5 @@
 import { apiRequest } from "@/shared/api/client";
-import { createObjectDecoder, hasShape, isArrayOf, isBoolean, isNumber, isOneOf, isOptional, isRecordOf, isString } from "@/shared/api/decoder";
+import { createObjectDecoder, hasShape, isArrayOf, isBoolean, isNumber, isObject, isOneOf, isOptional, isRecordOf, isString } from "@/shared/api/decoder";
 
 export type QualityGuardPolicy = {
   mode: "active" | "passive" | "hybrid";
@@ -76,6 +76,8 @@ export type QualityGuardStatus = {
     quarantine_seconds: number;
     min_healthy_nodes: number;
     max_output_tokens: number;
+    fail_closed: boolean;
+    min_generation_ms: number;
   };
   nodes?: Record<string, QualityGuardNodeState>;
   protectedNodeIds?: string[];
@@ -110,6 +112,7 @@ const configValidator = hasShape({
   node_ids: isArrayOf(isString), active_interval_seconds: isNumber, passive_poll_seconds: isNumber,
   soft_tps: isNumber, hard_tps: isNumber, consecutive_soft: isNumber, consecutive_errors: isNumber,
   quarantine_seconds: isNumber, min_healthy_nodes: isNumber, max_output_tokens: isNumber,
+  fail_closed: isBoolean, min_generation_ms: isNumber,
 });
 const detectionStatsValidator = hasShape({
   total: isNumber, healthy: isNumber, soft: isNumber, hard: isNumber,
@@ -150,4 +153,92 @@ export function runQualityTest(nodeId: string, status: QualityGuardStatus): Prom
 
 export function updateQualityGuardPolicy(policy: QualityGuardPolicy): Promise<{ saved: boolean }> {
   return apiRequest("/api/admin/v1/egress-quality-guard/config", { method: "PUT", body: policy }, createObjectDecoder("quality guard config update", { saved: isBoolean }));
+}
+
+export type DegradeWindow = "1h" | "6h" | "24h" | "7d";
+export type DegradeClass = "buffered_burst" | "soft_tps" | "hard_tps";
+
+export type DegradeAccountDTO = {
+  id: string;
+  name: string;
+  email: string;
+  hits: number;
+  maxTPS: number;
+  classes: Partial<Record<DegradeClass, number>>;
+  nodes: string[];
+  last: string;
+  enabled: boolean;
+  found: boolean;
+  bfs: number;
+};
+
+export type DegradeEventDTO = {
+  id: string;
+  requestId: string;
+  accountId?: string;
+  accountName: string;
+  nodeName: string;
+  outputTokens: number;
+  tps: number;
+  class: DegradeClass;
+  createdAt: string;
+  model: string;
+};
+
+export type DegradeSummaryDTO = {
+  window: DegradeWindow;
+  generatedAt: string;
+  thresholds: { softTPS: number; hardTPS: number; minGenMs: number; minOutputTokens: number };
+  totals: { hits: number; accounts: number; stillEnabled: number; disabled: number; deleted: number; hard: number; soft: number; burst: number; maxTPS: number };
+  series: { label: string; count: number; severe: number }[];
+  nodes: { name: string; hits: number; accounts: number; maxTPS: number }[];
+  accounts: DegradeAccountDTO[];
+  accountPage: { page: number; pageSize: number; total: number; hasMore: boolean };
+  events: DegradeEventDTO[];
+};
+
+const degradeClassValidator = isOneOf("buffered_burst", "soft_tps", "hard_tps");
+
+const decodeDegradeSummary = createObjectDecoder<DegradeSummaryDTO>("degrade accounts", {
+  window: isOneOf("1h", "6h", "24h", "7d"),
+  generatedAt: isString,
+  thresholds: hasShape({ softTPS: isNumber, hardTPS: isNumber, minGenMs: isNumber, minOutputTokens: isNumber }),
+  totals: hasShape({ hits: isNumber, accounts: isNumber, stillEnabled: isNumber, disabled: isNumber, deleted: isNumber, hard: isNumber, soft: isNumber, burst: isNumber, maxTPS: isNumber }),
+  series: isArrayOf(hasShape({ label: isString, count: isNumber, severe: isNumber })),
+  nodes: isArrayOf(hasShape({ name: isString, hits: isNumber, accounts: isNumber, maxTPS: isNumber })),
+  accounts: isArrayOf(hasShape({
+    id: isString, name: isString, email: isString, hits: isNumber, maxTPS: isNumber,
+    classes: isObject, nodes: isArrayOf(isString), last: isString, enabled: isBoolean, found: isBoolean, bfs: isNumber,
+  })),
+  accountPage: hasShape({ page: isNumber, pageSize: isNumber, total: isNumber, hasMore: isBoolean }),
+  events: isArrayOf(hasShape({
+    id: isString, requestId: isString, accountId: isOptional(isString), accountName: isString,
+    nodeName: isString, outputTokens: isNumber, tps: isNumber, class: degradeClassValidator,
+    createdAt: isString, model: isString,
+  })),
+});
+
+export function getDegradeAccounts(input: {
+  window: DegradeWindow;
+  softTPS?: number;
+  hardTPS?: number;
+  failClosed?: boolean;
+  minGenMs?: number;
+  search?: string;
+  status?: "enabled" | "disabled" | "deleted";
+  class?: DegradeClass;
+  minHits?: number;
+  page: number;
+  pageSize: number;
+}): Promise<DegradeSummaryDTO> {
+  const query = new URLSearchParams({ window: input.window, page: String(input.page), pageSize: String(input.pageSize) });
+  if (input.softTPS) query.set("softTPS", String(input.softTPS));
+  if (input.hardTPS) query.set("hardTPS", String(input.hardTPS));
+  if (input.failClosed !== undefined) query.set("failClosed", String(input.failClosed));
+  if (input.minGenMs) query.set("minGenMs", String(input.minGenMs));
+  if (input.search) query.set("search", input.search);
+  if (input.status) query.set("status", input.status);
+  if (input.class) query.set("class", input.class);
+  if (input.minHits && input.minHits > 1) query.set("minHits", String(input.minHits));
+  return apiRequest(`/api/admin/v1/request-audits/degrade-accounts?${query}`, {}, decodeDegradeSummary);
 }
