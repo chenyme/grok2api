@@ -611,11 +611,11 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	}
 	created, err := a.doConsoleVideoJSON(ctx, request.Credential, token, lease, http.MethodPost, consoleV1Endpoint(baseURL, createPath), body)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 	}
 	requestID, err := parseConsoleVideoCreate(created)
 	if err != nil {
-		return provider.VideoResult{}, err
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageSubmitted, 0, err)
 	}
 	if request.Progress != nil {
 		request.Progress(1)
@@ -625,11 +625,11 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	for {
 		statusBody, pollErr := a.doConsoleVideoJSON(ctx, request.Credential, token, lease, http.MethodGet, consoleV1Endpoint(baseURL, "/videos/"+url.PathEscape(requestID)), nil)
 		if pollErr != nil {
-			return provider.VideoResult{}, pollErr
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, pollErr)
 		}
 		result, done, parseErr := parseConsoleVideoStatus(statusBody, request.Progress)
 		if parseErr != nil {
-			return provider.VideoResult{}, parseErr
+			return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePoll, 0, parseErr)
 		}
 		if done {
 			return result, nil

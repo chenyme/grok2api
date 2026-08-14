@@ -28,6 +28,7 @@ type accountLease struct {
 	QuotaProbe          bool
 	QuotaProbeKind      account.QuotaRecoveryKind
 	QuotaMode           string
+	routingCandidate    *account.RoutingCandidate
 	selectorObservation *selectorLeaseObservation
 	release             func()
 }
@@ -51,6 +52,12 @@ const maxRoutingOverlayValues = 250_000
 const concurrencySnapshotTTL = 25 * time.Millisecond
 const maxConcurrencySnapshots = 256
 
+// Health overrides bridge precise request-path mutations until the immutable
+// provider snapshot naturally refreshes. Keep them through the snapshot's
+// normal and stale lifetimes so a transient database error cannot resurrect a
+// cooled account from an older snapshot.
+const routingHealthOverrideTTL = candidateCacheTTL + candidateCacheStaleTTL
+
 const modelAccessDeniedCooldown = 5 * time.Minute
 
 // softNetworkCooldown 网络/超时/5xx 仅短暂隔离本号，避免指数冷却掏空热池。
@@ -73,6 +80,16 @@ type quotaConsumptionKey struct {
 type accountQuotaConsumptionKey struct {
 	accountID uint64
 	mode      string
+}
+
+type routingHealthOverride struct {
+	provider      account.Provider
+	failureCount  int
+	cooldownUntil *time.Time
+	lastError     string
+	updatedAt     time.Time
+	revision      uint64
+	expiresAt     time.Time
 }
 
 type candidateSnapshot struct {
@@ -268,6 +285,7 @@ type Selector struct {
 	configMu               sync.RWMutex
 	candidateMu            sync.Mutex
 	selectionMu            sync.RWMutex
+	healthMu               sync.RWMutex
 	quotaMu                sync.RWMutex
 	staleLogMu             sync.Mutex
 	logger                 *slog.Logger
@@ -275,6 +293,7 @@ type Selector struct {
 	leaseWake              chan struct{}
 	lastSelectedAt         map[uint64]time.Time
 	lastSuccessAt          map[uint64]time.Time
+	healthOverrides        map[uint64]routingHealthOverride
 	quotaConsumed          map[quotaConsumptionKey]int
 	staleFallbackLoggedAt  map[string]time.Time
 	candidates             map[candidateCacheKey]candidateSnapshot
@@ -299,7 +318,7 @@ func NewSelector(accounts repository.AccountRepository, concurrency repository.C
 	if len(capacityWait) > 0 && capacityWait[0] > 0 {
 		wait = capacityWait[0]
 	}
-	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, leaseWake: make(chan struct{}), logger: slog.Default(), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), quotaConsumed: make(map[quotaConsumptionKey]int), staleFallbackLoggedAt: make(map[string]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot), routingBases: make(map[routingBaseCacheKey]routingBaseSnapshot), routingOverlays: make(map[routingOverlayCacheKey]routingOverlaySnapshot), routingAccountProvider: make(map[uint64]account.Provider), baseProviderVersion: make(map[account.Provider]uint64), overlayProviderVersion: make(map[account.Provider]uint64), concurrencySnapshots: resultcache.New[[32]byte, map[string]int](maxConcurrencySnapshots, concurrencySnapshotTTL)}
+	return &Selector{accounts: accounts, concurrency: concurrency, sticky: sticky, tierOrders: tierOrders, stickyTTL: stickyTTL, cooldownBase: cooldownBase, cooldownMax: cooldownMax, capacityWait: wait, leaseWake: make(chan struct{}), logger: slog.Default(), lastSelectedAt: make(map[uint64]time.Time), lastSuccessAt: make(map[uint64]time.Time), healthOverrides: make(map[uint64]routingHealthOverride), quotaConsumed: make(map[quotaConsumptionKey]int), staleFallbackLoggedAt: make(map[string]time.Time), candidates: make(map[candidateCacheKey]candidateSnapshot), routingBases: make(map[routingBaseCacheKey]routingBaseSnapshot), routingOverlays: make(map[routingOverlayCacheKey]routingOverlaySnapshot), routingAccountProvider: make(map[uint64]account.Provider), baseProviderVersion: make(map[account.Provider]uint64), overlayProviderVersion: make(map[account.Provider]uint64), concurrencySnapshots: resultcache.New[[32]byte, map[string]int](maxConcurrencySnapshots, concurrencySnapshotTTL)}
 }
 
 // SetLogger wires the application logger into routing degradation diagnostics.
@@ -441,6 +460,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 		return nil, err
 	}
 	quotaConsumed := s.quotaConsumptionSnapshot(provider)
+	healthOverrides := s.routingHealthSnapshot(provider, now)
 	// 仅保留候选下标，避免每个请求复制包含凭据、计费和额度结构的完整账号切片。
 	normalCandidates := make([]int, 0, len(values))
 	probeCandidates := make([]int, 0, len(values))
@@ -451,7 +471,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 	quotaCandidates := 0
 	var earliestRetry time.Time
 	for index, candidate := range values {
-		value := candidate.Credential
+		value := applyHealthSnapshot(candidate.Credential, healthOverrides)
 		if forcedEgressNodeID != 0 && value.EgressNodeID != forcedEgressNodeID {
 			continue
 		}
@@ -615,11 +635,17 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 		}
 		return nil, &SelectionUnavailableError{Reason: SelectionSaturated, RetryAfter: time.Second}
 	}
-	if stickyKey == "" {
-		activeRequest := s.nextSegmentedActiveRequest(provider, upstreamModel, quotaMode, len(normalCandidates))
-		if activeRequest != nil {
-			return s.acquireSegmentedCandidates(ctx, values, normalCandidates, quotaMode, s.resolveTierOrder(provider, upstreamModel), *activeRequest)
+	activeRequest := s.nextSegmentedActiveRequest(provider, upstreamModel, quotaMode, len(normalCandidates))
+	if activeRequest != nil {
+		lease, acquireErr := s.acquireSegmentedCandidates(ctx, values, normalCandidates, quotaMode, s.resolveTierOrder(provider, upstreamModel), *activeRequest)
+		if acquireErr != nil || lease == nil || stickyKey == "" {
+			return lease, acquireErr
 		}
+		if lease.routingCandidate == nil {
+			lease.Release()
+			return nil, errors.New("分段选号缺少候选上下文")
+		}
+		return s.completeStickyLease(ctx, stickyKey, values, normalCandidates, *lease.routingCandidate, lease, quotaMode)
 	}
 	_, _, _, capacityWait := s.routingConfig()
 	waitDeadline := time.Now().Add(capacityWait)
@@ -644,42 +670,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 				capacityMisses++
 				continue
 			}
-			if stickyKey != "" {
-				stickyTTL, _, _, _ := s.routingConfig()
-				boundID, bindErr := s.sticky.Bind(ctx, stickyKey, candidate.Credential.ID, currentTime, currentTime.Add(stickyTTL))
-				if bindErr != nil {
-					lease.Release()
-					return nil, fmt.Errorf("写入会话粘滞状态: %w", bindErr)
-				}
-				if boundID != candidate.Credential.ID {
-					if boundCandidate, eligible := routingCandidateByID(values, normalCandidates, boundID); eligible {
-						boundLease, boundErr := s.acquirePinnedCapacity(ctx, boundCandidate.Credential)
-						if boundErr == nil {
-							lease.Release()
-							boundLease.Billing = boundCandidate.Billing
-							boundLease.QuotaMode = effectiveQuotaMode(boundCandidate, quotaMode)
-							return boundLease, nil
-						}
-						if errors.Is(boundErr, errRoutingCredentialStale) {
-							_ = s.sticky.DeleteByAccount(ctx, boundID)
-							if err := s.sticky.Set(ctx, stickyKey, candidate.Credential.ID, currentTime.Add(stickyTTL)); err != nil {
-								lease.Release()
-								return nil, fmt.Errorf("重建会话粘滞状态: %w", err)
-							}
-						} else if !isSelectionUnavailable(boundErr, SelectionSaturated) {
-							lease.Release()
-							return nil, boundErr
-						}
-						// 已绑定账号满载时保留原绑定，本次请求使用已获取的临时账号。
-					} else if err := s.sticky.Set(ctx, stickyKey, candidate.Credential.ID, currentTime.Add(stickyTTL)); err != nil {
-						lease.Release()
-						return nil, fmt.Errorf("重建会话粘滞状态: %w", err)
-					}
-				}
-			}
-			lease.Billing = candidate.Billing
-			lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
-			return lease, nil
+			return s.completeStickyLease(ctx, stickyKey, values, normalCandidates, candidate, lease, quotaMode)
 		}
 		if staleClaims > 0 && capacityMisses == 0 {
 			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
@@ -695,6 +686,44 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			return nil, &SelectionUnavailableError{Reason: SelectionSaturated, RetryAfter: time.Second}
 		}
 	}
+}
+
+func (s *Selector) completeStickyLease(ctx context.Context, stickyKey string, values []account.RoutingCandidate, normalCandidates []int, candidate account.RoutingCandidate, lease *accountLease, quotaMode string) (*accountLease, error) {
+	if stickyKey != "" {
+		stickyTTL, _, _, _ := s.routingConfig()
+		now := time.Now().UTC()
+		boundID, err := s.sticky.Bind(ctx, stickyKey, candidate.Credential.ID, now, now.Add(stickyTTL))
+		if err != nil {
+			lease.Release()
+			return nil, fmt.Errorf("写入会话粘滞状态: %w", err)
+		}
+		if boundID != candidate.Credential.ID {
+			if boundCandidate, eligible := routingCandidateByID(values, normalCandidates, boundID); eligible {
+				boundLease, acquireErr := s.acquirePinnedCapacity(ctx, boundCandidate.Credential)
+				if acquireErr == nil {
+					lease.Release()
+					lease = boundLease
+					candidate = boundCandidate
+				} else if errors.Is(acquireErr, errRoutingCredentialStale) {
+					_ = s.sticky.DeleteByAccount(ctx, boundID)
+					if err := s.sticky.Set(ctx, stickyKey, candidate.Credential.ID, now.Add(stickyTTL)); err != nil {
+						lease.Release()
+						return nil, fmt.Errorf("重建会话粘滞状态: %w", err)
+					}
+				} else if !isSelectionUnavailable(acquireErr, SelectionSaturated) {
+					lease.Release()
+					return nil, acquireErr
+				}
+				// 已绑定账号满载时保留原绑定，本次请求使用已获取的临时账号。
+			} else if err := s.sticky.Set(ctx, stickyKey, candidate.Credential.ID, now.Add(stickyTTL)); err != nil {
+				lease.Release()
+				return nil, fmt.Errorf("重建会话粘滞状态: %w", err)
+			}
+		}
+	}
+	lease.Billing = candidate.Billing
+	lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
+	return lease, nil
 }
 
 // stickySessionKey 将调用方粘滞 identity 压缩为固定长度，仅用于账号粘滞索引。
@@ -742,8 +771,9 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 		return nil, err
 	}
 	quotaConsumed := s.quotaConsumptionSnapshot(provider)
+	healthOverrides := s.routingHealthSnapshot(provider, now)
 	for _, candidate := range values {
-		value := candidate.Credential
+		value := applyHealthSnapshot(candidate.Credential, healthOverrides)
 		if value.ID != accountID {
 			continue
 		}
@@ -869,22 +899,29 @@ func (s *Selector) MarkSuccess(ctx context.Context, credential account.Credentia
 
 func (s *Selector) markSuccess(ctx context.Context, credential account.Credential, quotaProbe bool) {
 	now := time.Now().UTC()
-	persist := credential.FailureCount > 0 || credential.CooldownUntil != nil || credential.LastError != ""
+	healthChanged := credential.FailureCount > 0 || credential.CooldownUntil != nil || credential.LastError != ""
+	touchLastUsed := healthChanged
 	s.selectionMu.Lock()
 	if last := s.lastSuccessAt[credential.ID]; last.IsZero() || now.Sub(last) >= successPersistInterval {
-		persist = true
+		touchLastUsed = true
 	}
-	if persist {
+	if touchLastUsed {
 		s.lastSuccessAt[credential.ID] = now
 	}
 	s.selectionMu.Unlock()
-	if persist {
-		_ = s.accounts.UpdateHealth(ctx, credential.ID, 0, nil, "", true)
+	if healthChanged {
+		if err := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, 0, nil, "", true); err == nil {
+			s.ApplyInvalidation(repository.InvalidationEvent{
+				Kind: repository.InvalidationAccountHealthChanged, Provider: credential.Provider, AccountID: credential.ID,
+			})
+		}
+	} else if touchLastUsed {
+		_ = s.accounts.TouchLastUsed(ctx, credential.ID, now)
 	}
 	if quotaProbe {
 		_ = s.accounts.ClearQuotaRecovery(ctx, credential.ID)
 	}
-	if quotaProbe || credential.FailureCount > 0 || credential.CooldownUntil != nil || credential.LastError != "" {
+	if quotaProbe {
 		s.evictCandidate(credential.Provider, credential.ID)
 	}
 }
@@ -1083,8 +1120,14 @@ func (s *Selector) markFailure(ctx context.Context, credential account.Credentia
 		}
 	}
 	until := time.Now().UTC().Add(cooldown)
-	healthErr := s.accounts.UpdateHealth(ctx, credential.ID, effectiveFailureCount, &until, fmt.Sprintf("upstream status %d", status), false)
-	s.invalidateCandidates(credential.Provider)
+	lastError := fmt.Sprintf("upstream status %d", status)
+	healthErr := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, effectiveFailureCount, &until, lastError, false)
+	if healthErr == nil {
+		s.ApplyInvalidation(repository.InvalidationEvent{
+			Kind: repository.InvalidationAccountHealthChanged, Provider: credential.Provider, AccountID: credential.ID,
+			FailureCount: effectiveFailureCount, CooldownUntil: &until,
+		})
+	}
 	if status == 401 || status == 402 || status == 403 || status == 429 {
 		_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 	}
@@ -1374,11 +1417,131 @@ func (s *Selector) routingVersionsStable(provider account.Provider, base, overla
 	return base == s.routingBaseVersionLocked(provider) && overlay == s.routingOverlayVersionLocked(provider)
 }
 
+func (s *Selector) applyHealthInvalidation(event repository.InvalidationEvent) {
+	updatedAt := event.PublishedAt.UTC()
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	expiresAt := updatedAt.Add(routingHealthOverrideTTL)
+	if !time.Now().UTC().Before(expiresAt) {
+		return
+	}
+	var cooldownUntil *time.Time
+	if event.CooldownUntil != nil {
+		value := event.CooldownUntil.UTC()
+		cooldownUntil = &value
+	}
+	overrideLastError := ""
+	if event.FailureCount > 0 || cooldownUntil != nil {
+		overrideLastError = "upstream failure"
+	}
+	value := routingHealthOverride{
+		provider: event.Provider, failureCount: max(0, event.FailureCount), cooldownUntil: cooldownUntil,
+		lastError: overrideLastError, updatedAt: updatedAt, revision: event.Revision, expiresAt: expiresAt,
+	}
+	s.healthMu.Lock()
+	current, exists := s.healthOverrides[event.AccountID]
+	if exists {
+		if current.revision > 0 && value.revision > 0 && value.revision < current.revision {
+			s.healthMu.Unlock()
+			return
+		}
+		if (current.revision == 0 || value.revision == 0) && value.updatedAt.Before(current.updatedAt) {
+			s.healthMu.Unlock()
+			return
+		}
+	}
+	s.healthOverrides[event.AccountID] = value
+	s.healthMu.Unlock()
+}
+
+func (s *Selector) applyRoutingHealth(value account.Credential, now time.Time) account.Credential {
+	s.healthMu.RLock()
+	override, exists := s.healthOverrides[value.ID]
+	s.healthMu.RUnlock()
+	if !exists || override.provider != value.Provider {
+		return value
+	}
+	if !now.Before(override.expiresAt) {
+		s.healthMu.Lock()
+		if current, ok := s.healthOverrides[value.ID]; ok && !now.Before(current.expiresAt) {
+			delete(s.healthOverrides, value.ID)
+		}
+		s.healthMu.Unlock()
+		return value
+	}
+	value.FailureCount = override.failureCount
+	value.CooldownUntil = override.cooldownUntil
+	value.LastError = override.lastError
+	return value
+}
+
+func (s *Selector) routingHealthSnapshot(provider account.Provider, now time.Time) map[uint64]routingHealthOverride {
+	var result map[uint64]routingHealthOverride
+	expired := make([]uint64, 0)
+	s.healthMu.RLock()
+	for accountID, value := range s.healthOverrides {
+		if !now.Before(value.expiresAt) {
+			expired = append(expired, accountID)
+			continue
+		}
+		if value.provider == provider {
+			if result == nil {
+				result = make(map[uint64]routingHealthOverride)
+			}
+			result[accountID] = value
+		}
+	}
+	s.healthMu.RUnlock()
+	if len(expired) > 0 {
+		s.healthMu.Lock()
+		for _, accountID := range expired {
+			if value, ok := s.healthOverrides[accountID]; ok && !now.Before(value.expiresAt) {
+				delete(s.healthOverrides, accountID)
+			}
+		}
+		s.healthMu.Unlock()
+	}
+	return result
+}
+
+func applyHealthSnapshot(value account.Credential, overrides map[uint64]routingHealthOverride) account.Credential {
+	if override, ok := overrides[value.ID]; ok && override.provider == value.Provider {
+		value.FailureCount = override.failureCount
+		value.CooldownUntil = override.cooldownUntil
+		value.LastError = override.lastError
+	}
+	return value
+}
+
+func (s *Selector) clearHealthOverrides(provider account.Provider, accountID uint64) {
+	s.healthMu.Lock()
+	defer s.healthMu.Unlock()
+	if accountID != 0 {
+		delete(s.healthOverrides, accountID)
+		return
+	}
+	if provider == "" {
+		clear(s.healthOverrides)
+		return
+	}
+	for id, value := range s.healthOverrides {
+		if value.provider == provider {
+			delete(s.healthOverrides, id)
+		}
+	}
+}
+
 // ApplyInvalidation advances local layer generations before any remote publish.
 func (s *Selector) ApplyInvalidation(event repository.InvalidationEvent) {
 	if !event.Valid() {
 		return
 	}
+	if event.Kind == repository.InvalidationAccountHealthChanged {
+		s.applyHealthInvalidation(event)
+		return
+	}
+	s.clearHealthOverrides(event.Provider, event.AccountID)
 	layer := event.Layer()
 	if layer != repository.InvalidationLayerRoute && layer != repository.InvalidationLayerBase && layer != repository.InvalidationLayerOverlay {
 		return
@@ -1696,6 +1859,11 @@ func (s *Selector) evictCandidate(provider account.Provider, accountID uint64) {
 }
 
 func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credential) (*accountLease, error) {
+	now := time.Now().UTC()
+	value = s.applyRoutingHealth(value, now)
+	if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
+		return nil, nil
+	}
 	limit := value.MaxConcurrent
 	if limit <= 0 {
 		limit = account.DefaultMaxConcurrent

@@ -1588,6 +1588,41 @@ func TestConsoleVideoCreatesAndPollsStandardResources(t *testing.T) {
 	}
 }
 
+func TestConsoleVideoCreateFailureStagesPreserveRetrySafety(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		body      string
+		wantStage provider.VideoStage
+	}{
+		{name: "malformed successful response", status: http.StatusOK, body: `{"status":"queued"}`, wantStage: provider.VideoStageSubmitted},
+		{name: "explicit rate limit rejection", status: http.StatusTooManyRequests, body: `{"error":"rate limited"}`, wantStage: provider.VideoStageCreate},
+		{name: "server failure result unknown", status: http.StatusInternalServerError, body: `{"error":"failed"}`, wantStage: provider.VideoStageSubmitted},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if serveTestDPoPToken(t, writer, request) {
+					return
+				}
+				verifyTestDPoPProof(t, request)
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(test.status)
+				_, _ = io.WriteString(writer, test.body)
+			}))
+			t.Cleanup(server.Close)
+			adapter, credential := newConsoleTestAdapter(t, server.URL)
+			_, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+				Credential: credential, Model: "grok-imagine-video", Prompt: "test", Duration: 5, Resolution: "720p",
+			})
+			stage, ok := provider.VideoErrorStage(err)
+			if !ok || stage != test.wantStage {
+				t.Fatalf("stage = %q, ok=%t, err=%v; want %q", stage, ok, err, test.wantStage)
+			}
+		})
+	}
+}
+
 func TestConsoleVideoPostsReferenceImages(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if serveTestDPoPToken(t, writer, request) {

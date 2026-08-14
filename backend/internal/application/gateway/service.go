@@ -179,6 +179,7 @@ type Service struct {
 	selector                    *Selector
 	responses                   repository.ResponseRepository
 	maxAttempts                 atomic.Int64
+	videoMaxAttempts            atomic.Int64
 	buildForbiddenReauth        atomic.Pointer[buildForbiddenReauthPolicy]
 	requestTimeout              atomic.Int64
 	mediaJobs                   repository.MediaJobRepository
@@ -443,6 +444,10 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 }
 
 func (s *Service) UpdateMaxAttempts(maxAttempts int) { s.maxAttempts.Store(int64(maxAttempts)) }
+
+// UpdateVideoMaxAttempts configures create-phase account failover for video jobs.
+// 0 is treated as the general default pool size for legacy configs.
+func (s *Service) UpdateVideoMaxAttempts(maxAttempts int) { s.videoMaxAttempts.Store(int64(maxAttempts)) }
 
 // UpdateMarkBuildChatDeniedAsReauth 热更新 Build chat 永久拒绝是否标 reauthRequired。
 // 默认 false：仅模型级冷却；true 时按旧逻辑将账号标为失效并出池。

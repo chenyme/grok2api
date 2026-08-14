@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
+	"github.com/chenyme/grok2api/backend/internal/pkg/mediafile"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
@@ -99,7 +100,7 @@ func (h *Handler) getVideo(c *gin.Context) {
 		return
 	}
 	c.Header("Content-Type", asset.MIMEType)
-	c.Header("Content-Disposition", `inline; filename="`+asset.ID+`"`)
+	c.Header("Content-Disposition", mediafile.VideoContentDisposition(asset.ID, asset.MIMEType))
 	c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	c.Header("ETag", `"`+asset.SHA256+`"`)
 	c.Header("X-Content-Type-Options", "nosniff")

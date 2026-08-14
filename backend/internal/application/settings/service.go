@@ -99,6 +99,7 @@ type RoutingConfig struct {
 	CooldownMax                         string
 	CapacityWait                        string
 	MaxAttempts                         int
+	VideoMaxAttempts                    int
 	PreferFreeBuild                     bool
 	MarkBuildChatDeniedAsReauth         bool
 	MarkBuildChatDeniedAsReauthProvided bool
@@ -388,7 +389,7 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	}
 	base.Routing = config.RoutingConfig{
 		StickyTTL: config.Duration(value.Routing.StickyTTL), CooldownBase: config.Duration(value.Routing.CooldownBase),
-		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts,
+		CooldownMax: config.Duration(value.Routing.CooldownMax), CapacityWait: config.Duration(capacityWait), MaxAttempts: value.Routing.MaxAttempts, VideoMaxAttempts: value.Routing.VideoMaxAttempts,
 		MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
 		PreferFreeBuild:             value.Routing.PreferFreeBuild,
 		AccountIsolatedConnections:  accountIsolatedConnections,
@@ -470,7 +471,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		},
 		Routing: settingsdomain.RoutingConfig{
 			StickyTTL: value.Routing.StickyTTL.Value(), CooldownBase: value.Routing.CooldownBase.Value(),
-			CooldownMax: value.Routing.CooldownMax.Value(), CapacityWait: value.Routing.CapacityWait.Value(), MaxAttempts: value.Routing.MaxAttempts,
+			CooldownMax: value.Routing.CooldownMax.Value(), CapacityWait: value.Routing.CapacityWait.Value(), MaxAttempts: value.Routing.MaxAttempts, VideoMaxAttempts: value.Routing.VideoMaxAttempts,
 			MarkBuildChatDeniedAsReauth: value.Routing.MarkBuildChatDeniedAsReauth,
 			PreferFreeBuild:             value.Routing.PreferFreeBuild,
 			AccountIsolatedConnections:  &accountIsolatedConnections,
@@ -555,6 +556,7 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Media.CleanupThresholdPercent = input.Media.CleanupThresholdPercent
 	next.Frontend.PublicAPIBaseURLOverride = strings.TrimSpace(input.Frontend.PublicAPIBaseURL)
 	next.Routing.MaxAttempts = input.Routing.MaxAttempts
+	next.Routing.VideoMaxAttempts = input.Routing.VideoMaxAttempts
 	next.Routing.PreferFreeBuild = input.Routing.PreferFreeBuild
 	if input.Routing.AccountIsolatedConnectionsProvided {
 		next.Routing.AccountIsolatedConnections = input.Routing.AccountIsolatedConnections
@@ -695,7 +697,7 @@ func toEditable(cfg config.Config) EditableConfig {
 		},
 		Routing: RoutingConfig{
 			StickyTTL: cfg.Routing.StickyTTL.String(), CooldownBase: cfg.Routing.CooldownBase.String(),
-			CooldownMax: cfg.Routing.CooldownMax.String(), CapacityWait: cfg.Routing.CapacityWait.String(), MaxAttempts: cfg.Routing.MaxAttempts,
+			CooldownMax: cfg.Routing.CooldownMax.String(), CapacityWait: cfg.Routing.CapacityWait.String(), MaxAttempts: cfg.Routing.MaxAttempts, VideoMaxAttempts: cfg.Routing.VideoMaxAttempts,
 			MarkBuildChatDeniedAsReauth:         cfg.Routing.MarkBuildChatDeniedAsReauth,
 			MarkBuildChatDeniedAsReauthProvided: true,
 			PreferFreeBuild:                     cfg.Routing.PreferFreeBuild,

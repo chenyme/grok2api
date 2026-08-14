@@ -362,7 +362,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	adapter.resetAttempts()
 	expiredCooldown := time.Now().UTC().Add(-time.Minute)
 	for _, accountID := range []uint64{first.ID, second.ID} {
-		if err := accountRepo.UpdateHealth(ctx, accountID, 3, &expiredCooldown, "previous upstream failures", false); err != nil {
+		if err := accountRepo.UpdateHealth(ctx, accountID, account.ProviderBuild, 3, &expiredCooldown, "previous upstream failures", false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -473,7 +473,7 @@ type blockingHealthAccountRepository struct {
 	once    sync.Once
 }
 
-func (r *blockingHealthAccountRepository) UpdateHealth(ctx context.Context, id uint64, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error {
+func (r *blockingHealthAccountRepository) UpdateHealth(ctx context.Context, id uint64, provider account.Provider, failureCount int, cooldownUntil *time.Time, lastError string, success bool) error {
 	if !success {
 		r.once.Do(func() { close(r.started) })
 		select {
@@ -482,7 +482,7 @@ func (r *blockingHealthAccountRepository) UpdateHealth(ctx context.Context, id u
 			return ctx.Err()
 		}
 	}
-	return r.AccountRepository.UpdateHealth(ctx, id, failureCount, cooldownUntil, lastError, success)
+	return r.AccountRepository.UpdateHealth(ctx, id, provider, failureCount, cooldownUntil, lastError, success)
 }
 
 func TestRoutingAttemptPolicy(t *testing.T) {

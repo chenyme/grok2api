@@ -97,19 +97,20 @@ func TestPublicVideoAssetSupportsGetHeadAndRange(t *testing.T) {
 
 	get := httptest.NewRecorder()
 	router.ServeHTTP(get, httptest.NewRequest(http.MethodGet, path, nil))
-	if get.Code != http.StatusOK || get.Body.Len() != len(payload) || get.Header().Get("Content-Type") != "video/mp4" || get.Header().Get("ETag") == "" {
+	wantDisposition := `inline; filename="` + asset.ID + `.mp4"`
+	if get.Code != http.StatusOK || get.Body.Len() != len(payload) || get.Header().Get("Content-Type") != "video/mp4" || get.Header().Get("Content-Disposition") != wantDisposition || get.Header().Get("ETag") == "" {
 		t.Fatalf("GET status=%d size=%d headers=%#v", get.Code, get.Body.Len(), get.Header())
 	}
 	head := httptest.NewRecorder()
 	router.ServeHTTP(head, httptest.NewRequest(http.MethodHead, path, nil))
-	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") == "" {
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Content-Length") == "" || head.Header().Get("Content-Disposition") != wantDisposition {
 		t.Fatalf("HEAD status=%d size=%d headers=%#v", head.Code, head.Body.Len(), head.Header())
 	}
 	rangeRequest := httptest.NewRequest(http.MethodGet, path, nil)
 	rangeRequest.Header.Set("Range", "bytes=0-3")
 	partial := httptest.NewRecorder()
 	router.ServeHTTP(partial, rangeRequest)
-	if partial.Code != http.StatusPartialContent || partial.Body.Len() != 4 || partial.Header().Get("Content-Range") == "" {
+	if partial.Code != http.StatusPartialContent || partial.Body.Len() != 4 || partial.Header().Get("Content-Range") == "" || partial.Header().Get("Content-Disposition") != wantDisposition {
 		t.Fatalf("Range status=%d size=%d headers=%#v", partial.Code, partial.Body.Len(), partial.Header())
 	}
 }

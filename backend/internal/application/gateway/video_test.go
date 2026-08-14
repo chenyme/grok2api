@@ -9,15 +9,22 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
+	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
+	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -36,6 +43,67 @@ func TestVideoQuotaModeUsesWeb720pProduct(t *testing.T) {
 		if got := videoQuotaMode(test.provider, account.QuotaModeWebVideo, test.resolution); got != test.want {
 			t.Fatalf("videoQuotaMode(%s, %q) = %q, want %q", test.provider, test.resolution, got, test.want)
 		}
+	}
+}
+
+func TestGetVideoExposesOnlyReadableResultAsset(t *testing.T) {
+	completed := media.Job{
+		ID: "video_status", ClientKeyID: 7, Status: media.StatusCompleted,
+		ResultAssetID: "vid_local", UpstreamURL: "https://assets.grok.com/video.mp4",
+	}
+	tests := []struct {
+		name  string
+		store videoAssetStore
+		want  string
+	}{
+		{
+			name: "available",
+			store: &videoAssetStoreStub{
+				openAsset: media.Asset{ID: "vid_local", Kind: "video", MIMEType: "video/mp4"},
+				openData:  []byte("video"),
+			},
+			want: "vid_local",
+		},
+		{name: "missing", store: &videoAssetStoreStub{openErr: errors.New("asset missing")}},
+		{name: "storage unavailable"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &Service{mediaJobs: &videoUsageRepository{job: completed}, mediaAssets: test.store}
+			job, err := service.GetVideo(context.Background(), completed.ID, clientkey.Key{ID: completed.ClientKeyID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job.ResultAssetID != test.want {
+				t.Fatalf("result asset ID = %q, want %q", job.ResultAssetID, test.want)
+			}
+		})
+	}
+}
+
+func TestOpenVideoContentKeepsLocalAssetFastPath(t *testing.T) {
+	completed := media.Job{
+		ID: "video_content", ClientKeyID: 7, Status: media.StatusCompleted,
+		ResultAssetID: "vid_local", UpstreamURL: "https://assets.grok.com/video.mp4",
+	}
+	service := &Service{
+		mediaJobs: &videoUsageRepository{job: completed},
+		mediaAssets: &videoAssetStoreStub{
+			openAsset: media.Asset{ID: "vid_local", Kind: "video", MIMEType: "video/mp4", SizeBytes: 5},
+			openData:  []byte("video"),
+		},
+	}
+	body, contentType, size, err := service.OpenVideoContent(context.Background(), completed.ID, clientkey.Key{ID: completed.ClientKeyID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "video" || contentType != "video/mp4" || size != 5 {
+		t.Fatalf("content = %q, type = %q, size = %d", data, contentType, size)
 	}
 }
 
@@ -393,6 +461,9 @@ func (a *videoPersistAdapter) DownloadVideo(_ context.Context, credential accoun
 
 type videoAssetStoreStub struct {
 	saveCalls int
+	openAsset media.Asset
+	openData  []byte
+	openErr   error
 	inputID   string
 	inputData []byte
 	inputSize int64
@@ -415,8 +486,14 @@ func (s *videoAssetStoreStub) SaveVideo(_ context.Context, jobID, contentType st
 	return media.Asset{ID: "vid_local", Kind: "video", MIMEType: "video/mp4", SizeBytes: int64(len(data))}, nil
 }
 
-func (*videoAssetStoreStub) OpenVideo(context.Context, string) (media.Asset, io.ReadCloser, error) {
-	return media.Asset{}, nil, errors.New("not implemented")
+func (s *videoAssetStoreStub) OpenVideo(_ context.Context, id string) (media.Asset, io.ReadCloser, error) {
+	if s.openErr != nil {
+		return media.Asset{}, nil, s.openErr
+	}
+	if s.openAsset.ID == "" || id != s.openAsset.ID {
+		return media.Asset{}, nil, errors.New("not implemented")
+	}
+	return s.openAsset, io.NopCloser(bytes.NewReader(s.openData)), nil
 }
 
 func (s *videoAssetStoreStub) OpenInputAsset(_ context.Context, id string) (media.Asset, io.ReadCloser, error) {
@@ -499,4 +576,206 @@ func (r *videoUsageRepository) TryClaimMediaJob(context.Context, string, time.Ti
 func (r *videoUsageRepository) MarkMediaJobUsageRecorded(_ context.Context, _ string, recordedAt time.Time) error {
 	r.job.UsageRecordedAt = &recordedAt
 	return nil
+}
+
+func TestResolveVideoAuditStatusCodePrefersUpstream429(t *testing.T) {
+	status429 := http.StatusTooManyRequests
+	job := media.Job{Status: media.StatusFailed, ErrorCode: "generation_failed", ErrorMessage: "Console 媒体上游返回 429: Too many requests"}
+	if got := resolveVideoAuditStatusCode(job, 0, nil); got != http.StatusTooManyRequests {
+		t.Fatalf("message status = %d", got)
+	}
+	if got := resolveVideoAuditStatusCode(job, http.StatusTooManyRequests, nil); got != http.StatusTooManyRequests {
+		t.Fatalf("explicit status = %d", got)
+	}
+	attempts := []audit.Attempt{{UpstreamStatusCode: &status429}}
+	job.ErrorMessage = "wrapped"
+	if got := resolveVideoAuditStatusCode(job, 0, attempts); got != http.StatusTooManyRequests {
+		t.Fatalf("attempt status = %d", got)
+	}
+	job.ErrorCode = "rate_limited"
+	job.ErrorMessage = ""
+	if got := resolveVideoAuditStatusCode(job, 0, nil); got != http.StatusTooManyRequests {
+		t.Fatalf("code status = %d", got)
+	}
+}
+
+func TestVideoAttemptPolicyStandaloneAndUnlimited(t *testing.T) {
+	service := &Service{}
+	service.UpdateMaxAttempts(3)
+	service.UpdateVideoMaxAttempts(0)
+	policy := service.videoAttemptPolicy()
+	if policy.unlimited || policy.limit != 999 {
+		t.Fatalf("legacy zero policy = %#v", policy)
+	}
+	service.UpdateVideoMaxAttempts(-1)
+	policy = service.videoAttemptPolicy()
+	if !policy.unlimited {
+		t.Fatalf("unlimited video policy = %#v", policy)
+	}
+	service.UpdateVideoMaxAttempts(5)
+	policy = service.videoAttemptPolicy()
+	if policy.unlimited || policy.limit != 5 {
+		t.Fatalf("standalone policy = %#v", policy)
+	}
+}
+
+type videoCreateFailoverAdapter struct {
+	mu       sync.Mutex
+	failures map[uint64]int
+	status   int
+	attempts []uint64
+}
+
+func (a *videoCreateFailoverAdapter) Provider() account.Provider { return account.ProviderWeb }
+
+func (a *videoCreateFailoverAdapter) Definition() provider.Definition {
+	definition := testConversationDefinition(account.ProviderWeb)
+	definition.Media.VideoGeneration = true
+	return definition
+}
+
+func (a *videoCreateFailoverAdapter) GenerateVideo(_ context.Context, request provider.VideoRequest) (provider.VideoResult, error) {
+	a.mu.Lock()
+	a.attempts = append(a.attempts, request.Credential.ID)
+	remaining := a.failures[request.Credential.ID]
+	if remaining > 0 {
+		a.failures[request.Credential.ID] = remaining - 1
+	}
+	a.mu.Unlock()
+	if remaining > 0 {
+		if a.status == 0 {
+			return provider.VideoResult{}, errors.New("unclassified create failure")
+		}
+		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStageCreate, a.status, videoHTTPStatusError{status: a.status})
+	}
+	return provider.VideoResult{AssetID: "video_asset_00001", ContentType: "video/mp4"}, nil
+}
+
+func (a *videoCreateFailoverAdapter) Attempts() []uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]uint64(nil), a.attempts...)
+}
+
+type videoHTTPStatusError struct{ status int }
+
+func (e videoHTTPStatusError) Error() string       { return http.StatusText(e.status) }
+func (e videoHTTPStatusError) HTTPStatusCode() int { return e.status }
+
+func TestVideoWebForbiddenRetriesPinnedAccountOnceThenFailsOver(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "video-retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	mediaRepo := relational.NewMediaJobRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "video-test", Prefix: "video-test", SecretHash: strings.Repeat("a", 64),
+		EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createAccount := func(name string, priority int) account.Credential {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+			Name: name, SourceKey: name, EncryptedAccessToken: name + "-token", ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: priority, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return credential
+	}
+	first := createAccount("first", 200)
+	second := createAccount("second", 100)
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{first.ID, second.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-imagine-video"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route, err := modelRepo.GetByProviderUpstream(ctx, account.ProviderWeb, "grok-imagine-video")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &videoCreateFailoverAdapter{
+		failures: map[uint64]int{first.ID: 2},
+		status:   http.StatusForbidden,
+	}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 3)
+	service.ConfigureMedia(mediaRepo, 1)
+	service.UpdateVideoMaxAttempts(10)
+
+	now := time.Now().UTC()
+	job := media.Job{
+		ID: "video_forbidden_retry", RequestID: "request-video-retry", ClientKeyID: key.ID, ClientKeyName: key.Name,
+		AccountID: first.ID, AccountName: first.Name, Provider: string(account.ProviderWeb),
+		Model: route.PublicID, ModelRouteID: route.ID, UpstreamModel: route.UpstreamModel,
+		Operation: provider.VideoOperationGenerate, Prompt: "test", Seconds: 5, Quality: "720p",
+		Status: media.StatusInProgress, InputJSON: `{}`, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := mediaRepo.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, job, route)
+
+	if attempts := adapter.Attempts(); len(attempts) != 3 || attempts[0] != first.ID || attempts[1] != first.ID || attempts[2] != second.ID {
+		t.Fatalf("video attempts = %#v, want first, first, second", attempts)
+	}
+	stored, err := mediaRepo.GetMediaJob(ctx, job.ID, job.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusCompleted || stored.AccountID != second.ID || stored.ResultAssetID != "video_asset_00001" {
+		t.Fatalf("completed job = %#v", stored)
+	}
+
+	adapter.mu.Lock()
+	adapter.failures = map[uint64]int{first.ID: 1}
+	adapter.status = 0
+	adapter.attempts = nil
+	adapter.mu.Unlock()
+	unknownJob := job
+	unknownJob.ID = "video_unclassified_failure"
+	unknownJob.RequestID = "request-video-unclassified"
+	unknownJob.AccountID = first.ID
+	unknownJob.AccountName = first.Name
+	unknownJob.Status = media.StatusInProgress
+	unknownJob.Progress = 0
+	unknownJob.ResultAssetID = ""
+	unknownJob.ContentType = ""
+	unknownJob.CompletedAt = nil
+	unknownJob.CreatedAt = time.Now().UTC()
+	unknownJob.UpdatedAt = unknownJob.CreatedAt
+	if err := mediaRepo.CreateMediaJob(ctx, unknownJob); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, unknownJob, route)
+	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != first.ID {
+		t.Fatalf("unclassified failure attempts = %#v, want pinned account once", attempts)
+	}
+	stored, err = mediaRepo.GetMediaJob(ctx, unknownJob.ID, unknownJob.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusFailed || stored.AccountID != first.ID {
+		t.Fatalf("unclassified failed job = %#v", stored)
+	}
 }

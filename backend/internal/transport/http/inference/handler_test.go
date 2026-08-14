@@ -119,9 +119,29 @@ func TestWriteVideoContentRejectsDeclaredOversizeMedia(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	writeVideoContent(context, strings.NewReader("ignored"), "video/mp4", maxMediaResponseTransferBytes+1)
+	writeVideoContent(context, strings.NewReader("ignored"), "video/mp4", maxMediaResponseTransferBytes+1, "video_request_1")
 	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "media_too_large") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// A saved response needs an extension or the file will not open in a player.
+func TestWriteVideoContentNamesDownloadWithExtension(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, testCase := range []struct {
+		contentType string
+		want        string
+	}{
+		{"video/mp4", `inline; filename="video_request_1.mp4"`},
+		{"video/webm", `inline; filename="video_request_1.webm"`},
+		{"video/quicktime", `inline; filename="video_request_1.mov"`},
+	} {
+		recorder := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(recorder)
+		writeVideoContent(context, strings.NewReader("body"), testCase.contentType, 4, "video_request_1")
+		if got := recorder.Header().Get("Content-Disposition"); got != testCase.want {
+			t.Fatalf("%s disposition = %q, want %q", testCase.contentType, got, testCase.want)
+		}
 	}
 }
 
@@ -131,6 +151,32 @@ func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
 	video, ok := response["video"].(gin.H)
 	if !ok || video["url"] != "https://api.example.com/grok2api/v1/videos/video_request_1/content" {
 		t.Fatalf("response = %#v", response)
+	}
+}
+
+// A completed job whose local asset has been verified by the gateway must point
+// at the public media route. /v1/videos/{id}/content requires the client API key
+// and is therefore not usable in a browser or player.
+func TestVideoPlaybackURLPrefersPublicAssetRoute(t *testing.T) {
+	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
+	job := mediadomain.Job{
+		ID: "video_request_1", Status: mediadomain.StatusCompleted,
+		UpstreamURL: "https://assets.grok.com/source.mp4", ResultAssetID: "vid_abc123",
+	}
+	response := videoGenerationResponse(job, handler.videoPlaybackURL(job))
+	video, ok := response["video"].(gin.H)
+	if !ok || video["url"] != "https://api.example.com/grok2api/v1/media/videos/vid_abc123" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+// Without a readable stored asset the protected content endpoint remains the
+// only option and can still fall back to the upstream download path.
+func TestVideoPlaybackURLFallsBackToContentEndpoint(t *testing.T) {
+	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
+	job := mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted}
+	if got := handler.videoPlaybackURL(job); got != "https://api.example.com/grok2api/v1/videos/video_request_1/content" {
+		t.Fatalf("fallback URL = %q", got)
 	}
 }
 
@@ -417,7 +463,7 @@ func TestVideoContentRejectsUnsafeContentType(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	writeVideoContent(context, strings.NewReader(`<script id="must-not-reflect">alert(1)</script>`), "text/html", -1)
+	writeVideoContent(context, strings.NewReader(`<script id="must-not-reflect">alert(1)</script>`), "text/html", -1, "video_request_1")
 	if recorder.Code != http.StatusBadGateway || strings.Contains(recorder.Body.String(), "must-not-reflect") {
 		t.Fatalf("status=%d headers=%#v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
 	}

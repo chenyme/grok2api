@@ -91,8 +91,8 @@ routing:
   reasoningReplayMaxEntries: 10240
   # [按需修改] 按账号隔离上游连接池，适合外部 L4/连接哈希负载均衡；会增加连接数、TLS 握手和文件描述符占用。
   accountIsolatedConnections: false
-  # [通常不要修改] 大账号池分段选号默认关闭；启用后仍保留完整池回退和原子并发门禁。
-  segmentedSelectorEnabled: false
+  # [通常不要修改] 大账号池默认使用有界分段选号；保留完整池回退、额度优先级和原子并发门禁。
+  segmentedSelectorEnabled: true
   segmentedSelectorMinCandidates: 3000
   segmentedSelectorWindowSize: 64
 

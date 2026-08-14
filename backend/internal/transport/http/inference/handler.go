@@ -23,6 +23,7 @@ import (
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/pkg/mediafile"
 	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
@@ -908,11 +909,10 @@ func (h *Handler) getVideo(c *gin.Context) {
 		writeGatewayError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, videoGenerationResponse(job, h.videoContentURL(job.ID)))
+	c.JSON(http.StatusOK, videoGenerationResponse(job, h.videoPlaybackURL(job)))
 }
 
-func (h *Handler) videoContentURL(jobID string) string {
-	path := "/v1/videos/" + url.PathEscape(jobID) + "/content"
+func (h *Handler) publicURL(path string) string {
 	baseURL := h.publicAPIBaseURL
 	if h.publicBaseURL != nil {
 		baseURL = strings.TrimRight(strings.TrimSpace(h.publicBaseURL()), "/")
@@ -921,6 +921,22 @@ func (h *Handler) videoContentURL(jobID string) string {
 		return path
 	}
 	return baseURL + path
+}
+
+func (h *Handler) videoContentURL(jobID string) string {
+	return h.publicURL("/v1/videos/" + url.PathEscape(jobID) + "/content")
+}
+
+// videoPlaybackURL prefers the stored asset served by the public media route, so the
+// returned link opens directly in browsers and players. /v1/videos/{id}/content needs
+// the client API key, which makes the URL unusable outside an authenticated client.
+// Images already return their public media URL; this keeps video consistent. Jobs
+// without a stored asset keep the protected content endpoint.
+func (h *Handler) videoPlaybackURL(job mediadomain.Job) string {
+	if assetID := strings.TrimSpace(job.ResultAssetID); assetID != "" {
+		return h.publicURL("/v1/media/videos/" + url.PathEscape(assetID))
+	}
+	return h.videoContentURL(job.ID)
 }
 
 func (h *Handler) getVideoContent(c *gin.Context) {
@@ -934,10 +950,10 @@ func (h *Handler) getVideoContent(c *gin.Context) {
 		return
 	}
 	defer func() { _ = body.Close() }()
-	writeVideoContent(c, body, contentType, size)
+	writeVideoContent(c, body, contentType, size, strings.TrimSpace(c.Param("requestId")))
 }
 
-func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size int64) {
+func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size int64, downloadName string) {
 	if size > maxMediaResponseTransferBytes {
 		writeOpenAIError(c, http.StatusBadGateway, "media_too_large", "上游媒体超过 2 GiB 安全上限")
 		return
@@ -947,7 +963,8 @@ func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size 
 		writeOpenAIError(c, http.StatusBadGateway, "invalid_media_type", "上游视频服务返回了不受支持的内容类型")
 		return
 	}
-	c.Header("Content-Disposition", "inline")
+	// Clients that save the response need an extension to get a playable file.
+	c.Header("Content-Disposition", mediafile.VideoContentDisposition(downloadName, contentType))
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Security-Policy", "default-src 'none'; sandbox")
