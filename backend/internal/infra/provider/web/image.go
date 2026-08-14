@@ -385,8 +385,14 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 		if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
 			body, _ := io.ReadAll(io.LimitReader(upstream.Body, 1<<20))
 			_ = upstream.Body.Close()
-			if upstream.StatusCode == http.StatusForbidden {
-				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
+			if upstream.StatusCode == http.StatusForbidden && attempt == 0 {
+				upstreamErr := newWebMediaUpstreamError(upstream.StatusCode, body, false)
+				if isClearanceRefreshableMediaError(upstreamErr) {
+					// The failed WebSocket handshake invalidates the current browser
+					// session. Statsig is independent and must not gate reacquiring
+					// a fresh lease for the retry.
+					lease.InvalidateClearance()
+					_ = a.invalidateSignedStatsig(http.MethodPost, statsigTarget)
 					lease.Release()
 					continue
 				}
@@ -420,7 +426,11 @@ func (a *Adapter) generateLiteImageURL(ctx context.Context, credential account.C
 			status := 0
 			if errors.Is(consumeErr, errWebAntiBot) {
 				status = http.StatusForbidden
-				if attempt == 0 && a.invalidateSignedStatsig(http.MethodPost, statsigTarget) {
+				// A challenge can arrive inside an otherwise successful stream,
+				// so the handshake path cannot invalidate it for us.
+				lease.InvalidateClearance()
+				if attempt == 0 {
+					_ = a.invalidateSignedStatsig(http.MethodPost, statsigTarget)
 					lease.Release()
 					continue
 				}
@@ -569,6 +579,24 @@ func liteImageMarkdown(item map[string]any) string {
 }
 
 func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGenerationRequest, count int, format, ratio, resolution string, modelConfig imagineModelConfig) (*provider.Response, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err := a.generateWSImageAttempt(ctx, request, count, format, ratio, resolution, modelConfig)
+		if err == nil {
+			return response, nil
+		}
+		var upstreamErr *webMediaUpstreamError
+		if !errors.As(err, &upstreamErr) || !isClearanceRefreshableMediaError(upstreamErr) || attempt > 0 {
+			if errors.As(err, &upstreamErr) {
+				return upstreamErr.providerResponse(), nil
+			}
+			return nil, err
+		}
+		a.log().Warn("web_image_clearance_retry", "operation", "imagine", "status", upstreamErr.status, "body_kind", upstreamErr.bodyKind)
+	}
+	return nil, fmt.Errorf("Imagine WebSocket Clearance 重试耗尽")
+}
+
+func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.ImageGenerationRequest, count int, format, ratio, resolution string, modelConfig imagineModelConfig) (*provider.Response, error) {
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
@@ -602,6 +630,23 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 			status = response.StatusCode
 		}
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, status, err)
+		if response != nil {
+			var body []byte
+			if response.Body != nil {
+				body, _ = io.ReadAll(io.LimitReader(response.Body, webMediaDiagnosticBodyLimit+1))
+				_ = response.Body.Close()
+			}
+			truncated := len(body) > webMediaDiagnosticBodyLimit
+			if truncated {
+				body = body[:webMediaDiagnosticBodyLimit]
+			}
+			upstreamErr := newWebMediaUpstreamError(response.StatusCode, body, truncated)
+			a.logWebMediaUpstreamRejection("image_imagine_handshake", &http.Response{
+				StatusCode: response.StatusCode,
+				Header:     http.Header(response.Header).Clone(),
+			}, upstreamErr)
+			return nil, upstreamErr
+		}
 		return nil, fmt.Errorf("连接 Imagine WebSocket: %w", err)
 	}
 	connectionOwned := true
@@ -677,7 +722,28 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	return result, err
 }
 
+// EditImage retries the complete browser media flow once after a challenge
+// response. Reacquiring the lease is required because the failed lease keeps
+// the immutable browser-session cookies that were rejected upstream.
 func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		response, err := a.editImageAttempt(ctx, request)
+		if err == nil {
+			return response, nil
+		}
+		var upstreamErr *webMediaUpstreamError
+		if !errors.As(err, &upstreamErr) || !isClearanceRefreshableMediaError(upstreamErr) || attempt > 0 {
+			if errors.As(err, &upstreamErr) {
+				return upstreamErr.providerResponse(), nil
+			}
+			return nil, err
+		}
+		a.log().Warn("web_image_clearance_retry", "operation", "edit", "status", upstreamErr.status, "body_kind", upstreamErr.bodyKind)
+	}
+	return nil, fmt.Errorf("图片编辑 Clearance 重试耗尽")
+}
+
+func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEditRequest) (*provider.Response, error) {
 	if strings.TrimSpace(request.Quality) != "" {
 		return invalidImageRequest("Grok Web 图片模型不支持 quality")
 	}
@@ -763,9 +829,18 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 		return nil, err
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		body, _ := io.ReadAll(io.LimitReader(response.Body, webMediaDiagnosticBodyLimit+1))
 		_ = response.Body.Close()
-		return &provider.Response{StatusCode: response.StatusCode, Status: response.Status, Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(body))}, nil
+		truncated := len(body) > webMediaDiagnosticBodyLimit
+		if truncated {
+			body = body[:webMediaDiagnosticBodyLimit]
+		}
+		upstreamErr := newWebMediaUpstreamError(response.StatusCode, body, truncated)
+		a.logWebMediaUpstreamRejection("image_edit_generate", response, upstreamErr)
+		if isClearanceRefreshableMediaError(upstreamErr) {
+			lease.InvalidateClearance()
+		}
+		return nil, upstreamErr
 	}
 	if request.Streaming {
 		reader, writer := io.Pipe()
@@ -1687,7 +1762,14 @@ func imagineURL(baseURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	value.Scheme = "wss"
+	switch value.Scheme {
+	case "https":
+		value.Scheme = "wss"
+	case "http":
+		value.Scheme = "ws"
+	default:
+		return "", fmt.Errorf("Grok Web Base URL 协议无效")
+	}
 	value.Path = "/ws/imagine/listen"
 	value.RawQuery = ""
 	return value.String(), nil
