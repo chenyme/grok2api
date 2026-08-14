@@ -20,50 +20,55 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 // programmatically when the async Clipboard API is unavailable.
 function legacyCopy(text: string): boolean {
   if (typeof document === "undefined" || !document.body) return false;
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "");
-  textarea.setAttribute("aria-hidden", "true");
-  textarea.style.position = "fixed";
-  textarea.style.top = "0";
-  textarea.style.left = "-9999px";
-  textarea.style.width = "1em";
-  textarea.style.height = "1em";
-  // A large font keeps iOS Safari from zooming the page and lets the
-  // selection persist on the programmatically created element.
-  textarea.style.fontSize = "2em";
-  textarea.style.padding = "0";
-  textarea.style.border = "none";
-  textarea.style.outline = "none";
-  textarea.style.boxShadow = "none";
-  textarea.style.background = "transparent";
-  textarea.style.opacity = "0";
-  textarea.style.pointerEvents = "none";
+  const copyTarget = document.createElement("span");
+  copyTarget.textContent = text;
+  copyTarget.setAttribute("aria-hidden", "true");
+  copyTarget.style.position = "fixed";
+  copyTarget.style.top = "0";
+  copyTarget.style.left = "0";
+  copyTarget.style.width = "1px";
+  copyTarget.style.height = "1px";
+  copyTarget.style.overflow = "hidden";
+  copyTarget.style.clipPath = "inset(50%)";
+  copyTarget.style.whiteSpace = "pre";
+  copyTarget.style.userSelect = "text";
 
-  const activeElement = document.activeElement as Element | null;
+  const activeElement = document.activeElement;
   const selection = document.getSelection();
-  let savedRange: Range | null = null;
-  if (selection && selection.rangeCount > 0) savedRange = selection.getRangeAt(0);
+  const savedRanges = selection
+    ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange())
+    : [];
 
-  document.body.appendChild(textarea);
-  textarea.focus({ preventScroll: true });
-  textarea.select();
-  textarea.setSelectionRange(0, text.length);
+  document.body.appendChild(copyTarget);
+  const range = document.createRange();
+  range.selectNodeContents(copyTarget);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
 
-  let ok = false;
+  // Focus-trapped dialogs can steal focus from a hidden form control. Supply
+  // the value on the copy event so the selected text is only a compatibility
+  // fallback and cannot change what reaches the clipboard.
+  let clipboardDataWritten = false;
+  const handleCopy = (event: ClipboardEvent) => {
+    if (!event.clipboardData) return;
+    event.preventDefault();
+    event.clipboardData.clearData();
+    event.clipboardData.setData("text/plain", text);
+    clipboardDataWritten = true;
+  };
+  document.addEventListener("copy", handleCopy, { capture: true, once: true });
+
+  let commandSucceeded = false;
   try {
-    ok = document.execCommand("copy");
+    commandSucceeded = document.execCommand("copy");
   } catch {
-    // execCommand may throw in restricted environments; ok stays false.
+    // execCommand may throw in restricted environments.
+  } finally {
+    document.removeEventListener("copy", handleCopy, true);
+    copyTarget.remove();
+    selection?.removeAllRanges();
+    for (const savedRange of savedRanges) selection?.addRange(savedRange);
+    if (activeElement instanceof HTMLElement) activeElement.focus({ preventScroll: true });
   }
-
-  document.body.removeChild(textarea);
-  if (savedRange && selection) {
-    selection.removeAllRanges();
-    selection.addRange(savedRange);
-  }
-  if (activeElement instanceof HTMLElement && typeof activeElement.focus === "function") {
-    activeElement.focus();
-  }
-  return ok;
+  return commandSucceeded && clipboardDataWritten;
 }
