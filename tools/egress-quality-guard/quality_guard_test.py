@@ -78,7 +78,9 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual((classification, reason), ("healthy", "within_threshold"))
         self.assertAlmostEqual(speed, 100.0)
         short = {**base, "outputTokens": 50, "reasoningTokens": 0, "durationMs": 2500}
-        self.assertEqual(quality_guard.classify_audit(short, cfg)[0], "healthy")
+        self.assertEqual(quality_guard.classify_audit(short, cfg)[:2], ("hard", "missing_thinking"))
+        tiny = {**base, "outputTokens": 20, "reasoningTokens": 0, "durationMs": 2200}
+        self.assertEqual(quality_guard.classify_audit(tiny, cfg)[0], "ignored")
 
     def test_probe_missing_thinking_is_hard(self):
         cfg = config()

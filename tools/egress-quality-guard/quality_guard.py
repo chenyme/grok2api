@@ -433,8 +433,7 @@ def classify_audit(value: dict[str, Any], config: Config) -> tuple[str, str, flo
     speed = float(output_tokens) * 1000 / float(generation_ms)
     reasoning_tokens = max(0, int(value.get("reasoningTokens") or 0))
     # Backend model swaps often keep a normal 80-200 TPS but drop thinking.
-    # TPS-only rules treat those as healthy.
-    if output_tokens >= 64 and reasoning_tokens <= 0:
+    if output_tokens >= 32 and reasoning_tokens <= 0:
         return "hard", "missing_thinking", speed, output_tokens
     if config.fail_closed and generation_ms < config.min_generation_ms and speed >= config.soft_tps:
         return "hard", "buffered_burst", speed, output_tokens
