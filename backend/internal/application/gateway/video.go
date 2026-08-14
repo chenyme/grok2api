@@ -233,7 +233,7 @@ func resolveVideoPricing(operation provider.VideoOperation, upstreamModel, resol
 	return audit.PricingResult{}, false
 }
 
-func (s *Service) GetVideo(ctx context.Context, id string, key clientkey.Key) (media.Job, error) {
+func (s *Service) getVideoJob(ctx context.Context, id string, key clientkey.Key) (media.Job, error) {
 	if s.mediaJobs == nil {
 		return media.Job{}, ErrResponseNotFound
 	}
@@ -244,8 +244,32 @@ func (s *Service) GetVideo(ctx context.Context, id string, key clientkey.Key) (m
 	return job, nil
 }
 
+// GetVideo returns the client-facing job state. A result asset is exposed only
+// while the local object can still be opened; completed assets are eligible for
+// capacity cleanup, and a stale asset ID would otherwise produce a dead public URL.
+func (s *Service) GetVideo(ctx context.Context, id string, key clientkey.Key) (media.Job, error) {
+	job, err := s.getVideoJob(ctx, id, key)
+	if err != nil {
+		return media.Job{}, err
+	}
+	if job.Status != media.StatusCompleted || strings.TrimSpace(job.ResultAssetID) == "" {
+		return job, nil
+	}
+	if s.mediaAssets == nil {
+		job.ResultAssetID = ""
+		return job, nil
+	}
+	_, body, openErr := s.mediaAssets.OpenVideo(ctx, job.ResultAssetID)
+	if openErr != nil || body == nil {
+		job.ResultAssetID = ""
+		return job, nil
+	}
+	_ = body.Close()
+	return job, nil
+}
+
 func (s *Service) OpenVideoContent(ctx context.Context, id string, key clientkey.Key) (io.ReadCloser, string, int64, error) {
-	job, err := s.GetVideo(ctx, id, key)
+	job, err := s.getVideoJob(ctx, id, key)
 	if err != nil {
 		return nil, "", 0, err
 	}
