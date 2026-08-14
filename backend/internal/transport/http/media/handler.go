@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
+	"github.com/chenyme/grok2api/backend/internal/pkg/mediafile"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
 	"github.com/gin-gonic/gin"
@@ -82,21 +83,6 @@ func (h *Handler) getImage(c *gin.Context) {
 	_, _ = io.Copy(c.Writer, body)
 }
 
-// videoContentDisposition appends the extension implied by the stored MIME type so
-// saved files stay playable; the media object store uses the same mapping.
-func videoContentDisposition(assetID, mimeType string) string {
-	name := assetID
-	switch strings.ToLower(strings.TrimSpace(mimeType)) {
-	case "video/mp4":
-		name += ".mp4"
-	case "video/webm":
-		name += ".webm"
-	case "video/quicktime":
-		name += ".mov"
-	}
-	return `inline; filename="` + name + `"`
-}
-
 func (h *Handler) getVideo(c *gin.Context) {
 	asset, body, err := h.service.OpenVideo(c.Request.Context(), c.Param("assetId"))
 	if errors.Is(err, mediaapp.ErrAssetNotFound) {
@@ -114,7 +100,7 @@ func (h *Handler) getVideo(c *gin.Context) {
 		return
 	}
 	c.Header("Content-Type", asset.MIMEType)
-	c.Header("Content-Disposition", videoContentDisposition(asset.ID, asset.MIMEType))
+	c.Header("Content-Disposition", mediafile.VideoContentDisposition(asset.ID, asset.MIMEType))
 	c.Header("Cache-Control", "public, max-age=31536000, immutable")
 	c.Header("ETag", `"`+asset.SHA256+`"`)
 	c.Header("X-Content-Type-Options", "nosniff")

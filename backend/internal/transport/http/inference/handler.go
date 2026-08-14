@@ -23,6 +23,7 @@ import (
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/pkg/mediafile"
 	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
@@ -948,7 +949,7 @@ func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size 
 		return
 	}
 	// Clients that save the response need an extension to get a playable file.
-	c.Header("Content-Disposition", videoContentDisposition(downloadName, contentType))
+	c.Header("Content-Disposition", mediafile.VideoContentDisposition(downloadName, contentType))
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Security-Policy", "default-src 'none'; sandbox")
@@ -964,46 +965,6 @@ func writeVideoContent(c *gin.Context, body io.Reader, contentType string, size 
 			errorCode = "response_too_large"
 		}
 		c.Header(mediaTransferErrorTrailer, errorCode)
-	}
-}
-
-// videoContentDisposition names the download after the request and appends the
-// extension implied by the response content type, so saved files stay playable.
-func videoContentDisposition(name, contentType string) string {
-	name = strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-			return r
-		case r == '-', r == '_':
-			return r
-		default:
-			return -1
-		}
-	}, strings.TrimSpace(name))
-	if name == "" {
-		name = "video"
-	}
-	if extension, ok := videoFileExtension(contentType); ok {
-		name += extension
-	}
-	return `inline; filename="` + name + `"`
-}
-
-// videoFileExtension mirrors the extensions used by the media object store.
-func videoFileExtension(contentType string) (string, bool) {
-	mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(contentType))
-	if err != nil {
-		return "", false
-	}
-	switch strings.ToLower(mediaType) {
-	case "video/mp4":
-		return ".mp4", true
-	case "video/webm":
-		return ".webm", true
-	case "video/quicktime":
-		return ".mov", true
-	default:
-		return "", false
 	}
 }
 

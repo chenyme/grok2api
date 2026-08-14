@@ -145,20 +145,6 @@ func TestWriteVideoContentNamesDownloadWithExtension(t *testing.T) {
 	}
 }
 
-// Request IDs reach the header, so anything outside [A-Za-z0-9_-] is dropped and an
-// empty result falls back to a fixed name.
-func TestVideoContentDispositionSanitizesName(t *testing.T) {
-	if got := videoContentDisposition(`bad"name; drop`, "video/mp4"); got != `inline; filename="badnamedrop.mp4"` {
-		t.Fatalf("sanitized disposition = %q", got)
-	}
-	if got := videoContentDisposition("   ", "video/mp4"); got != `inline; filename="video.mp4"` {
-		t.Fatalf("fallback disposition = %q", got)
-	}
-	if got := videoContentDisposition("video_request_1", "application/octet-stream"); got != `inline; filename="video_request_1"` {
-		t.Fatalf("unknown type disposition = %q", got)
-	}
-}
-
 func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
 	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
 	response := videoGenerationResponse(mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted, UpstreamURL: "https://assets.grok.com/source.mp4"}, handler.videoContentURL("video_request_1"))
