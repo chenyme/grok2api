@@ -151,7 +151,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	if err != nil {
 		return media.Job{}, err
 	}
-	if err := validateVideoRouteParameters(operation, route.UpstreamModel, input.Resolution, len(input.ReferenceURLs) > 0); err != nil {
+	if err := validateVideoRouteParameters(operation, route.UpstreamModel, input.Resolution, len(input.ReferenceURLs), input.Duration); err != nil {
 		return media.Job{}, err
 	}
 	if err := s.checkLedgerReady(); err != nil {
@@ -197,11 +197,46 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	return job, nil
 }
 
-func validateVideoRouteParameters(operation provider.VideoOperation, upstreamModel, resolution string, hasReferences bool) error {
-	if operation != provider.VideoOperationGenerate || !strings.EqualFold(strings.TrimSpace(resolution), "1080p") {
+// Console 视频输入的上限与时长按「入口字段 + 模型」分档，见 console.Adapter.GenerateVideo。
+// /v1/videos/generations 是异步接口，只在 provider 层拦截会让客户端先拿到 request_id、
+// 再从轮询里读到一个必然失败的任务，因此这里在入队前复用同一套规则直接返回错误。
+const (
+	consoleVideoReferenceLimit      = 7
+	consoleVideoReferenceMaxSeconds = 10
+)
+
+func isConsoleVideoUpstreamModel(upstreamModel string) bool {
+	switch strings.TrimSpace(upstreamModel) {
+	case "grok-imagine-video", "grok-imagine-video-1.5":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateVideoRouteParameters(operation provider.VideoOperation, upstreamModel, resolution string, referenceCount, duration int) error {
+	if operation != provider.VideoOperationGenerate {
 		return nil
 	}
-	if strings.TrimSpace(upstreamModel) != "grok-imagine-video-1.5" {
+	trimmedModel := strings.TrimSpace(upstreamModel)
+	hasReferences := referenceCount > 0
+	if isConsoleVideoUpstreamModel(trimmedModel) {
+		// 实测：8 张 reference_images 上游回 400
+		// "Too many reference images: 8. Maximum allowed is 7."（两个视频模型一致）。
+		if referenceCount > consoleVideoReferenceLimit {
+			return fmt.Errorf("%w: reference_images 最多 %d 张，当前为 %d 张", ErrVideoOperationUnsupported, consoleVideoReferenceLimit, referenceCount)
+		}
+		// 实测：grok-imagine-video 的 reference-to-video 上游回 400
+		// "Duration 15s exceeds the maximum allowed for reference-to-video, which is 10s."；
+		// 走 image 字段的 image-to-video 与 grok-imagine-video-1.5 都保持 15s。
+		if trimmedModel == "grok-imagine-video" && hasReferences && duration > consoleVideoReferenceMaxSeconds {
+			return fmt.Errorf("%w: %s 的参考图生视频最长 %d 秒，当前为 %d 秒", ErrVideoOperationUnsupported, trimmedModel, consoleVideoReferenceMaxSeconds, duration)
+		}
+	}
+	if !strings.EqualFold(strings.TrimSpace(resolution), "1080p") {
+		return nil
+	}
+	if trimmedModel != "grok-imagine-video-1.5" {
 		return fmt.Errorf("%w: %s 不支持 1080p", ErrVideoOperationUnsupported, upstreamModel)
 	}
 	if hasReferences {

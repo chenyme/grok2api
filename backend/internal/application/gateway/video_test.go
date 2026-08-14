@@ -165,14 +165,45 @@ func TestVideoPricingLeavesUnmeasurableOperationsUnpriced(t *testing.T) {
 	}
 }
 
+// 上游对 Console 视频的这两条限制原先只在 provider 层拦截，而生成接口是异步的，
+// 客户端会先拿到 request_id 再从轮询里读到失败任务。入队前校验让错误立刻可见。
+func TestVideoRouteParametersRejectConsoleReferenceLimits(t *testing.T) {
+	// 实测：8 张 reference_images 上游回 400 "Too many reference images: 8. Maximum allowed is 7."
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "720p", 8, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("8 references error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "720p", 7, 6); err != nil {
+		t.Fatalf("7 references error = %v", err)
+	}
+	// 实测：grok-imagine-video 的 reference-to-video 回 400
+	// "Duration 15s exceeds the maximum allowed for reference-to-video, which is 10s."
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "720p", 1, 15); !errors.Is(err, ErrVideoOperationUnsupported) {
+		t.Fatalf("base model reference duration error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "720p", 1, 10); err != nil {
+		t.Fatalf("base model 10s reference error = %v", err)
+	}
+	// image-to-video（无 reference_images）与 1.5 都保持 15s。
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "720p", 0, 15); err != nil {
+		t.Fatalf("base model text/first-frame 15s error = %v", err)
+	}
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "720p", 2, 15); err != nil {
+		t.Fatalf("1.5 multi-reference 15s error = %v", err)
+	}
+	// 非 Console 视频模型不受这套 Console 专属限制影响。
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "some-other-video", "720p", 9, 15); err != nil {
+		t.Fatalf("non-console model error = %v", err)
+	}
+}
+
 func TestVideo1080pValidationUsesResolvedUpstreamModel(t *testing.T) {
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "1080P", false); err != nil {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "1080P", 0, 6); err != nil {
 		t.Fatalf("1.5 text/image 1080p rejected: %v", err)
 	}
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "1080p", false); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video", "1080p", 0, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("legacy 1080p error = %v", err)
 	}
-	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "1080p", true); !errors.Is(err, ErrVideoOperationUnsupported) {
+	if err := validateVideoRouteParameters(provider.VideoOperationGenerate, "grok-imagine-video-1.5", "1080p", 1, 6); !errors.Is(err, ErrVideoOperationUnsupported) {
 		t.Fatalf("reference 1080p error = %v", err)
 	}
 }
