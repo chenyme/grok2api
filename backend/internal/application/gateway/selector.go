@@ -37,7 +37,7 @@ const successPersistInterval = 30 * time.Second
 
 // Routing writes publish precise invalidation events, so the TTL is only a
 // safety net for out-of-process database changes and missed notifications.
-// Keeping a one-second TTL made large pools rebuild continuously under load.
+// Default 30s keeps stale rebuilds bounded; configurable via routing.candidateCacheTTL.
 const candidateCacheTTLDefault = 30 * time.Second
 const candidateCacheStaleTTL = 5 * time.Minute
 const candidateCacheRetryTTL = 5 * time.Second
@@ -321,6 +321,9 @@ func (s *Selector) UpdateConfig(stickyTTL, cooldownBase, cooldownMax, candidateC
 	s.cooldownMax = cooldownMax
 	if candidateCacheTTL > 0 {
 		s.candidateCacheTTL = candidateCacheTTL
+	} else {
+		// 0 表示未设置：恢复默认（与 NewSelector 一致）
+		s.candidateCacheTTL = candidateCacheTTLDefault
 	}
 	if len(capacityWait) > 0 {
 		s.capacityWait = max(time.Duration(0), capacityWait[0])

@@ -632,7 +632,7 @@ func (c Config) Validate() error {
 		return errors.New("routing.reasoningReplayMaxEntries 必须在 100 到 1000000 之间")
 	}
 	if v := c.Routing.CandidateCacheTTL.Value(); v != 0 && (v < time.Second || v > 30*time.Minute) {
-		return errors.New("routing.candidateCacheTTL 必须为 0（使用默认）或 1 秒到 30 分钟之间")
+		return errors.New("routing.candidateCacheTTL 必须为 0（保持默认 30s）或 1 秒到 30 分钟之间")
 	}
 	if c.Audit.BufferSize < 1 || c.Audit.BufferSize > maxAuditBufferSize || c.Audit.BatchSize < 1 || c.Audit.BatchSize > maxAuditBatchSize || c.Audit.BatchSize > c.Audit.BufferSize || c.Audit.FlushInterval.Value() < minAuditFlushInterval || c.Audit.FlushInterval.Value() > maxAuditFlushInterval {
 		return errors.New("audit 队列和批量写入配置无效")
