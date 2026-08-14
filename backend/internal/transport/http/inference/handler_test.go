@@ -134,9 +134,9 @@ func TestVideoContentURLUsesConfiguredPublicAPIBase(t *testing.T) {
 	}
 }
 
-// A completed job carries a stored asset, so the returned URL must point at the
-// public media route. /v1/videos/{id}/content requires the client API key and is
-// therefore not usable in a browser or player.
+// A completed job whose local asset has been verified by the gateway must point
+// at the public media route. /v1/videos/{id}/content requires the client API key
+// and is therefore not usable in a browser or player.
 func TestVideoPlaybackURLPrefersPublicAssetRoute(t *testing.T) {
 	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
 	job := mediadomain.Job{
@@ -150,7 +150,8 @@ func TestVideoPlaybackURLPrefersPublicAssetRoute(t *testing.T) {
 	}
 }
 
-// Without a stored asset the protected content endpoint remains the only option.
+// Without a readable stored asset the protected content endpoint remains the
+// only option and can still fall back to the upstream download path.
 func TestVideoPlaybackURLFallsBackToContentEndpoint(t *testing.T) {
 	handler := NewHandler(nil, nil, 1<<20, "https://api.example.com/grok2api/")
 	job := mediadomain.Job{ID: "video_request_1", Status: mediadomain.StatusCompleted}

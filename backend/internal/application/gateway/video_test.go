@@ -15,6 +15,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
+	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -36,6 +37,67 @@ func TestVideoQuotaModeUsesWeb720pProduct(t *testing.T) {
 		if got := videoQuotaMode(test.provider, account.QuotaModeWebVideo, test.resolution); got != test.want {
 			t.Fatalf("videoQuotaMode(%s, %q) = %q, want %q", test.provider, test.resolution, got, test.want)
 		}
+	}
+}
+
+func TestGetVideoExposesOnlyReadableResultAsset(t *testing.T) {
+	completed := media.Job{
+		ID: "video_status", ClientKeyID: 7, Status: media.StatusCompleted,
+		ResultAssetID: "vid_local", UpstreamURL: "https://assets.grok.com/video.mp4",
+	}
+	tests := []struct {
+		name  string
+		store videoAssetStore
+		want  string
+	}{
+		{
+			name: "available",
+			store: &videoAssetStoreStub{
+				openAsset: media.Asset{ID: "vid_local", Kind: "video", MIMEType: "video/mp4"},
+				openData:  []byte("video"),
+			},
+			want: "vid_local",
+		},
+		{name: "missing", store: &videoAssetStoreStub{openErr: errors.New("asset missing")}},
+		{name: "storage unavailable"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &Service{mediaJobs: &videoUsageRepository{job: completed}, mediaAssets: test.store}
+			job, err := service.GetVideo(context.Background(), completed.ID, clientkey.Key{ID: completed.ClientKeyID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job.ResultAssetID != test.want {
+				t.Fatalf("result asset ID = %q, want %q", job.ResultAssetID, test.want)
+			}
+		})
+	}
+}
+
+func TestOpenVideoContentKeepsLocalAssetFastPath(t *testing.T) {
+	completed := media.Job{
+		ID: "video_content", ClientKeyID: 7, Status: media.StatusCompleted,
+		ResultAssetID: "vid_local", UpstreamURL: "https://assets.grok.com/video.mp4",
+	}
+	service := &Service{
+		mediaJobs: &videoUsageRepository{job: completed},
+		mediaAssets: &videoAssetStoreStub{
+			openAsset: media.Asset{ID: "vid_local", Kind: "video", MIMEType: "video/mp4", SizeBytes: 5},
+			openData:  []byte("video"),
+		},
+	}
+	body, contentType, size, err := service.OpenVideoContent(context.Background(), completed.ID, clientkey.Key{ID: completed.ClientKeyID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "video" || contentType != "video/mp4" || size != 5 {
+		t.Fatalf("content = %q, type = %q, size = %d", data, contentType, size)
 	}
 }
 
@@ -393,6 +455,9 @@ func (a *videoPersistAdapter) DownloadVideo(_ context.Context, credential accoun
 
 type videoAssetStoreStub struct {
 	saveCalls int
+	openAsset media.Asset
+	openData  []byte
+	openErr   error
 	inputID   string
 	inputData []byte
 	inputSize int64
@@ -415,8 +480,14 @@ func (s *videoAssetStoreStub) SaveVideo(_ context.Context, jobID, contentType st
 	return media.Asset{ID: "vid_local", Kind: "video", MIMEType: "video/mp4", SizeBytes: int64(len(data))}, nil
 }
 
-func (*videoAssetStoreStub) OpenVideo(context.Context, string) (media.Asset, io.ReadCloser, error) {
-	return media.Asset{}, nil, errors.New("not implemented")
+func (s *videoAssetStoreStub) OpenVideo(_ context.Context, id string) (media.Asset, io.ReadCloser, error) {
+	if s.openErr != nil {
+		return media.Asset{}, nil, s.openErr
+	}
+	if s.openAsset.ID == "" || id != s.openAsset.ID {
+		return media.Asset{}, nil, errors.New("not implemented")
+	}
+	return s.openAsset, io.NopCloser(bytes.NewReader(s.openData)), nil
 }
 
 func (s *videoAssetStoreStub) OpenInputAsset(_ context.Context, id string) (media.Asset, io.ReadCloser, error) {
