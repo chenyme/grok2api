@@ -94,6 +94,37 @@ func TestWriteQualityProbeErrorIdentifiesMissingProbeAccount(t *testing.T) {
 	}
 }
 
+func TestQualityGuardProfilesCRUDAndStatusOmitsPrompt(t *testing.T) {
+	directory := t.TempDir()
+	statePath := directory + "/state.json"
+	configPath := directory + "/runtime-config.json"
+	if err := os.WriteFile(statePath, []byte(`{"version":1,"guard":{"mode":"hybrid","model":"grok-4.5","node_ids":["8"]},"nodes":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(nil, statePath, configPath)
+
+	createRecorder := httptest.NewRecorder()
+	createContext, _ := gin.CreateTestContext(createRecorder)
+	createContext.Request = httptest.NewRequest("POST", "/egress-quality-guard/profiles", bytes.NewBufferString(`{"name":"自定义标记","prompt":"只输出 FLAG_OK","expectedText":"FLAG_OK","matchMode":"last_line","active":true}`))
+	createContext.Request.Header.Set("Content-Type", "application/json")
+	handler.createQualityGuardProfile(createContext)
+	if createRecorder.Code != 200 || !strings.Contains(createRecorder.Body.String(), `"FLAG_OK"`) {
+		t.Fatalf("create status=%d body=%s", createRecorder.Code, createRecorder.Body.String())
+	}
+
+	statusRecorder := httptest.NewRecorder()
+	statusContext, _ := gin.CreateTestContext(statusRecorder)
+	statusContext.Request = httptest.NewRequest("GET", "/egress-quality-guard", nil)
+	handler.qualityGuardStatus(statusContext)
+	body := statusRecorder.Body.String()
+	if statusRecorder.Code != 200 || !strings.Contains(body, `"activeProfileId":"p-2"`) || !strings.Contains(body, `"has_expected":true`) {
+		t.Fatalf("status=%d body=%s", statusRecorder.Code, body)
+	}
+	if strings.Contains(body, "只输出 FLAG_OK") || strings.Contains(body, "FLAG_OK") {
+		t.Fatalf("status leaked probe prompt or marker: %s", body)
+	}
+}
+
 func TestUpdateQualityGuardConfigWritesPrivateAtomicFile(t *testing.T) {
 	directory := t.TempDir()
 	statePath := directory + "/state.json"
