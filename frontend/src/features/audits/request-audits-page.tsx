@@ -577,6 +577,7 @@ function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
     cached: t("audits.cached"),
     reasoning: t("audits.reasoning"),
     mediaInput: t("audits.mediaInput"),
+    mediaOutput: t("audits.mediaOutput"),
     imageCount: (count) => t("audits.imageCount", { count }),
     secondsCount: (count) => t("audits.secondsCount", { count }),
   });

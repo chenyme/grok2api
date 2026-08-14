@@ -21,6 +21,7 @@ export type AuditUsageLabels = {
   cached: string;
   reasoning: string;
   mediaInput: string;
+  mediaOutput: string;
   imageCount: (count: number) => string;
   secondsCount: (count: number) => string;
 };
@@ -67,13 +68,13 @@ function mediaItems(audit: AuditUsageInput, labels: AuditUsageLabels): AuditUsag
   if (audit.operation === "video") {
     return [
       { key: "mediaInput", label: labels.mediaInput, value: labels.imageCount(audit.mediaInputImages) },
-      { key: "mediaOutput", label: labels.output, value: labels.secondsCount(audit.mediaOutputSeconds) },
+      { key: "mediaOutput", label: labels.mediaOutput, value: labels.secondsCount(audit.mediaOutputSeconds) },
     ];
   }
   if (audit.operation === "image" || audit.operation === "image_edit" || audit.mediaInputImages > 0 || audit.mediaOutputImages > 0) {
     return [
       { key: "mediaInput", label: labels.mediaInput, value: labels.imageCount(audit.mediaInputImages) },
-      { key: "mediaOutput", label: labels.output, value: labels.imageCount(audit.mediaOutputImages) },
+      { key: "mediaOutput", label: labels.mediaOutput, value: labels.imageCount(audit.mediaOutputImages) },
     ];
   }
   return undefined;
