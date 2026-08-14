@@ -215,6 +215,50 @@ func TestQualityImageResponsesUsesImageCompatibilityValidation(t *testing.T) {
 	}
 }
 
+func TestImageCompatibilityResponsesStreamUsesOutputStateMachine(t *testing.T) {
+	parsed := parsedChat{ResponseID: "resp_image", InputTokens: 3}
+	parsed.appendText("![image](https://example.com/generated.png)")
+	body, err := buildImageCompatibilityStream(
+		conversation.OperationResponses,
+		parsed.ResponseID,
+		"grok-imagine-image-lite",
+		&parsed,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := string(body)
+	for _, event := range []string{
+		"response.created",
+		"response.output_item.added",
+		"response.content_part.added",
+		"response.output_text.delta",
+		"response.output_text.done",
+		"response.content_part.done",
+		"response.output_item.done",
+		"response.completed",
+	} {
+		if !strings.Contains(stream, "event: "+event+"\n") {
+			t.Fatalf("stream missing %s: %s", event, stream)
+		}
+	}
+	if strings.Contains(stream, "chat.completion.chunk") || strings.Contains(stream, "data: [DONE]") {
+		t.Fatalf("Responses stream contains Chat Completions envelope: %s", stream)
+	}
+	if len(parsed.ResponseOutput) != 1 {
+		t.Fatalf("response output = %#v", parsed.ResponseOutput)
+	}
+	item := parsed.ResponseOutput[0].(map[string]any)
+	if item["type"] != "message" || item["status"] != "completed" {
+		t.Fatalf("response output item = %#v", item)
+	}
+	itemID, _ := item["id"].(string)
+	completedAt := strings.Index(stream, "event: response.completed\n")
+	if itemID == "" || completedAt < 0 || !strings.Contains(stream[completedAt:], `"id":"`+itemID+`"`) {
+		t.Fatalf("completed response does not reuse output item %q: %s", itemID, stream)
+	}
+}
+
 func TestNormalizeResponsesInputImage(t *testing.T) {
 	dataURI := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 	input, _ := json.Marshal([]any{map[string]any{

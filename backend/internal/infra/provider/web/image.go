@@ -24,6 +24,7 @@ import (
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
 	"github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
 
 const (
@@ -513,16 +514,14 @@ func (a *Adapter) forwardImageChatCompletion(ctx context.Context, request provid
 		}
 		parsed.appendText(liteImageMarkdown(item))
 	}
-	payload := buildOpenAIResult(request.Operation, responseID, input.Model, parsed, false)
 	if input.Stream || request.Streaming {
-		var stream bytes.Buffer
-		writeStreamStart(&stream, request.Operation, responseID, input.Model, parsed.InputTokens)
-		if err := writeStreamDelta(&stream, request.Operation, responseID, input.Model, "text", parsed.Text.String()); err != nil {
+		stream, err := buildImageCompatibilityStream(request.Operation, responseID, input.Model, &parsed)
+		if err != nil {
 			return nil, err
 		}
-		writeStreamDone(&stream, request.Operation, responseID, input.Model, parsed, payload)
-		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: io.NopCloser(bytes.NewReader(stream.Bytes())), QuotaUnits: count}, nil
+		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: io.NopCloser(bytes.NewReader(stream)), QuotaUnits: count}, nil
 	}
+	payload := buildOpenAIResult(request.Operation, responseID, input.Model, parsed, false)
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -568,21 +567,38 @@ func (a *Adapter) forwardQualityImageChatCompletion(ctx context.Context, request
 	if parsed.Text.Len() == 0 {
 		return nil, fmt.Errorf("图片生成兼容响应中没有图片")
 	}
-	result := buildOpenAIResult(request.Operation, parsed.ResponseID, input.Model, parsed, false)
 	if input.Stream || request.Streaming {
-		var stream bytes.Buffer
-		writeStreamStart(&stream, request.Operation, parsed.ResponseID, input.Model, parsed.InputTokens)
-		if err := writeStreamDelta(&stream, request.Operation, parsed.ResponseID, input.Model, "text", parsed.Text.String()); err != nil {
+		stream, err := buildImageCompatibilityStream(request.Operation, parsed.ResponseID, input.Model, &parsed)
+		if err != nil {
 			return nil, err
 		}
-		writeStreamDone(&stream, request.Operation, parsed.ResponseID, input.Model, parsed, result)
-		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: io.NopCloser(bytes.NewReader(stream.Bytes())), QuotaUnits: generated.QuotaUnits}, nil
+		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: io.NopCloser(bytes.NewReader(stream)), QuotaUnits: generated.QuotaUnits}, nil
 	}
+	result := buildOpenAIResult(request.Operation, parsed.ResponseID, input.Model, parsed, false)
 	data, err := json.Marshal(result)
 	if err != nil {
 		return nil, err
 	}
 	return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: jsonHeaders(), Body: io.NopCloser(bytes.NewReader(data)), QuotaUnits: generated.QuotaUnits}, nil
+}
+
+func buildImageCompatibilityStream(operation, responseID, model string, parsed *parsedChat) ([]byte, error) {
+	var stream bytes.Buffer
+	writeStreamStart(&stream, operation, responseID, model, parsed.InputTokens)
+	if operation == conversation.OperationResponses {
+		responsesStream := newWebResponsesStream(&stream, responseID)
+		if err := responsesStream.Delta("text", parsed.Text.String()); err != nil {
+			return nil, err
+		}
+		if err := responsesStream.Finish(parsed); err != nil {
+			return nil, err
+		}
+	} else if err := writeStreamDelta(&stream, operation, responseID, model, "text", parsed.Text.String()); err != nil {
+		return nil, err
+	}
+	payload := buildOpenAIResult(operation, responseID, model, *parsed, false)
+	writeStreamDone(&stream, operation, responseID, model, *parsed, payload)
+	return stream.Bytes(), nil
 }
 
 func liteImageMarkdown(item map[string]any) string {
