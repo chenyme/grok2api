@@ -831,7 +831,7 @@ func defaultConfig() Config {
 			MarkBuildChatDeniedAsReauth: false,
 			PreferFreeBuild:             false,
 			AccountIsolatedConnections:  false,
-			SegmentedSelectorEnabled:    false,
+			SegmentedSelectorEnabled:    true,
 			SegmentedMinCandidates:      3000,
 			SegmentedWindowSize:         64,
 			ReasoningReplayEnabled:      true,

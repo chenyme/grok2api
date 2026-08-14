@@ -136,7 +136,9 @@ func (l *ConcurrencyLimiter) Current(_ context.Context, key string) (int, error)
 }
 
 func (l *ConcurrencyLimiter) CurrentMany(_ context.Context, keys []string) (map[string]int, error) {
-	values := make(map[string]int, len(keys))
+	// Most accounts have no active lease. Keep the sparse result contract used
+	// by the planner instead of allocating one map entry for every candidate.
+	values := make(map[string]int)
 	if len(keys) == 0 {
 		return values, nil
 	}
@@ -177,7 +179,9 @@ func (l *ConcurrencyLimiter) CurrentMany(_ context.Context, keys []string) (map[
 		shard.mu.Lock()
 		for _, keyIndex := range grouped[offsets[shardIndex]:offsets[shardIndex+1]] {
 			key := keys[keyIndex]
-			values[key] = shard.counts[key]
+			if count := shard.counts[key]; count > 0 {
+				values[key] = count
+			}
 		}
 		shard.mu.Unlock()
 	}
