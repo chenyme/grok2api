@@ -102,8 +102,9 @@ type RoutingConfig struct {
 	CooldownBase    time.Duration
 	CooldownMax     time.Duration
 	CapacityWait    time.Duration
-	MaxAttempts     int
-	PreferFreeBuild bool
+	MaxAttempts      int
+	VideoMaxAttempts int
+	PreferFreeBuild  bool
 	// MarkBuildChatDeniedAsReauth 为 true 时，Build chat 权限拒绝标 reauthRequired，默认 false 保留模型级冷却。
 	MarkBuildChatDeniedAsReauth bool
 	// AccountIsolatedConnections is optional so persisted payloads written by
