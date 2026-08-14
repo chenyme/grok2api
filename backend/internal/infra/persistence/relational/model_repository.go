@@ -705,7 +705,14 @@ func (r *ModelRepository) UpsertDiscovered(ctx context.Context, provider account
 			if publicIDs[key] {
 				continue
 			}
+			// A discovered model whose canonical public ID is already reserved as
+			// another route compatibility alias cannot be inserted. Skip it and
+			// keep the rest of the batch: aborting here lets one historical rename
+			// permanently hide every future model of this provider.
 			if err := ensureModelPublicIDNotAlias(tx, publicID, 0); err != nil {
+				if errors.Is(err, repository.ErrConflict) {
+					continue
+				}
 				return err
 			}
 			publicIDs[key] = true

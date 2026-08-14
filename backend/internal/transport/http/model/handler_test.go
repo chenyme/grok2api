@@ -1,12 +1,37 @@
 package model
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/gin-gonic/gin"
 )
+
+func TestSyncStreamsTerminalFailureInsteadOfAcknowledgingSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodPost, "/api/admin/v1/models/sync", nil)
+
+	handler := NewHandler(modelapp.NewService(nil, nil, nil, nil))
+	handler.sync(context)
+
+	if contentType := recorder.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
+		t.Fatalf("content type = %q", contentType)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, ": connected\n\n") || !strings.Contains(body, "event: error\ndata: {\"code\":\"modelSyncFailed\"") {
+		t.Fatalf("unexpected stream body: %q", body)
+	}
+	if strings.Contains(body, "event: complete") || strings.Contains(body, "\"synced\":0") {
+		t.Fatalf("failure was acknowledged as success: %q", body)
+	}
+}
 
 func TestNewModelResponseSeparatesPublicAndUpstreamNames(t *testing.T) {
 	response := newModelResponse(modeldomain.Route{

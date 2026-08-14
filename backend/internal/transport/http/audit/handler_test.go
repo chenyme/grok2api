@@ -163,3 +163,42 @@ func TestAuditResponseExplainsBillingWithoutChangingStoredTotal(t *testing.T) {
 		t.Fatalf("historical billing = %#v", historical.Billing)
 	}
 }
+
+func TestDegradeAccountsListsHardHitsAndRejectsUnknownWindow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "degrade-handler.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := relational.NewAuditRepository(database)
+	now := time.Now().UTC()
+	first := int64(100)
+	accountID := uint64(11)
+	if err := repo.Create(ctx, auditdomain.Record{
+		RequestID: "degrade-hard", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build", AccountID: &accountID, AccountName: "noisy",
+		EgressNodeName: "edge-1", StatusCode: 200, Streaming: true, OutputTokens: 2000, FirstTokenMS: &first, DurationMS: 1100, CreatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	NewHandler(auditapp.NewService(repo, slog.Default(), 8, 4, time.Second)).Register(router.Group("/api/admin/v1"))
+
+	ok := httptest.NewRecorder()
+	router.ServeHTTP(ok, httptest.NewRequest(http.MethodGet, "/api/admin/v1/request-audits/degrade-accounts?window=24h&softTPS=500&hardTPS=1000&failClosed=false&page=1&pageSize=20", nil))
+	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), `"id":"11"`) || !strings.Contains(ok.Body.String(), `"hard":1`) ||
+		!strings.Contains(ok.Body.String(), `"found":false`) || !strings.Contains(ok.Body.String(), `"deleted":1`) ||
+		!strings.Contains(ok.Body.String(), `"accountPage":{"page":1,"pageSize":20,"total":1,"hasMore":false}`) {
+		t.Fatalf("status=%d body=%s", ok.Code, ok.Body.String())
+	}
+
+	bad := httptest.NewRecorder()
+	router.ServeHTTP(bad, httptest.NewRequest(http.MethodGet, "/api/admin/v1/request-audits/degrade-accounts?window=3h", nil))
+	if bad.Code != http.StatusBadRequest || !strings.Contains(bad.Body.String(), "invalidAuditPeriod") {
+		t.Fatalf("bad window status=%d body=%s", bad.Code, bad.Body.String())
+	}
+}

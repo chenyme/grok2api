@@ -90,6 +90,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_audits_account_created_id ON request_audits(account_id, created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_audits_status_created_id ON request_audits(status_code, created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_audits_streaming_created_id ON request_audits(streaming, created_at DESC, id DESC)",
+	"CREATE INDEX IF NOT EXISTS idx_audits_provider_streaming_created_id ON request_audits(provider, streaming, created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_audit_attempts_audit_number ON request_audit_attempts(audit_id, number)",
 	"CREATE INDEX IF NOT EXISTS idx_response_ownership_expires_id ON response_ownership(expires_at, response_id)",
 	"CREATE INDEX IF NOT EXISTS idx_response_ownership_account ON response_ownership(account_id)",
