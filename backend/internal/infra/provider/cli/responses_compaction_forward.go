@@ -134,6 +134,7 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 			return result, nil
 		}
 
+		resp.Body = wrapBuildSemanticIdle(resp.Body, a.config().StreamIdleTimeout)
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxCompatibleResponseBytes+1))
 		_ = resp.Body.Close()
 		if readErr != nil {
