@@ -84,6 +84,13 @@ func normalizeBuildRequestPayload(payload map[string]json.RawMessage, model stri
 	if normalizeBuildReasoningEffortPayload(payload, model) {
 		changed = true
 	}
+	imagesChanged, err := normalizeBuildInputGIFs(payload)
+	if err != nil {
+		return false, err
+	}
+	if imagesChanged {
+		changed = true
+	}
 	defaultsChanged, err := applyBuildResponseDefaults(payload)
 	if err != nil {
 		return false, err
