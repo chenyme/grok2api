@@ -785,27 +785,19 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 		}
 		images = append(images, image)
 	}
-	refs := make([]string, 0, len(images))
-	parentID := ""
+	assets := make([]string, 0, len(images))
 	for _, image := range images {
 		uploaded, uploadErr := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "image_edit_upload")
 		if uploadErr != nil {
 			return nil, uploadErr
 		}
-		if uploaded.URI == "" {
-			return nil, fmt.Errorf("上传图片成功但上游未返回 fileUri")
+		if uploaded.ID == "" {
+			return nil, fmt.Errorf("上传图片成功但上游未返回 fileMetadataId")
 		}
-		refs = append(refs, uploaded.URI)
-		postID, postErr := a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", uploaded.URI, "", "image_edit_media_post")
-		if postErr != nil {
-			return nil, postErr
-		}
-		if parentID == "" {
-			parentID = postID
-		}
+		assets = append(assets, uploaded.ID)
 	}
-	payload := buildImageEditPayload(request.Prompt, refs, parentID, ratio)
-	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine/post/"+parentID)
+	payload := buildImageEditPayload(request.Prompt, assets, ratio)
+	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine")
 	if err != nil {
 		return nil, err
 	}
@@ -841,20 +833,18 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 	return result, err
 }
 
-func buildImageEditPayload(prompt string, refs []string, parentID, aspectRatio string) map[string]any {
-	config := map[string]any{"imageReferences": refs, "parentPostId": parentID}
-	if aspectRatio != "" {
-		config["aspectRatio"] = aspectRatio
-	}
+func buildImageEditPayload(prompt string, assets []string, aspectRatio string) map[string]any {
+	_ = aspectRatio // 网页端编辑请求不携带宽高比, 保持协议一致
 	return map[string]any{
-		"temporary": true, "modelName": "imagine-image-edit", "message": prompt,
-		"enableImageGeneration": true, "returnImageBytes": false, "returnRawGrokInXaiRequest": false,
-		"enableImageStreaming": true, "imageGenerationCount": 2, "forceConcise": false,
-		"enableSideBySide": true, "sendFinalMetadata": true, "isReasoning": false,
-		"disableTextFollowUps": true, "disableMemory": false, "forceSideBySide": false,
+		"modelName": "imagine-image-edit", "message": prompt,
+		"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
 		"responseMetadata": map[string]any{"modelConfigOverride": map[string]any{"modelMap": map[string]any{
-			"imageEditModel": "imagine", "imageEditModelConfig": config,
+			"imageEditModel": "imagine",
 		}}},
+		"mediaGenInput": map[string]any{"imageToImage": map[string]any{
+			"prompt": prompt, "inputAssets": assets,
+		}},
+		"kind": "CONVERSATION_KIND_IMAGINE",
 	}
 }
 
