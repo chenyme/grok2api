@@ -15,6 +15,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
 func TestGatewayCompactionLifecycle(t *testing.T) {
@@ -104,6 +105,46 @@ func TestGatewayCompactionRetryVetoStopsSameAccountRetries(t *testing.T) {
 	defer response.Body.Close()
 	if attempts.Load() != 1 || response.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("attempts=%d status=%d", attempts.Load(), response.StatusCode)
+	}
+}
+
+func TestGatewayCompactionSemanticIdleIgnoresKeepalives(t *testing.T) {
+	adapter, encrypted := newCompactionTestAdapter(t)
+	cfg := adapter.config()
+	cfg.StreamIdleTimeout = 60 * time.Millisecond
+	adapter.UpdateConfig(cfg)
+
+	writeDone := make(chan struct{})
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		reader, writer := io.Pipe()
+		go func() {
+			defer close(writeDone)
+			defer writer.Close()
+			for {
+				if _, err := io.WriteString(writer, ": keep-alive\n\n"); err != nil {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       reader,
+			Request:    request,
+		}, nil
+	})
+
+	request := compactionProviderRequest(encrypted)
+	_, err := adapter.forwardGatewayCompactionWithPolicy(t.Context(), request, "access-token", request.Body, "", 1, 0)
+	if !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) {
+		t.Fatalf("compaction error = %v, want ErrUpstreamStreamIdleTimeout", err)
+	}
+	select {
+	case <-writeDone:
+	case <-time.After(time.Second):
+		t.Fatal("semantic timeout did not close the compaction response body")
 	}
 }
 

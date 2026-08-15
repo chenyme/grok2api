@@ -35,6 +35,8 @@ type layeredAccountRepository struct {
 	materialErrors map[uint64]error
 	materials      map[uint64]account.CredentialMaterial
 	materialCalls  []uint64
+	healthUpdates  []repository.InvalidationEvent
+	lastUsedAt     map[uint64]time.Time
 }
 
 type temporaryRoutingLoadError struct{ message string }
@@ -94,6 +96,33 @@ func (r *layeredAccountRepository) GetCredentialMaterial(_ context.Context, acco
 	return account.CredentialMaterial{AccountID: accountID, Provider: provider, AuthType: account.AuthTypeOAuth, EncryptedAccessToken: "encrypted"}, nil
 }
 
+func (r *layeredAccountRepository) UpdateHealth(_ context.Context, id uint64, _ account.Provider, failureCount int, cooldownUntil *time.Time, lastError string, _ bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	provider := account.ProviderBuild
+	for _, base := range r.bases {
+		if base.Credential.ID == id {
+			provider = base.Credential.Provider
+			break
+		}
+	}
+	r.healthUpdates = append(r.healthUpdates, repository.InvalidationEvent{
+		Kind: repository.InvalidationAccountHealthChanged, Provider: provider, AccountID: id,
+		FailureCount: failureCount, CooldownUntil: cooldownUntil,
+	})
+	return nil
+}
+
+func (r *layeredAccountRepository) TouchLastUsed(_ context.Context, id uint64, usedAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastUsedAt == nil {
+		r.lastUsedAt = make(map[uint64]time.Time)
+	}
+	r.lastUsedAt[id] = usedAt
+	return nil
+}
+
 func (r *layeredAccountRepository) ListRoutingAccountOverlays(_ context.Context, _ account.Provider, modelRouteID uint64, upstreamModel string) (account.RoutingOverlaySnapshot, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -148,6 +177,76 @@ func TestSelectorLayeredCacheReusesBaseAcrossModels(t *testing.T) {
 	baseCalls, modelACalls = repo.callCounts("model-a")
 	if baseCalls != 2 || modelACalls != 2 {
 		t.Fatalf("overlay invalidation reloaded base=%d overlay=%d", baseCalls, modelACalls)
+	}
+}
+
+func TestSelectorHealthInvalidationDoesNotRebuildProviderSnapshots(t *testing.T) {
+	repo := newLayeredRepositoryFixture()
+	selector := NewSelector(repo, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	now := time.Now().UTC()
+	if _, err := selector.beginSelectionSession(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false); err != nil {
+		t.Fatal(err)
+	}
+	baseCalls, overlayCalls := repo.callCounts("model-a")
+
+	cooldownUntil := now.Add(time.Minute)
+	selector.ApplyInvalidation(repository.InvalidationEvent{
+		Kind: repository.InvalidationAccountHealthChanged, Provider: account.ProviderBuild, AccountID: 1,
+		FailureCount: 1, CooldownUntil: &cooldownUntil, PublishedAt: now,
+	})
+	_, err := selector.beginSelectionSession(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionCooling {
+		t.Fatalf("selection error = %v, want cooling", err)
+	}
+	if currentBase, currentOverlay := repo.callCounts("model-a"); currentBase != baseCalls || currentOverlay != overlayCalls {
+		t.Fatalf("health update rebuilt snapshots: base %d->%d overlay %d->%d", baseCalls, currentBase, overlayCalls, currentOverlay)
+	}
+
+	selector.ApplyInvalidation(repository.InvalidationEvent{
+		Kind: repository.InvalidationAccountHealthChanged, Provider: account.ProviderBuild, AccountID: 1, PublishedAt: time.Now().UTC(),
+	})
+	if _, err := selector.beginSelectionSession(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false); err != nil {
+		t.Fatalf("cleared health override did not restore account: %v", err)
+	}
+	if currentBase, currentOverlay := repo.callCounts("model-a"); currentBase != baseCalls || currentOverlay != overlayCalls {
+		t.Fatalf("health recovery rebuilt snapshots: base %d->%d overlay %d->%d", baseCalls, currentBase, overlayCalls, currentOverlay)
+	}
+
+	selector.MarkFailure(context.Background(), repo.bases[0].Credential, 500, 0)
+	_, err = selector.beginSelectionSession(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionCooling {
+		t.Fatalf("mark failure selection error = %v, want cooling", err)
+	}
+	if currentBase, currentOverlay := repo.callCounts("model-a"); currentBase != baseCalls || currentOverlay != overlayCalls {
+		t.Fatalf("mark failure rebuilt snapshots: base %d->%d overlay %d->%d", baseCalls, currentBase, overlayCalls, currentOverlay)
+	}
+}
+
+func TestSelectorHealthInvalidationRejectsOlderAccountRevision(t *testing.T) {
+	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	now := time.Now().UTC()
+	cooldownUntil := now.Add(time.Minute)
+	selector.ApplyInvalidation(repository.InvalidationEvent{
+		Kind: repository.InvalidationAccountHealthChanged, Provider: account.ProviderBuild, AccountID: 7,
+		FailureCount: 2, CooldownUntil: &cooldownUntil, Revision: 20, PublishedAt: now,
+	})
+	selector.ApplyInvalidation(repository.InvalidationEvent{
+		Kind: repository.InvalidationAccountHealthChanged, Provider: account.ProviderBuild, AccountID: 7,
+		Revision: 19, PublishedAt: now.Add(time.Second),
+	})
+	value := selector.applyRoutingHealth(account.Credential{ID: 7, Provider: account.ProviderBuild}, now)
+	if value.FailureCount != 2 || value.CooldownUntil == nil || !value.CooldownUntil.Equal(cooldownUntil) {
+		t.Fatalf("older recovery replaced newer cooldown: %#v", value)
+	}
+
+	selector.ApplyInvalidation(repository.InvalidationEvent{
+		Kind: repository.InvalidationAccountHealthChanged, Provider: account.ProviderBuild, AccountID: 7,
+		Revision: 21, PublishedAt: now.Add(2 * time.Second),
+	})
+	value = selector.applyRoutingHealth(value, now)
+	if value.FailureCount != 0 || value.CooldownUntil != nil || value.LastError != "" {
+		t.Fatalf("newer recovery was not applied: %#v", value)
 	}
 }
 
