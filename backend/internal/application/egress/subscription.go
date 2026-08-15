@@ -104,7 +104,7 @@ func fetchProxySubscription(ctx context.Context, value string, viaProxy string) 
 		}
 	}
 	request.Header.Set("Accept", "text/plain, text/*;q=0.9, */*;q=0.1")
-	request.Header.Set("User-Agent", "grok2api-egress-subscription/1")
+	request.Header.Set("User-Agent", "Clash.Meta")
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
@@ -367,6 +367,9 @@ func parseProxySubscription(value string) ([]subscriptionEntry, int, error) {
 			// decodes to a valid list, report only invalid decoded entries.
 			return entries, decodedSkipped, nil
 		}
+	}
+	if entries, clashSkipped, matched := parseClashSubscription(value); matched && len(entries) > 0 {
+		return entries, clashSkipped, nil
 	}
 	return nil, skipped, errors.New("订阅中没有可用的代理节点")
 }
