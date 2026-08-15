@@ -17,6 +17,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
@@ -60,15 +61,28 @@ func TestResponseRequestForcedEgressOverridesCredentialBinding(t *testing.T) {
 }
 
 func TestAdapterHotUpdatesDirectResponseHeaderTimeout(t *testing.T) {
-	adapter := NewAdapter(Config{ResponseHeaderTimeout: 2 * time.Minute}, nil)
+	adapter := NewAdapter(Config{ResponseHeaderTimeout: 2 * time.Minute, StreamIdleTimeout: 3 * time.Minute}, nil)
 	before := adapter.base.current.Load()
 	if before.ResponseHeaderTimeout != 2*time.Minute {
 		t.Fatalf("initial timeout = %s", before.ResponseHeaderTimeout)
 	}
-	adapter.UpdateConfig(Config{ResponseHeaderTimeout: 7 * time.Minute})
+	if got := adapter.config().StreamIdleTimeout; got != 3*time.Minute {
+		t.Fatalf("initial stream idle timeout = %s", got)
+	}
+	adapter.UpdateConfig(Config{ResponseHeaderTimeout: 7 * time.Minute, StreamIdleTimeout: 11 * time.Minute})
 	after := adapter.base.current.Load()
 	if after == before || after.ResponseHeaderTimeout != 7*time.Minute {
 		t.Fatalf("updated transport=%p timeout=%s", after, after.ResponseHeaderTimeout)
+	}
+	if got := adapter.config().StreamIdleTimeout; got != 11*time.Minute {
+		t.Fatalf("updated stream idle timeout = %s", got)
+	}
+}
+
+func TestAdapterDefaultsStreamIdleTimeout(t *testing.T) {
+	adapter := NewAdapter(Config{}, nil)
+	if got := adapter.config().StreamIdleTimeout; got != settingsdomain.DefaultBuildStreamIdleTimeout {
+		t.Fatalf("stream idle timeout = %s, want %s", got, settingsdomain.DefaultBuildStreamIdleTimeout)
 	}
 }
 
