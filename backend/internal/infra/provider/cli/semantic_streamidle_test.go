@@ -88,6 +88,35 @@ func TestBuildSemanticIdleResetsOnGeneratedDelta(t *testing.T) {
 	}
 }
 
+func TestBuildSemanticIdleResetsOnGeneratedOutputItem(t *testing.T) {
+	reader, writer := io.Pipe()
+	body := wrapBuildSemanticIdle(reader, 300*time.Millisecond)
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, body)
+		readDone <- err
+	}()
+
+	time.Sleep(180 * time.Millisecond)
+	searchStarted := "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"ws_1\",\"type\":\"web_search_call\",\"status\":\"in_progress\",\"action\":{\"type\":\"search\",\"query\":\"current docs\"}}}\n\n"
+	if _, err := io.WriteString(writer, searchStarted); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(180 * time.Millisecond)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("body read error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("generated output item did not keep the stream alive")
+	}
+}
+
 func TestBuildSSEActivityDetectorRecognizesSplitGeneratedEvents(t *testing.T) {
 	for kind := range buildGeneratedDeltaEvents {
 		t.Run(kind, func(t *testing.T) {
@@ -114,6 +143,29 @@ func TestBuildSSEActivityDetectorRequiresJSONGeneratedEvent(t *testing.T) {
 	}
 	if detector.Observe([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"\"}\n\n")) {
 		t.Fatal("empty delta unexpectedly counted as generated activity")
+	}
+	if detector.Observe([]byte("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"web_search_call\"}}\n\n")) {
+		t.Fatal("unidentified output item unexpectedly counted as generated activity")
+	}
+	if detector.Observe([]byte("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"web_search_call\",\"status\":\"in_progress\"}}\n\n")) {
+		t.Fatal("anonymous output item unexpectedly counted as generated activity")
+	}
+	if detector.Observe([]byte("event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"control_1\",\"type\":\"private_control\"}}\n\n")) {
+		t.Fatal("unknown output item unexpectedly counted as generated activity")
+	}
+}
+
+func TestBuildSSEActivityDetectorRecognizesGeneratedOutputItems(t *testing.T) {
+	tests := []string{
+		`{"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"in_progress"}}`,
+		`{"type":"response.output_item.added","item":{"id":"reasoning_1","type":"reasoning"}}`,
+		`{"type":"response.output_item.done","item":{"call_id":"call_1","type":"function_call","name":"lookup","status":"completed"}}`,
+	}
+	for _, payload := range tests {
+		var detector buildSSEActivityDetector
+		if !detector.Observe([]byte("data: " + payload + "\n\n")) {
+			t.Fatalf("generated output item was not recognized: %s", payload)
+		}
 	}
 }
 

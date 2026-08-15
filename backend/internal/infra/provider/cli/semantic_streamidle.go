@@ -20,6 +20,22 @@ var buildGeneratedDeltaEvents = map[string]struct{}{
 	"response.custom_tool_call_input.delta":  {},
 }
 
+var buildGeneratedOutputItemTypes = map[string]struct{}{
+	"code_interpreter_call": {},
+	"custom_tool_call":      {},
+	"file_search_call":      {},
+	"function_call":         {},
+	"image_generation_call": {},
+	"mcp_call":              {},
+	"mcp_approval_request":  {},
+	"mcp_approval_response": {},
+	"mcp_list_tools":        {},
+	"message":               {},
+	"reasoning":             {},
+	"shell_call":            {},
+	"web_search_call":       {},
+}
+
 // semanticIdleReadCloser measures useful generated output rather than raw
 // transport bytes, so SSE keepalives and Build control events cannot keep a
 // stalled generation alive indefinitely.
@@ -179,13 +195,26 @@ func (d *buildSSEActivityDetector) finishEvent() bool {
 		var payload struct {
 			Type  string `json:"type"`
 			Delta string `json:"delta"`
+			Item  struct {
+				ID     string `json:"id"`
+				Type   string `json:"type"`
+				CallID string `json:"call_id"`
+				Name   string `json:"name"`
+			} `json:"item"`
 		}
-		if json.Unmarshal(d.data, &payload) == nil && payload.Delta != "" {
+		if json.Unmarshal(d.data, &payload) == nil {
 			kind := strings.TrimSpace(payload.Type)
 			if kind == "" {
 				kind = strings.TrimSpace(d.eventName)
 			}
-			_, active = buildGeneratedDeltaEvents[kind]
+			if _, generatedDelta := buildGeneratedDeltaEvents[kind]; generatedDelta {
+				active = payload.Delta != ""
+			} else if kind == "response.output_item.added" || kind == "response.output_item.done" {
+				itemType := strings.TrimSpace(payload.Item.Type)
+				_, generatedItem := buildGeneratedOutputItemTypes[itemType]
+				active = generatedItem && (strings.TrimSpace(payload.Item.ID) != "" ||
+					strings.TrimSpace(payload.Item.CallID) != "" || strings.TrimSpace(payload.Item.Name) != "")
+			}
 		}
 	}
 	d.eventName = ""
