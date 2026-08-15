@@ -196,6 +196,38 @@ func TestNormalizeEquivalentShareLinksHaveOneIdentity(t *testing.T) {
 	}
 }
 
+func TestNormalizeVMessPreservesALPN(t *testing.T) {
+	stringURL := vmessTestURL(t, map[string]any{
+		"v": "2", "add": "proxy.example", "port": "443", "id": testUUID,
+		"aid": "0", "scy": "auto", "net": "tcp", "tls": "tls", "sni": "edge.example",
+		"alpn": "h2, http/1.1",
+	})
+	arrayURL := vmessTestURL(t, map[string]any{
+		"v": "2", "add": "proxy.example", "port": "443", "id": testUUID,
+		"aid": "0", "scy": "auto", "net": "tcp", "tls": "tls", "sni": "edge.example",
+		"alpn": []string{"h2", "http/1.1"},
+	})
+	stringNormalized, err := Normalize(stringURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrayNormalized, err := Normalize(arrayURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringNormalized != arrayNormalized {
+		t.Fatalf("equivalent VMess ALPN forms have different identities: %q != %q", stringNormalized, arrayNormalized)
+	}
+	config, err := Parse(stringNormalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := "h2,http/1.1"
+	if strings.Join(config.ALPN, ",") != wanted || strings.Join((&tlsProxy{config: config}).tlsConfig().NextProtos, ",") != wanted {
+		t.Fatalf("VMess ALPN was not preserved in TLS config: %#v", config)
+	}
+}
+
 func TestOwnedVLESSProxyClosesConnectionWhenInitialWriteFails(t *testing.T) {
 	client, server := net.Pipe()
 	if err := server.Close(); err != nil {
@@ -290,6 +322,10 @@ func TestParseRejectsUnsupportedOrMalformedLinks(t *testing.T) {
 		"ss://" + base64.RawURLEncoding.EncodeToString([]byte("rc4-md5:secret")) + "@proxy.example:8388",
 		"ss://" + base64.RawURLEncoding.EncodeToString([]byte("aes-128-gcm:secret")) + "@proxy.example:8388/unexpected",
 		"vmess://not-base64",
+		vmessTestURL(t, map[string]any{
+			"v": "2", "add": "proxy.example", "port": "443", "id": testUUID,
+			"aid": "0", "scy": "auto", "net": "tcp", "tls": "tls", "alpn": []any{"h2", 1},
+		}),
 	} {
 		if _, err := Normalize(raw); err == nil {
 			t.Fatalf("invalid tunnel accepted: %q", raw)

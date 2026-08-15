@@ -344,6 +344,7 @@ type vmessShare struct {
 	Network       string `json:"net"`
 	TLS           string `json:"tls,omitempty"`
 	ServerName    string `json:"sni,omitempty"`
+	ALPN          string `json:"alpn,omitempty"`
 	Host          string `json:"host,omitempty"`
 	Path          string `json:"path,omitempty"`
 	AllowInsecure bool   `json:"allowInsecure,omitempty"`
@@ -399,6 +400,10 @@ func parseVMess(value string) (Config, error) {
 	}
 	tlsEnabled := tlsMode == "tls"
 	serverName := firstNonEmpty(jsonString(raw, "sni"), address)
+	alpn, err := jsonStringList(raw, "alpn")
+	if err != nil {
+		return Config{}, err
+	}
 	host := firstNonEmpty(jsonString(raw, "host"), serverName)
 	if err := validateWebSocketHost(host); transport == "ws" && err != nil {
 		return Config{}, err
@@ -418,7 +423,7 @@ func parseVMess(value string) (Config, error) {
 	}
 	share := vmessShare{
 		Version: "2", Address: address, Port: port, UUID: userID, AlterID: strconv.Itoa(alterID), Cipher: cipher,
-		Network: transport, ServerName: serverName, AllowInsecure: insecure,
+		Network: transport, ServerName: serverName, ALPN: strings.Join(alpn, ","), AllowInsecure: insecure,
 	}
 	if transport == "ws" {
 		share.Host = host
@@ -433,7 +438,7 @@ func parseVMess(value string) (Config, error) {
 	}
 	config := Config{
 		Scheme: "vmess", Server: server, Credential: userID, AlterID: alterID, Cipher: cipher,
-		Transport: transport, TLS: tlsEnabled, ServerName: serverName, Insecure: insecure,
+		Transport: transport, TLS: tlsEnabled, ServerName: serverName, Insecure: insecure, ALPN: alpn,
 		WebSocketHost: host, WebSocketPath: path,
 		CanonicalProxyURL: "vmess://" + base64.RawStdEncoding.EncodeToString(canonicalJSON),
 	}
@@ -843,4 +848,29 @@ func jsonString(value map[string]any, name string) string {
 	default:
 		return ""
 	}
+}
+
+func jsonStringList(value map[string]any, name string) ([]string, error) {
+	raw, ok := value[name]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	if text, ok := raw.(string); ok {
+		return splitList(text), nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s 必须是字符串或字符串数组", name)
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s 必须是字符串或字符串数组", name)
+		}
+		if text = strings.TrimSpace(text); text != "" {
+			result = append(result, text)
+		}
+	}
+	return result, nil
 }

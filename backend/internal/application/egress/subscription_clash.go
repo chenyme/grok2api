@@ -14,23 +14,24 @@ import (
 )
 
 type clashSubscription struct {
-	Proxies []clashProxy `yaml:"proxies"`
+	Proxies []yaml.Node `yaml:"proxies"`
 }
 
 type clashProxy struct {
 	Type              string               `yaml:"type"`
 	Server            string               `yaml:"server"`
-	Port              int                  `yaml:"port"`
+	Port              clashInteger         `yaml:"port"`
 	Username          string               `yaml:"username"`
 	Password          string               `yaml:"password"`
 	Cipher            string               `yaml:"cipher"`
 	UUID              string               `yaml:"uuid"`
-	AlterID           int                  `yaml:"alterId"`
+	AlterID           clashInteger         `yaml:"alterId"`
 	Network           string               `yaml:"network"`
 	TLS               bool                 `yaml:"tls"`
 	ServerName        string               `yaml:"servername"`
 	SNI               string               `yaml:"sni"`
 	Flow              string               `yaml:"flow"`
+	ALPN              clashStringList      `yaml:"alpn"`
 	SkipCertVerify    bool                 `yaml:"skip-cert-verify"`
 	ClientFingerprint string               `yaml:"client-fingerprint"`
 	Plugin            string               `yaml:"plugin"`
@@ -48,6 +49,53 @@ type clashRealityOptions struct {
 	ShortID   string `yaml:"short-id"`
 }
 
+type clashInteger int
+
+func (value *clashInteger) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return errors.New("Clash 整数字段格式无效")
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(node.Value), 10, 32)
+	if err != nil {
+		return errors.New("Clash 整数字段格式无效")
+	}
+	*value = clashInteger(parsed)
+	return nil
+}
+
+type clashStringList []string
+
+func (value *clashStringList) UnmarshalYAML(node *yaml.Node) error {
+	if node == nil {
+		return errors.New("Clash 字符串列表格式无效")
+	}
+	if node.Kind == yaml.AliasNode {
+		if node.Alias == nil {
+			return errors.New("Clash 字符串列表格式无效")
+		}
+		node = node.Alias
+	}
+	var items []string
+	switch node.Kind {
+	case yaml.ScalarNode:
+		items = strings.Split(node.Value, ",")
+	case yaml.SequenceNode:
+		if err := node.Decode(&items); err != nil {
+			return errors.New("Clash 字符串列表格式无效")
+		}
+	default:
+		return errors.New("Clash 字符串列表格式无效")
+	}
+	normalized := make([]string, 0, len(items))
+	for _, item := range items {
+		if item = strings.TrimSpace(item); item != "" {
+			normalized = append(normalized, item)
+		}
+	}
+	*value = normalized
+	return nil
+}
+
 type clashVMessShare struct {
 	Version       string `json:"v"`
 	Address       string `json:"add"`
@@ -58,6 +106,7 @@ type clashVMessShare struct {
 	Network       string `json:"net"`
 	TLS           string `json:"tls,omitempty"`
 	ServerName    string `json:"sni,omitempty"`
+	ALPN          string `json:"alpn,omitempty"`
 	Host          string `json:"host,omitempty"`
 	Path          string `json:"path,omitempty"`
 	AllowInsecure bool   `json:"allowInsecure,omitempty"`
@@ -73,7 +122,12 @@ func parseClashSubscription(value string) ([]subscriptionEntry, int, bool) {
 	}
 	lines := make([]string, 0, len(document.Proxies))
 	skipped := 0
-	for _, proxy := range document.Proxies {
+	for index := range document.Proxies {
+		var proxy clashProxy
+		if err := document.Proxies[index].Decode(&proxy); err != nil {
+			skipped++
+			continue
+		}
 		line, err := clashProxyURL(proxy)
 		if err != nil {
 			skipped++
@@ -86,7 +140,7 @@ func parseClashSubscription(value string) ([]subscriptionEntry, int, bool) {
 }
 
 func clashProxyURL(proxy clashProxy) (string, error) {
-	server, err := clashProxyServer(proxy.Server, proxy.Port)
+	server, err := clashProxyServer(proxy.Server, int(proxy.Port))
 	if err != nil {
 		return "", err
 	}
@@ -184,6 +238,9 @@ func clashTunnelQuery(proxy clashProxy, security string) (url.Values, error) {
 	if proxy.SkipCertVerify {
 		query.Set("allowInsecure", "1")
 	}
+	if len(proxy.ALPN) != 0 {
+		query.Set("alpn", strings.Join(proxy.ALPN, ","))
+	}
 	if transport == "ws" {
 		query.Set("path", firstNonEmptySubscription(proxy.WSOptions.Path, "/"))
 		query.Set("host", firstNonEmptySubscription(proxy.WSOptions.Headers["Host"], proxy.WSOptions.Headers["host"], proxy.ServerName, proxy.SNI, proxy.Server))
@@ -203,9 +260,10 @@ func clashVMessURL(proxy clashProxy) (string, error) {
 		network = "ws"
 	}
 	share := clashVMessShare{
-		Version: "2", Address: proxy.Server, Port: strconv.Itoa(proxy.Port), UUID: proxy.UUID,
-		AlterID: strconv.Itoa(proxy.AlterID), Cipher: firstNonEmptySubscription(proxy.Cipher, "auto"), Network: network,
-		ServerName: firstNonEmptySubscription(proxy.ServerName, proxy.SNI, proxy.Server), AllowInsecure: proxy.SkipCertVerify,
+		Version: "2", Address: proxy.Server, Port: strconv.Itoa(int(proxy.Port)), UUID: proxy.UUID,
+		AlterID: strconv.Itoa(int(proxy.AlterID)), Cipher: firstNonEmptySubscription(proxy.Cipher, "auto"), Network: network,
+		ServerName: firstNonEmptySubscription(proxy.ServerName, proxy.SNI, proxy.Server), ALPN: strings.Join(proxy.ALPN, ","),
+		AllowInsecure: proxy.SkipCertVerify,
 	}
 	if proxy.TLS {
 		share.TLS = "tls"

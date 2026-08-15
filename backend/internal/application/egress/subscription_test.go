@@ -135,6 +135,7 @@ proxies:
     servername: edge.example
     flow: xtls-rprx-vision
     client-fingerprint: chrome
+    alpn: [h2, http/1.1]
     reality-opts:
       public-key: SOW7P-17ibm_-kz-QUQwGGyitSbsa5wOmRGAigGvDH8
       short-id: 0123456789abcdef
@@ -154,6 +155,7 @@ proxies:
     network: ws
     tls: true
     servername: edge.example
+    alpn: [h2, http/1.1]
     ws-opts:
       path: /vmess
       headers:
@@ -181,16 +183,46 @@ proxy-groups:
 		t.Fatalf("Clash entries=%d skipped=%d values=%#v", len(entries), skipped, entries)
 	}
 	var realityConfig tunnelproxy.Config
+	var vmessConfig tunnelproxy.Config
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.ProxyURL, "vless://") {
-			realityConfig, err = tunnelproxy.Parse(entry.ProxyURL)
-			if err != nil {
-				t.Fatal(err)
-			}
+		if !strings.HasPrefix(entry.ProxyURL, "vless://") && !strings.HasPrefix(entry.ProxyURL, "vmess://") {
+			continue
+		}
+		config, parseErr := tunnelproxy.Parse(entry.ProxyURL)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		switch config.Scheme {
+		case "vless":
+			realityConfig = config
+		case "vmess":
+			vmessConfig = config
 		}
 	}
-	if realityConfig.Security != "reality" || realityConfig.Flow != "xtls-rprx-vision" || realityConfig.RealityPublicKey == "" || realityConfig.RealityShortID != "0123456789abcdef" {
+	if realityConfig.Security != "reality" || realityConfig.Flow != "xtls-rprx-vision" || realityConfig.RealityPublicKey == "" || realityConfig.RealityShortID != "0123456789abcdef" || strings.Join(realityConfig.ALPN, ",") != "h2,http/1.1" {
 		t.Fatalf("Clash Reality config = %#v", realityConfig)
+	}
+	if strings.Join(vmessConfig.ALPN, ",") != "h2,http/1.1" {
+		t.Fatalf("Clash VMess config = %#v", vmessConfig)
+	}
+}
+
+func TestParseProxySubscriptionSkipsMalformedClashEntriesIndividually(t *testing.T) {
+	content := `
+proxies:
+  - type: http
+    server: valid.example
+    port: "8080"
+  - type: hysteria2
+    server: ignored.example
+    port: invalid
+`
+	entries, skipped, err := parseProxySubscription(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || skipped != 1 || entries[0].ProxyURL != "http://valid.example:8080" {
+		t.Fatalf("entries=%#v skipped=%d", entries, skipped)
 	}
 }
 

@@ -86,7 +86,9 @@ func (p *realityProxy) Conn(ctx context.Context, address netapi.Address) (net.Co
 	if err != nil {
 		return nil, err
 	}
-	secure, err := p.handshake(ctx, connection)
+	handshakeCtx, cancel := newTunnelHandshakeContext(ctx)
+	defer cancel()
+	secure, err := p.handshake(handshakeCtx, connection)
 	if err != nil {
 		_ = connection.Close()
 		return nil, fmt.Errorf("Reality 握手: %w", err)
