@@ -13,8 +13,11 @@ func TestMatchExpectedModes(t *testing.T) {
 	if !MatchExpected("prefix QUALITY_OK suffix", "QUALITY_OK", MatchContains) {
 		t.Fatal("contains should match")
 	}
-	if !MatchExpected("done\nstatus=QUALITY_OK", "QUALITY_OK", MatchLastLine) {
-		t.Fatal("last line containing the marker should match")
+	if MatchExpected("done\nstatus=QUALITY_OK", "QUALITY_OK", MatchLastLine) {
+		t.Fatal("last-line mode must require the complete marker line")
+	}
+	if MatchExpected("done\nNOT_QUALITY_OK", "QUALITY_OK", MatchLastLine) {
+		t.Fatal("last-line mode must not accept a marker substring")
 	}
 	if !MatchExpected("alpha\nbeta QUALITY_OK", `QUALITY_OK$`, MatchRegex) {
 		t.Fatal("regex should match")

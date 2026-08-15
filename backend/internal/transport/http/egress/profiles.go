@@ -30,6 +30,7 @@ type probeProfile struct {
 	Prompt          string  `json:"prompt"`
 	ExpectedText    string  `json:"expected_text,omitempty"`
 	MatchMode       string  `json:"match_mode"`
+	RequireThinking bool    `json:"require_thinking"`
 	MaxOutputTokens int     `json:"max_output_tokens,omitempty"`
 	UpdatedAt       float64 `json:"updated_at,omitempty"`
 }
@@ -44,12 +45,13 @@ type probeProfileFile struct {
 func builtinProbeProfiles() []probeProfile {
 	return []probeProfile{
 		{
-			ID:           profileQualityMarker,
-			Name:         "预期标记",
-			BuiltIn:      true,
-			Prompt:       "先用三点总结为什么天空呈蓝色，最后一行只输出 QUALITY_OK。",
-			ExpectedText: "QUALITY_OK",
-			MatchMode:    egressapp.MatchLastLine,
+			ID:              profileQualityMarker,
+			Name:            "预期标记",
+			BuiltIn:         true,
+			Prompt:          "先用三点总结为什么天空呈蓝色，最后一行只输出 QUALITY_OK。",
+			ExpectedText:    "QUALITY_OK",
+			MatchMode:       egressapp.MatchLastLine,
+			RequireThinking: true,
 		},
 		{
 			ID:        profileThroughput,
@@ -83,13 +85,18 @@ func seedProbeProfileFile(data *probeProfileFile) {
 			data.Profiles[builtin.ID] = builtin
 			continue
 		}
-		if existing.BuiltIn {
-			existing.Name = builtin.Name
-			existing.Prompt = builtin.Prompt
-			existing.ExpectedText = builtin.ExpectedText
-			existing.MatchMode = builtin.MatchMode
-			data.Profiles[builtin.ID] = existing
-		}
+		// Reserved built-in IDs define recovery safety invariants. Never trust
+		// persisted metadata for these IDs, even if an older version or a manual
+		// edit incorrectly cleared built_in.
+		existing.ID = builtin.ID
+		existing.Name = builtin.Name
+		existing.BuiltIn = true
+		existing.Prompt = builtin.Prompt
+		existing.ExpectedText = builtin.ExpectedText
+		existing.MatchMode = builtin.MatchMode
+		existing.RequireThinking = builtin.RequireThinking
+		existing.MaxOutputTokens = builtin.MaxOutputTokens
+		data.Profiles[builtin.ID] = existing
 	}
 	if data.ActiveProfileID == "" {
 		data.ActiveProfileID = profileQualityMarker
@@ -166,11 +173,12 @@ func (data probeProfileFile) summaries() []map[string]any {
 	out := make([]map[string]any, 0, len(data.Profiles))
 	for _, profile := range data.Profiles {
 		out = append(out, map[string]any{
-			"id":           profile.ID,
-			"name":         profile.Name,
-			"built_in":     profile.BuiltIn,
-			"match_mode":   profile.MatchMode,
-			"has_expected": strings.TrimSpace(profile.ExpectedText) != "",
+			"id":               profile.ID,
+			"name":             profile.Name,
+			"built_in":         profile.BuiltIn,
+			"match_mode":       profile.MatchMode,
+			"has_expected":     strings.TrimSpace(profile.ExpectedText) != "",
+			"require_thinking": profile.RequireThinking,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -224,6 +232,7 @@ func applyProfile(base egressapp.QualityProbeInput, profile probeProfile) egress
 	base.Prompt = profile.Prompt
 	base.Expected = profile.ExpectedText
 	base.MatchMode = egressapp.NormalizeMatchMode(profile.MatchMode)
+	base.RequireThinking = profile.RequireThinking
 	if profile.MaxOutputTokens > 0 {
 		base.MaxOutputTokens = profile.MaxOutputTokens
 	}
@@ -257,6 +266,7 @@ type probeProfileWriteRequest struct {
 	Prompt          string `json:"prompt"`
 	ExpectedText    string `json:"expectedText"`
 	MatchMode       string `json:"matchMode"`
+	RequireThinking bool   `json:"requireThinking"`
 	MaxOutputTokens int    `json:"maxOutputTokens"`
 	Active          bool   `json:"active"`
 }
@@ -272,6 +282,8 @@ func (h *Handler) createQualityGuardProfile(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
+	h.profilesMu.Lock()
+	defer h.profilesMu.Unlock()
 	data, err := loadProbeProfileFile(path)
 	if err != nil {
 		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "探针方案暂不可用")
@@ -289,7 +301,7 @@ func (h *Handler) createQualityGuardProfile(c *gin.Context) {
 	}
 	profile := probeProfile{
 		Name: request.Name, Prompt: request.Prompt, ExpectedText: request.ExpectedText,
-		MatchMode: request.MatchMode, MaxOutputTokens: request.MaxOutputTokens,
+		MatchMode: request.MatchMode, RequireThinking: request.RequireThinking, MaxOutputTokens: request.MaxOutputTokens,
 	}
 	if err := validateProbeProfile(&profile, true); err != nil {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", err.Error())
@@ -321,6 +333,8 @@ func (h *Handler) updateQualityGuardProfile(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
 		return
 	}
+	h.profilesMu.Lock()
+	defer h.profilesMu.Unlock()
 	data, err := loadProbeProfileFile(path)
 	if err != nil {
 		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "探针方案暂不可用")
@@ -348,6 +362,7 @@ func (h *Handler) updateQualityGuardProfile(c *gin.Context) {
 	existing.Prompt = request.Prompt
 	existing.ExpectedText = request.ExpectedText
 	existing.MatchMode = request.MatchMode
+	existing.RequireThinking = request.RequireThinking
 	existing.MaxOutputTokens = request.MaxOutputTokens
 	if err := validateProbeProfile(&existing, false); err != nil {
 		response.Error(c, http.StatusBadRequest, "invalidRequest", err.Error())
@@ -372,6 +387,8 @@ func (h *Handler) deleteQualityGuardProfile(c *gin.Context) {
 		return
 	}
 	id := strings.TrimSpace(c.Param("id"))
+	h.profilesMu.Lock()
+	defer h.profilesMu.Unlock()
 	data, err := loadProbeProfileFile(path)
 	if err != nil {
 		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "探针方案暂不可用")

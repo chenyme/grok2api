@@ -114,6 +114,7 @@ audit:
 qualityGuard:
   enabled: false
   # 主程序会自动创建并复用不可导出的内部探测身份，无需配置 Client Key。
+  # 使用已验证会输出推理 Token 的 Build 模型时，内置恢复探针还会校验 reasoning Token。
   model: "grok-4.5"
   mode: hybrid # passive | active | hybrid
   activeInterval: 30m

@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { createProbeProfile, deleteProbeProfile, listProbeProfiles, updateProbeProfile, type ProbeProfile } from "@/features/quality-guard/quality-guard-api";
 
@@ -20,9 +21,10 @@ type Draft = {
   prompt: string;
   expectedText: string;
   matchMode: string;
+  requireThinking: boolean;
 };
 
-const emptyDraft = (): Draft => ({ name: "", prompt: "", expectedText: "", matchMode: "last_line" });
+const emptyDraft = (): Draft => ({ name: "", prompt: "", expectedText: "", matchMode: "last_line", requireThinking: false });
 
 export function ProbeProfilesPanel() {
   const { t } = useTranslation();
@@ -42,6 +44,7 @@ export function ProbeProfilesPanel() {
         prompt: draft.prompt.trim(),
         expectedText: draft.expectedText.trim(),
         matchMode: draft.matchMode,
+        requireThinking: draft.requireThinking,
       };
       if (editing && !editing.built_in) {
         return updateProbeProfile(editing.id, payload);
@@ -61,6 +64,7 @@ export function ProbeProfilesPanel() {
       prompt: profile.prompt,
       expectedText: profile.expected_text ?? "",
       matchMode: profile.match_mode,
+      requireThinking: profile.require_thinking,
       active: true,
     }),
     onSuccess: () => {
@@ -119,7 +123,7 @@ export function ProbeProfilesPanel() {
                 {!active ? <Button type="button" variant="secondary" size="sm" disabled={activateMutation.isPending} onClick={() => activateMutation.mutate(profile)}><Star />{t("qualityGuard.profileActivate")}</Button> : null}
                 <Button type="button" variant="ghost" size="sm" onClick={() => {
                   setEditing(profile);
-                  setDraft({ name: profile.name, prompt: profile.prompt, expectedText: profile.expected_text ?? "", matchMode: profile.match_mode || "contains" });
+                  setDraft({ name: profile.name, prompt: profile.prompt, expectedText: profile.expected_text ?? "", matchMode: profile.match_mode || "contains", requireThinking: profile.require_thinking });
                 }}><Pencil />{t(profile.built_in ? "qualityGuard.profileView" : "qualityGuard.profileEdit")}</Button>
                 {!profile.built_in ? <Button type="button" variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleting(profile)}><Trash2 />{t("common.delete")}</Button> : null}
               </div>
@@ -158,6 +162,13 @@ export function ProbeProfilesPanel() {
             <div className="space-y-2">
               <Label htmlFor="probe-profile-prompt">{t("qualityGuard.profilePrompt")}</Label>
               <Textarea id="probe-profile-prompt" value={draft.prompt} disabled={readonly} onChange={(event) => setDraft({ ...draft, prompt: event.target.value })} />
+            </div>
+            <div className="flex items-start justify-between gap-4 rounded-md border p-3">
+              <div className="space-y-1">
+                <Label htmlFor="probe-profile-thinking">{t("qualityGuard.profileRequireThinking")}</Label>
+                <p className="text-xs text-muted-foreground">{t("qualityGuard.profileRequireThinkingHelp")}</p>
+              </div>
+              <Switch id="probe-profile-thinking" checked={draft.requireThinking} disabled={readonly} onCheckedChange={(requireThinking) => setDraft({ ...draft, requireThinking })} />
             </div>
             <DialogFooter>
               <Button type="button" variant="secondary" size="sm" onClick={() => setEditing(undefined)}>{t("common.cancel")}</Button>

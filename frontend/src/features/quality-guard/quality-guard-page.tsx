@@ -519,10 +519,18 @@ function isFresh(status?: QualityGuardStatus): boolean {
 function qualityTestState(result: QualityTestResult, status: QualityGuardStatus): QualityGuardNodeState {
   const softTPS = status.config?.soft_tps ?? 500;
   const hardTPS = status.config?.hard_tps ?? 1000;
+  const profile = status.profiles?.find((item) => item.id === status.activeProfileId);
+  const hasExpected = profile?.has_expected ?? true;
+  const requireThinking = result.thinkingRequired;
+  const failClosed = status.config?.fail_closed ?? false;
+  const minimumGenerationMS = status.config?.min_generation_ms ?? 0;
   let classification = "healthy";
   let reason = "within_threshold";
-  if (!result.expectedMatched) { classification = "soft"; reason = "expected_marker_missing"; }
+  if (hasExpected && !result.expectedMatched) { classification = "hard"; reason = "expected_marker_missing"; }
   else if (result.outputTokens < 32) { classification = "soft"; reason = "insufficient_output_tokens"; }
+  else if (requireThinking && result.outputTokens >= 64 && result.reasoningTokens <= 0) { classification = "hard"; reason = "missing_thinking"; }
+  else if (failClosed && result.generationMs < minimumGenerationMS && result.outputTokensPerSecond >= softTPS) { classification = "hard"; reason = "buffered_burst"; }
+  else if (failClosed && result.generationMs < minimumGenerationMS) { classification = "soft"; reason = "insufficient_generation_window"; }
   else if (result.outputTokensPerSecond >= hardTPS) { classification = "hard"; reason = "hard_tps"; }
   else if (result.outputTokensPerSecond >= softTPS) { classification = "soft"; reason = "soft_tps"; }
   const now = Date.now() / 1000;

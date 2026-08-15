@@ -11,6 +11,7 @@ import (
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -42,6 +43,7 @@ type QualityProbeInput struct {
 	Prompt          string
 	Expected        string
 	MatchMode       string
+	RequireThinking bool
 	MaxOutputTokens int
 }
 
@@ -60,6 +62,7 @@ type QualityProbeResult struct {
 	VisibleCharacters     int
 	OutputTokensPerSecond float64
 	ExpectedMatched       bool
+	ThinkingRequired      bool
 	ResponseSHA256        string
 }
 
@@ -165,7 +168,16 @@ func (s *Service) ProbeQuality(ctx context.Context, nodeID uint64, input Quality
 	if prober == nil {
 		return QualityProbeResult{}, ErrQualityProbeUnavailable
 	}
-	return prober.ProbeEgressQuality(ctx, nodeID, input)
+	// A profile may request the thinking guard, but only a known reasoning-capable
+	// Build model can make zero reasoning tokens meaningful. Unknown/custom and
+	// non-reasoning models stay observable without being falsely quarantined.
+	input.RequireThinking = input.RequireThinking && modeldomain.SupportsReasoningForProvider(accountdomain.ProviderBuild, input.Model)
+	result, err := prober.ProbeEgressQuality(ctx, nodeID, input)
+	if err != nil {
+		return QualityProbeResult{}, err
+	}
+	result.ThinkingRequired = input.RequireThinking
+	return result, nil
 }
 
 // AccountBindingRepository is intentionally narrow so existing account

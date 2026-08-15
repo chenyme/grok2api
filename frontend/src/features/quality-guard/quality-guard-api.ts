@@ -62,6 +62,7 @@ export type ProbeProfileSummary = {
   built_in: boolean;
   match_mode: string;
   has_expected: boolean;
+  require_thinking: boolean;
 };
 
 export type ProbeProfile = {
@@ -71,6 +72,7 @@ export type ProbeProfile = {
   prompt: string;
   expected_text?: string;
   match_mode: string;
+  require_thinking: boolean;
   max_output_tokens?: number;
 };
 
@@ -111,9 +113,12 @@ export type QualityTestResult = {
   firstTokenMs: number;
   durationMs: number;
   outputTokens: number;
+  reasoningTokens: number;
   visibleTokens: number;
   outputTokensPerSecond: number;
+  generationMs: number;
   expectedMatched: boolean;
+  thinkingRequired: boolean;
 };
 
 const nodeStateValidator = hasShape({
@@ -154,6 +159,7 @@ const decodeStatus = (value: unknown): QualityGuardStatus => {
     lastPassivePollAt: isNumber, activeProfileId: isOptional(isString),
     profiles: isOptional(isArrayOf(hasShape({
       id: isString, name: isString, built_in: isBoolean, match_mode: isString, has_expected: isBoolean,
+      require_thinking: isBoolean,
     }))),
     config: configValidator, nodes: isRecordOf(nodeStateValidator),
     protectedNodeIds: isOptional(isArrayOf(isString)),
@@ -163,7 +169,9 @@ const decodeStatus = (value: unknown): QualityGuardStatus => {
 
 const decodeQualityTest = createObjectDecoder<QualityTestResult>("quality test", {
   nodeId: isString, statusCode: isNumber, firstTokenMs: isNumber, durationMs: isNumber,
-  outputTokens: isNumber, visibleTokens: isNumber, outputTokensPerSecond: isNumber, expectedMatched: isBoolean,
+  outputTokens: isNumber, reasoningTokens: isNumber, visibleTokens: isNumber,
+  outputTokensPerSecond: isNumber, generationMs: isNumber, expectedMatched: isBoolean,
+  thinkingRequired: isBoolean,
 });
 
 export function getQualityGuardStatus(): Promise<QualityGuardStatus> {
@@ -180,7 +188,8 @@ export function runQualityTest(nodeId: string, status: QualityGuardStatus, profi
 
 const decodeProfile = createObjectDecoder<ProbeProfile>("probe profile", {
   id: isString, name: isString, built_in: isBoolean, prompt: isString,
-  expected_text: isOptional(isString), match_mode: isString, max_output_tokens: isOptional(isNumber),
+  expected_text: isOptional(isString), match_mode: isString, require_thinking: isBoolean,
+  max_output_tokens: isOptional(isNumber),
 });
 
 export function listProbeProfiles(): Promise<{ activeProfileId: string; items: ProbeProfile[] }> {
@@ -188,16 +197,17 @@ export function listProbeProfiles(): Promise<{ activeProfileId: string; items: P
     activeProfileId: isString,
     items: isArrayOf(hasShape({
       id: isString, name: isString, built_in: isBoolean, prompt: isString,
-      expected_text: isOptional(isString), match_mode: isString, max_output_tokens: isOptional(isNumber),
+      expected_text: isOptional(isString), match_mode: isString, require_thinking: isBoolean,
+      max_output_tokens: isOptional(isNumber),
     })),
   }));
 }
 
-export function createProbeProfile(input: { name: string; prompt: string; expectedText?: string; matchMode: string; active?: boolean }): Promise<ProbeProfile> {
+export function createProbeProfile(input: { name: string; prompt: string; expectedText?: string; matchMode: string; requireThinking?: boolean; active?: boolean }): Promise<ProbeProfile> {
   return apiRequest("/api/admin/v1/egress-quality-guard/profiles", { method: "POST", body: input }, decodeProfile);
 }
 
-export function updateProbeProfile(id: string, input: { name: string; prompt: string; expectedText?: string; matchMode: string; active?: boolean }): Promise<ProbeProfile> {
+export function updateProbeProfile(id: string, input: { name: string; prompt: string; expectedText?: string; matchMode: string; requireThinking?: boolean; active?: boolean }): Promise<ProbeProfile> {
   return apiRequest(`/api/admin/v1/egress-quality-guard/profiles/${id}`, { method: "PUT", body: input }, decodeProfile);
 }
 

@@ -49,7 +49,7 @@ func MatchExpected(text, expected, mode string) bool {
 		if line == "" {
 			return false
 		}
-		return strings.EqualFold(line, expected) || strings.Contains(line, expected)
+		return strings.EqualFold(line, expected)
 	case MatchRegex:
 		re, err := regexp.Compile(expected)
 		if err != nil {

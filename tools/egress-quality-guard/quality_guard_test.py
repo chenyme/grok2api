@@ -43,7 +43,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_missing_marker_is_hard_and_quality_ok_is_not_a_healthy_shortcut(self):
         cfg = config(fail_closed=True, min_generation_ms=1000)
-        marker = {"expected_text": "QUALITY_OK", "match_mode": "last_line"}
+        marker = {"expected_text": "QUALITY_OK", "match_mode": "last_line", "require_thinking": True}
         self.assertEqual(quality_guard.classify_result({"expectedMatched": False, "outputTokens": 100, "outputTokensPerSecond": 10}, cfg, marker), ("hard", "expected_marker_missing"))
         self.assertEqual(quality_guard.classify_result({"expectedMatched": True, "outputTokens": 12, "outputTokensPerSecond": 8000}, cfg, marker), ("soft", "insufficient_output_tokens"))
         self.assertEqual(quality_guard.classify_result({
@@ -64,45 +64,64 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual((classification, reason, output), ("hard", "hard_tps", 1050))
         self.assertEqual(speed, 10500)
 
-    def test_passive_missing_thinking_is_hard_even_at_normal_tps(self):
+    def test_passive_audit_does_not_infer_thinking_requirement(self):
         cfg = config(fail_closed=True, min_generation_ms=1000)
         base = {
             "provider": "grok_build", "streaming": True, "statusCode": 200,
             "firstTokenMs": 2000, "durationMs": 4000, "outputTokens": 200,
         }
-        self.assertEqual(
-            quality_guard.classify_audit({**base, "reasoningTokens": 0}, cfg)[:2],
-            ("hard", "missing_thinking"),
-        )
+        self.assertEqual(quality_guard.classify_audit({**base, "reasoningTokens": 0}, cfg)[:2], ("healthy", "within_threshold"))
         classification, reason, speed, _ = quality_guard.classify_audit({**base, "reasoningTokens": 80}, cfg)
         self.assertEqual((classification, reason), ("healthy", "within_threshold"))
         self.assertAlmostEqual(speed, 100.0)
         short = {**base, "outputTokens": 50, "reasoningTokens": 0, "durationMs": 2500}
-        self.assertEqual(quality_guard.classify_audit(short, cfg)[:2], ("hard", "missing_thinking"))
+        self.assertEqual(quality_guard.classify_audit(short, cfg)[:2], ("healthy", "within_threshold"))
         tiny = {**base, "outputTokens": 20, "reasoningTokens": 0, "durationMs": 2200}
         self.assertEqual(quality_guard.classify_audit(tiny, cfg)[0], "ignored")
 
     def test_probe_missing_thinking_is_hard(self):
         cfg = config()
+        thinking_profile = {"expected_text": "QUALITY_OK", "require_thinking": True}
         self.assertEqual(
             quality_guard.classify_result({
                 "expectedMatched": True, "outputTokens": 200, "outputTokensPerSecond": 80,
                 "generationMs": 2500, "reasoningTokens": 0,
-            }, cfg),
+            }, cfg, thinking_profile),
             ("hard", "missing_thinking"),
         )
         self.assertEqual(
             quality_guard.classify_result({
                 "expectedMatched": True, "outputTokens": 200, "outputTokensPerSecond": 80,
                 "generationMs": 2500, "reasoningTokens": 90,
-            }, cfg)[0],
+            }, cfg, thinking_profile)[0],
             "healthy",
         )
         self.assertEqual(
             quality_guard.classify_result({
                 "expectedMatched": True, "outputTokens": 200, "outputTokensPerSecond": 80,
                 "generationMs": 2500,
-            }, cfg),
+            }, cfg, thinking_profile),
+            ("hard", "missing_thinking"),
+        )
+        self.assertEqual(
+            quality_guard.classify_result({
+                "expectedMatched": True, "outputTokens": 200, "outputTokensPerSecond": 80,
+                "generationMs": 2500, "reasoningTokens": 0,
+            }, cfg, {"expected_text": "", "require_thinking": False})[0],
+            "healthy",
+        )
+        self.assertEqual(
+            quality_guard.classify_result({
+                "expectedMatched": True, "outputTokens": 200, "outputTokensPerSecond": 80,
+                "generationMs": 2500, "reasoningTokens": 0, "thinkingRequired": False,
+            }, cfg, thinking_profile)[0],
+            "healthy",
+        )
+        self.assertEqual(
+            quality_guard.classify_result({
+                "expectedMatched": True, "outputTokens": 200, "outputTokensPerSecond": 80,
+                "generationMs": 2500, "reasoningTokens": 0, "thinkingRequired": True,
+            }, cfg, {"expected_text": "", "require_thinking": False}),
             ("hard", "missing_thinking"),
         )
 
@@ -129,6 +148,46 @@ class StateTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_missing_profile_file_seeds_builtin_recovery_profiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile_id, profile = quality_guard.resolve_probe_profile(Path(directory) / "missing.json")
+            self.assertEqual(profile_id, quality_guard.QUALITY_MARKER_PROFILE_ID)
+            self.assertEqual(profile.get("expected_text"), "QUALITY_OK")
+            self.assertTrue(profile.get("require_thinking"))
+
+    def test_reserved_profile_ids_are_canonicalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profiles.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "active_profile_id": "deleted-profile",
+                "profiles": {
+                    "quality-marker": {
+                        "id": "quality-marker", "built_in": False,
+                        "expected_text": "", "match_mode": "contains",
+                        "require_thinking": False,
+                    },
+                    "throughput": {
+                        "id": "throughput", "built_in": False,
+                        "expected_text": "PASS", "match_mode": "regex",
+                        "require_thinking": True,
+                    },
+                },
+            }), encoding="utf-8")
+            loaded = quality_guard.load_probe_profiles(path)["profiles"]
+            profile_id, _ = quality_guard.resolve_probe_profile(path)
+            self.assertEqual(profile_id, quality_guard.QUALITY_MARKER_PROFILE_ID)
+            marker = loaded[quality_guard.QUALITY_MARKER_PROFILE_ID]
+            self.assertTrue(marker["built_in"])
+            self.assertEqual(marker["expected_text"], "QUALITY_OK")
+            self.assertEqual(marker["match_mode"], "last_line")
+            self.assertTrue(marker["require_thinking"])
+            throughput = loaded[quality_guard.THROUGHPUT_PROFILE_ID]
+            self.assertTrue(throughput["built_in"])
+            self.assertEqual(throughput["expected_text"], "")
+            self.assertEqual(throughput["match_mode"], "contains")
+            self.assertFalse(throughput["require_thinking"])
+
     def test_loads_private_bootstrap_without_admin_credentials(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bootstrap.json"
@@ -228,6 +287,7 @@ class FakeApi:
         self.fixed_fallback_ids = set(fixed_fallback_ids or [])
         self.enabled_calls = []
         self.quality_calls = []
+        self.quality_profile_calls = []
         self.rotation_calls = []
 
     def list_nodes(self):
@@ -238,6 +298,7 @@ class FakeApi:
 
     def quality_test(self, node_id, profile_id=""):
         self.quality_calls.append(node_id)
+        self.quality_profile_calls.append(profile_id)
         value = self.results.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -742,6 +803,37 @@ class GuardTests(unittest.TestCase):
             self.assertEqual(api.enabled_calls, [("2", False), ("2", True)])
             self.assertFalse(guard.state["nodes"]["2"]["disabled_by_guard"])
             self.assertEqual(guard.state["nodes"]["2"]["quarantine_source"], "")
+
+    def test_recovery_always_uses_builtin_quality_marker_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profiles_path = Path(directory) / "profiles.json"
+            profiles_path.write_text(json.dumps({
+                "version": 1,
+                "active_profile_id": "throughput",
+                "profiles": {
+                    "throughput": {
+                        "id": "throughput", "built_in": True,
+                        "expected_text": "", "match_mode": "contains",
+                    },
+                },
+            }), encoding="utf-8")
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                profiles_file=profiles_path,
+            )
+            good = {
+                "expectedMatched": True, "reasoningTokens": 40, "outputTokens": 128,
+                "outputTokensPerSecond": 80, "generationMs": 1500,
+            }
+            nodes = self.nodes()
+            nodes[1]["enabled"] = False
+            api = FakeApi(nodes, [good])
+            guard = quality_guard.Guard(cfg, api)
+            guard._state_for("2").update({"disabled_by_guard": True, "quarantined_until": 0})
+            guard._recover_quarantined(nodes[1], time.time(), rotate=False)
+            self.assertEqual(api.quality_profile_calls, [quality_guard.QUALITY_MARKER_PROFILE_ID])
+            self.assertEqual(api.enabled_calls, [("2", True)])
 
     def test_passive_hold_keeps_isolated_when_recovery_probe_is_unhealthy(self):
         with tempfile.TemporaryDirectory() as directory:

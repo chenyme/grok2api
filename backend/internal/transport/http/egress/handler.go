@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
@@ -26,6 +27,7 @@ type Handler struct {
 	guardStatePath  string
 	guardConfigPath string
 	guardProbe      egressapp.QualityProbeInput
+	profilesMu      sync.Mutex
 }
 
 func NewHandler(service *egressapp.Service, guardStatePath ...string) *Handler {
@@ -399,7 +401,8 @@ func (h *Handler) testQualityGuardNode(c *gin.Context) {
 		"visibleTokens": value.VisibleTokens, "visibleCharacters": value.VisibleCharacters,
 		"outputTokensPerSecond":  value.OutputTokensPerSecond,
 		"visibleTokensPerSecond": value.OutputTokensPerSecond, "expectedMatched": value.ExpectedMatched,
-		"responseSha256": value.ResponseSHA256,
+		"thinkingRequired": value.ThinkingRequired,
+		"responseSha256":   value.ResponseSHA256,
 	})
 }
 
@@ -537,7 +540,8 @@ func (h *Handler) testQuality(c *gin.Context) {
 		"visibleTokens": value.VisibleTokens, "visibleCharacters": value.VisibleCharacters,
 		"outputTokensPerSecond":  value.OutputTokensPerSecond,
 		"visibleTokensPerSecond": value.OutputTokensPerSecond, "expectedMatched": value.ExpectedMatched,
-		"responseSha256": value.ResponseSHA256,
+		"thinkingRequired": value.ThinkingRequired,
+		"responseSha256":   value.ResponseSHA256,
 	})
 }
 
