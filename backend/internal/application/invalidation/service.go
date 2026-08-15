@@ -101,6 +101,7 @@ func (s *Service) RunPublisher(ctx context.Context) error {
 type invalidationKey struct {
 	layer       repository.InvalidationLayer
 	provider    string
+	accountID   uint64
 	clientKeyID uint64
 }
 
@@ -108,6 +109,10 @@ func eventKey(event repository.InvalidationEvent) invalidationKey {
 	key := invalidationKey{layer: event.Layer(), provider: string(event.Provider)}
 	if key.layer == repository.InvalidationLayerClientKey {
 		key.clientKeyID = event.ClientKeyID
+	} else if event.Kind == repository.InvalidationAccountHealthChanged {
+		// Health events are intentionally account-scoped. Coalescing different
+		// accounts would silently drop cooldown updates on multi-replica setups.
+		key.accountID = event.AccountID
 	}
 	return key
 }

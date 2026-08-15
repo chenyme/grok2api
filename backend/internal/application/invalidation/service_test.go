@@ -106,3 +106,11 @@ func TestEventKeyKeepsClientKeyInvalidationsDistinct(t *testing.T) {
 		t.Fatalf("client-key invalidation keys were coalesced: first=%#v second=%#v global=%#v", first, second, global)
 	}
 }
+
+func TestEventKeyKeepsAccountHealthInvalidationsDistinct(t *testing.T) {
+	first := eventKey(repository.InvalidationEvent{Kind: repository.InvalidationAccountHealthChanged, Provider: account.ProviderBuild, AccountID: 1})
+	second := eventKey(repository.InvalidationEvent{Kind: repository.InvalidationAccountHealthChanged, Provider: account.ProviderBuild, AccountID: 2})
+	if first == second {
+		t.Fatalf("account health invalidations were coalesced: first=%#v second=%#v", first, second)
+	}
+}

@@ -586,22 +586,24 @@ func (s *Store) Current(ctx context.Context, key string) (int, error) {
 }
 
 func (s *Store) CurrentMany(ctx context.Context, keys []string) (map[string]int, error) {
-	values := make(map[string]int, len(keys))
+	values := make(map[string]int)
 	if len(keys) == 0 {
 		return values, nil
 	}
 	now := "(" + strconv.FormatInt(time.Now().UTC().UnixMilli(), 10)
 	pipe := s.client.Pipeline()
-	counts := make(map[string]*redisclient.IntCmd, len(keys))
-	for _, key := range keys {
+	counts := make([]*redisclient.IntCmd, len(keys))
+	for index, key := range keys {
 		redisKey := s.key("concurrency", key)
-		counts[key] = pipe.ZCount(ctx, redisKey, now, "+inf")
+		counts[index] = pipe.ZCount(ctx, redisKey, now, "+inf")
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, err
 	}
-	for key, count := range counts {
-		values[key] = int(count.Val())
+	for index, count := range counts {
+		if value := int(count.Val()); value > 0 {
+			values[keys[index]] = value
+		}
 	}
 	return values, nil
 }

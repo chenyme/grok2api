@@ -23,6 +23,8 @@ type segmentedSelectorState struct {
 type segmentedSelectorCohort struct {
 	supportsModel   bool
 	capabilityKnown bool
+	quotaKnown      bool
+	quotaAvailable  bool
 	preferFreeBuild bool
 	tier            int
 	priority        int
@@ -94,6 +96,12 @@ func segmentedSelectorCohortBetter(left, right segmentedSelectorCohort) bool {
 	}
 	if left.capabilityKnown != right.capabilityKnown {
 		return left.capabilityKnown
+	}
+	if left.quotaAvailable != right.quotaAvailable {
+		return left.quotaAvailable
+	}
+	if left.quotaKnown != right.quotaKnown {
+		return left.quotaKnown
 	}
 	if left.preferFreeBuild != right.preferFreeBuild {
 		return left.preferFreeBuild
