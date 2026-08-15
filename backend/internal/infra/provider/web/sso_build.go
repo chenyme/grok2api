@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -25,7 +24,6 @@ import (
 const (
 	ssoBuildClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	ssoBuildScope    = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write"
-	ssoAccountsURL   = "https://accounts.x.ai/"
 	ssoDeviceURL     = "https://auth.x.ai/oauth2/device/code"
 	ssoVerifyURL     = "https://auth.x.ai/oauth2/device/verify"
 	ssoApproveURL    = "https://auth.x.ai/oauth2/device/approve"
@@ -37,16 +35,10 @@ type ssoBuildHTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-// ssoClearanceResolver 为 SSO 转换目标（accounts.x.ai）现解 Cloudflare Clearance。
-// 求解失败时返回 error，调用方降级为无 Clearance 的现有行为。
-type ssoClearanceResolver func(ctx context.Context) (cookies, userAgent string, err error)
-
 type ssoBuildFlow struct {
 	client    ssoBuildHTTPClient
 	userAgent string
 	cookies   map[string]string
-	clearance ssoClearanceResolver // 可选
-	logger    *slog.Logger        // 可选，用于降级告警
 }
 
 func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.Credential) (provider.CredentialSeed, error) {
@@ -69,17 +61,8 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 	requestCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	flow := &ssoBuildFlow{
-		client: lease, userAgent: lease.UserAgent, logger: a.logger,
+		client: lease, userAgent: lease.UserAgent,
 		cookies: map[string]string{"sso": token, "sso-rw": token},
-		// 节点缓存的 Clearance 是 grok.com 域，对 accounts.x.ai 无效；
-		// 转换流程通过同一出口现解目标域的 Clearance。
-		clearance: func(solveCtx context.Context) (string, string, error) {
-			cookies, userAgent, err := a.egress.SolveClearance(solveCtx, lease.ProxyURL, ssoAccountsURL)
-			if err != nil {
-				a.logger.Warn("web_sso_build_clearance_failed", "account_id", credential.ID, "error", err)
-			}
-			return cookies, userAgent, err
-		},
 	}
 	seed, err := flow.convert(requestCtx, credential)
 	if err != nil {
@@ -91,28 +74,6 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 }
 
 func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Credential) (provider.CredentialSeed, error) {
-	if f.clearance != nil {
-		if cookies, userAgent, err := f.clearance(ctx); err == nil {
-			mergeCookieHeader(f.cookies, cookies)
-			if ua := strings.TrimSpace(userAgent); ua != "" {
-				f.userAgent = ua
-			}
-		}
-	}
-	status, finalURL, _, err := f.do(ctx, http.MethodGet, ssoAccountsURL, nil)
-	if err != nil {
-		return provider.CredentialSeed{}, err
-	}
-	if status == http.StatusUnauthorized || strings.Contains(finalURL, "sign-in") || strings.Contains(finalURL, "sign-up") {
-		return provider.CredentialSeed{}, provider.ErrUnauthorized
-	}
-	if status < 200 || status >= 400 {
-		// accounts.x.ai 对非浏览器客户端启用严格 Cloudflare 拦截（HTTP 403），
-		// 该预检仅用于提前识别失效 SSO，并非 Device Flow 必需步骤；
-		// 被拦截时降级跳过，凭据有效性交给 verify 步判断。
-		f.warn("web_sso_build_precheck_blocked", "status", status)
-	}
-
 	form := url.Values{"client_id": {ssoBuildClientID}, "scope": {ssoBuildScope}}
 	status, _, body, err := f.do(ctx, http.MethodPost, ssoDeviceURL, form)
 	if err != nil {
@@ -122,16 +83,15 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		return provider.CredentialSeed{}, fmt.Errorf("xAI Device Flow 启动失败: %w", conversionHTTPError{status: status})
 	}
 	var device struct {
-		DeviceCode              string `json:"device_code"`
-		UserCode                string `json:"user_code"`
-		VerificationURIComplete string `json:"verification_uri_complete"`
-		Interval                int    `json:"interval"`
-		ExpiresIn               int    `json:"expires_in"`
+		DeviceCode string `json:"device_code"`
+		UserCode   string `json:"user_code"`
+		Interval   int    `json:"interval"`
+		ExpiresIn  int    `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &device); err != nil {
 		return provider.CredentialSeed{}, fmt.Errorf("解析 xAI Device Flow: %w", err)
 	}
-	if device.DeviceCode == "" || device.UserCode == "" || !safeXAIURL(device.VerificationURIComplete) {
+	if device.DeviceCode == "" || device.UserCode == "" {
 		return provider.CredentialSeed{}, fmt.Errorf("xAI Device Flow 返回字段不完整")
 	}
 	if device.Interval <= 0 {
@@ -141,18 +101,9 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		device.ExpiresIn = 1800
 	}
 
-	status, finalURL, _, err = f.do(ctx, http.MethodGet, device.VerificationURIComplete, nil)
-	if err != nil {
-		return provider.CredentialSeed{}, err
-	}
-	if status < 200 || status >= 400 {
-		// 打开验证页只是模拟浏览器预热，xAI 不要求必须先访问该页；
-		// 与预检一致，被 Cloudflare 拦截时降级跳过。
-		f.warn("web_sso_build_verify_page_blocked", "status", status)
-	}
-	// verify/approve 的重定向目标是 accounts.x.ai，该域对非浏览器客户端严格拦截；
-	// 不跟随重定向，直接读 Location 判定结果，整个流程保持在 auth.x.ai 上完成。
-	status, finalURL, _, err = f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false)
+	// verify/approve 已在 auth.x.ai 完成状态变更。重定向目标只是结果页，
+	// 因此不访问 accounts.x.ai，直接解析首个 3xx Location 的状态路径。
+	status, finalURL, _, err := f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
@@ -162,8 +113,8 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 	if status < 200 || status >= 400 {
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败: %w", conversionHTTPError{status: status})
 	}
-	if !strings.Contains(finalURL, "consent") {
-		if strings.Contains(finalURL, "sign-in") || strings.Contains(finalURL, "sign-up") {
+	if redirectState := ssoDeviceRedirectState(finalURL); redirectState != "consent" {
+		if redirectState == "sign-in" {
 			return provider.CredentialSeed{}, provider.ErrUnauthorized
 		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败")
@@ -177,7 +128,10 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 	if status < 200 || status >= 400 {
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败: %w", conversionHTTPError{status: status})
 	}
-	if !strings.Contains(finalURL, "done") {
+	if redirectState := ssoDeviceRedirectState(finalURL); redirectState != "done" {
+		if redirectState == "sign-in" {
+			return provider.CredentialSeed{}, provider.ErrUnauthorized
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败")
 	}
 
@@ -331,29 +285,6 @@ func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string
 	return 0, currentURL, nil, fmt.Errorf("xAI OAuth 重定向次数过多")
 }
 
-// warn 记录降级告警；logger 未注入时静默。
-func (f *ssoBuildFlow) warn(message string, args ...any) {
-	if f.logger != nil {
-		f.logger.Warn(message, args...)
-	}
-}
-
-// mergeCookieHeader 将 Clearance 求解返回的 Cookie 串合并进 cookie 集合，
-// 校验规则与 captureCookies 一致，避免注入非法 Cookie 头。
-func mergeCookieHeader(cookies map[string]string, header string) {
-	for _, part := range strings.Split(header, ";") {
-		name, value, found := strings.Cut(part, "=")
-		if !found {
-			continue
-		}
-		name, value = strings.TrimSpace(name), strings.TrimSpace(value)
-		if name == "" || len(name) > 128 || len(value) > 16384 || strings.ContainsAny(name+value, "\r\n\x00") {
-			continue
-		}
-		cookies[name] = value
-	}
-}
-
 func (f *ssoBuildFlow) captureCookies(response *http.Response) {
 	for _, cookie := range response.Cookies() {
 		name := strings.TrimSpace(cookie.Name)
@@ -366,6 +297,24 @@ func (f *ssoBuildFlow) captureCookies(response *http.Response) {
 			continue
 		}
 		f.cookies[name] = value
+	}
+}
+
+func ssoDeviceRedirectState(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || !safeXAIURL(raw) {
+		return ""
+	}
+	path := strings.TrimRight(parsed.EscapedPath(), "/")
+	switch path {
+	case "/oauth2/device/consent":
+		return "consent"
+	case "/oauth2/device/done":
+		return "done"
+	case "/sign-in", "/sign-up":
+		return "sign-in"
+	default:
+		return ""
 	}
 }
 
