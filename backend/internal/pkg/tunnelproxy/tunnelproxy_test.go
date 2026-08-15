@@ -16,6 +16,9 @@ import (
 	"github.com/Asutorufa/yuhaiin/pkg/net/netapi"
 	"github.com/Asutorufa/yuhaiin/pkg/protos/node/protocol"
 	"github.com/coder/websocket"
+	"github.com/google/uuid"
+	singvless "github.com/metacubex/sing-vmess/vless"
+	utls "github.com/refraction-networking/utls"
 )
 
 const testUUID = "123e4567-e89b-12d3-a456-426614174000"
@@ -63,6 +66,100 @@ func TestNormalizeRemarksDoNotChangeIdentity(t *testing.T) {
 	}
 }
 
+func TestNormalizeRealityVisionBuildsDialer(t *testing.T) {
+	raw := "vless://" + testUUID + "@proxy.example:443?encryption=none&security=reality&sni=edge.example&type=tcp&flow=xtls-rprx-vision&fp=chrome&pbk=SOW7P-17ibm_-kz-QUQwGGyitSbsa5wOmRGAigGvDH8&sid=0123456789abcdef&spx=%2F"
+	normalized, err := Normalize(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := Parse(normalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Security != "reality" || config.Flow != "xtls-rprx-vision" || config.RealityPublicKey == "" || config.RealityShortID != "0123456789abcdef" || config.ClientFingerprint != "chrome" || config.SpiderX != "/" {
+		t.Fatalf("Reality Vision config = %#v", config)
+	}
+	if _, err := NewDialer(normalized); err != nil {
+		t.Fatalf("construct Reality Vision dialer: %v", err)
+	}
+	for _, field := range []string{"security=reality", "flow=xtls-rprx-vision", "fp=chrome", "pbk=", "sid=0123456789abcdef", "spx=%2F"} {
+		if !strings.Contains(normalized, field) {
+			t.Fatalf("normalized Reality URL missing %q: %s", field, normalized)
+		}
+	}
+}
+
+func TestNormalizeRealitySupportsStandardClientFingerprints(t *testing.T) {
+	for _, fingerprint := range []string{"chrome", "edge", "safari", "firefox", "ios", "qq"} {
+		t.Run(fingerprint, func(t *testing.T) {
+			raw := "vless://" + testUUID + "@proxy.example:443?encryption=none&security=reality&sni=edge.example&type=tcp&flow=xtls-rprx-vision&pbk=SOW7P-17ibm_-kz-QUQwGGyitSbsa5wOmRGAigGvDH8&sid=0123456789abcdef&fp=" + fingerprint
+			normalized, err := Normalize(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config, err := Parse(normalized)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.ClientFingerprint != fingerprint {
+				t.Fatalf("client fingerprint = %q", config.ClientFingerprint)
+			}
+		})
+	}
+}
+
+func TestRealityAcceptedFingerprintsProvideX25519AndPreserveALPN(t *testing.T) {
+	wantedALPN := []string{"h2", "http/1.1"}
+	for _, fingerprint := range []string{"chrome", "edge", "safari", "firefox", "ios", "qq"} {
+		t.Run(fingerprint, func(t *testing.T) {
+			helloID, supported := realityClientHelloID(fingerprint)
+			if !supported {
+				t.Fatalf("fingerprint %q unexpectedly unsupported", fingerprint)
+			}
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			secure, err := buildRealityClientHello(client, "edge.example", wantedALPN, helloID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(secure.HandshakeState.Hello.AlpnProtocols, ",") != strings.Join(wantedALPN, ",") {
+				t.Fatalf("ClientHello ALPN = %v", secure.HandshakeState.Hello.AlpnProtocols)
+			}
+			foundALPN := false
+			for _, extension := range secure.Extensions {
+				alpnExtension, ok := extension.(*utls.ALPNExtension)
+				if !ok {
+					continue
+				}
+				foundALPN = true
+				if strings.Join(alpnExtension.AlpnProtocols, ",") != strings.Join(wantedALPN, ",") {
+					t.Fatalf("ALPN extension = %v", alpnExtension.AlpnProtocols)
+				}
+			}
+			if !foundALPN {
+				t.Fatal("ClientHello has no ALPN extension")
+			}
+		})
+	}
+}
+
+func TestRealityClientHelloWithoutTLS13KeyShareReturnsError(t *testing.T) {
+	for name, helloID := range map[string]utls.ClientHelloID{
+		"android": utls.HelloAndroid_11_OkHttp,
+		"360":     utls.Hello360_Auto,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, server := net.Pipe()
+			defer client.Close()
+			defer server.Close()
+			if _, err := buildRealityClientHello(client, "edge.example", nil, helloID, nil); err == nil {
+				t.Fatalf("fingerprint %q unexpectedly produced a Reality key share", name)
+			}
+		})
+	}
+}
+
 func TestNormalizeEquivalentShareLinksHaveOneIdentity(t *testing.T) {
 	trojanOne, err := Normalize("trojan://secret@proxy.example:443?type=websocket&security=tls&sni=edge.example&host=edge.example&path=ws")
 	if err != nil {
@@ -99,6 +196,38 @@ func TestNormalizeEquivalentShareLinksHaveOneIdentity(t *testing.T) {
 	}
 }
 
+func TestNormalizeVMessPreservesALPN(t *testing.T) {
+	stringURL := vmessTestURL(t, map[string]any{
+		"v": "2", "add": "proxy.example", "port": "443", "id": testUUID,
+		"aid": "0", "scy": "auto", "net": "tcp", "tls": "tls", "sni": "edge.example",
+		"alpn": "h2, http/1.1",
+	})
+	arrayURL := vmessTestURL(t, map[string]any{
+		"v": "2", "add": "proxy.example", "port": "443", "id": testUUID,
+		"aid": "0", "scy": "auto", "net": "tcp", "tls": "tls", "sni": "edge.example",
+		"alpn": []string{"h2", "http/1.1"},
+	})
+	stringNormalized, err := Normalize(stringURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrayNormalized, err := Normalize(arrayURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringNormalized != arrayNormalized {
+		t.Fatalf("equivalent VMess ALPN forms have different identities: %q != %q", stringNormalized, arrayNormalized)
+	}
+	config, err := Parse(stringNormalized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := "h2,http/1.1"
+	if strings.Join(config.ALPN, ",") != wanted || strings.Join((&tlsProxy{config: config}).tlsConfig().NextProtos, ",") != wanted {
+		t.Fatalf("VMess ALPN was not preserved in TLS config: %#v", config)
+	}
+}
+
 func TestOwnedVLESSProxyClosesConnectionWhenInitialWriteFails(t *testing.T) {
 	client, server := net.Pipe()
 	if err := server.Close(); err != nil {
@@ -107,7 +236,7 @@ func TestOwnedVLESSProxyClosesConnectionWhenInitialWriteFails(t *testing.T) {
 	tracked := &closeTrackingConn{Conn: client}
 	config := &protocol.Vless{}
 	config.SetUuid(testUUID)
-	proxy, err := newOwnedVLESSProxy(config, &singleConnectionProxy{connection: tracked})
+	proxy, err := newOwnedVLESSProxy(config, &singleConnectionProxy{connection: tracked}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,6 +245,41 @@ func TestOwnedVLESSProxyClosesConnectionWhenInitialWriteFails(t *testing.T) {
 	}
 	if !tracked.closed {
 		t.Fatal("failed VLESS connection was not closed")
+	}
+}
+
+func TestVisionVLESSRequestIncludesFlowAddon(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+
+	var userID [16]byte
+	parsedUUID, err := uuid.Parse(testUUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(userID[:], parsedUUID[:])
+
+	result := make(chan error, 1)
+	go func() {
+		connection, requestErr := newVisionVLESSConn(client, netapi.ParseDomainPort("tcp", "target.example", 443), userID, "xtls-rprx-vision")
+		if connection != nil {
+			_ = connection.Close()
+		}
+		result <- requestErr
+	}()
+
+	request, err := singvless.ReadRequest(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.Flow != "xtls-rprx-vision" {
+		t.Fatalf("VLESS flow addon = %q", request.Flow)
+	}
+	if request.Destination.Fqdn != "target.example" || request.Destination.Port != 443 {
+		t.Fatalf("VLESS destination = %v", request.Destination)
+	}
+	if err := <-result; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -149,11 +313,19 @@ func TestParseRejectsUnsupportedOrMalformedLinks(t *testing.T) {
 		"tuic://user:secret@proxy.example:443",
 		"vless://not-a-uuid@proxy.example:443?encryption=none",
 		"vless://" + testUUID + "@proxy.example:443?encryption=none&flow=xtls-rprx-vision",
+		"vless://" + testUUID + "@proxy.example:443?encryption=none&security=reality&sni=edge.example&pbk=invalid&sid=01",
+		"vless://" + testUUID + "@proxy.example:443?encryption=none&security=reality&sni=edge.example&pbk=SOW7P-17ibm_-kz-QUQwGGyitSbsa5wOmRGAigGvDH8&sid=01&fp=opera",
+		"vless://" + testUUID + "@proxy.example:443?encryption=none&security=reality&sni=edge.example&pbk=SOW7P-17ibm_-kz-QUQwGGyitSbsa5wOmRGAigGvDH8&sid=01&fp=android",
+		"vless://" + testUUID + "@proxy.example:443?encryption=none&security=reality&sni=edge.example&pbk=SOW7P-17ibm_-kz-QUQwGGyitSbsa5wOmRGAigGvDH8&sid=01&fp=360",
 		"trojan://secret@proxy.example:443?type=grpc",
 		"trojan://secret@proxy.example:443/unexpected",
 		"ss://" + base64.RawURLEncoding.EncodeToString([]byte("rc4-md5:secret")) + "@proxy.example:8388",
 		"ss://" + base64.RawURLEncoding.EncodeToString([]byte("aes-128-gcm:secret")) + "@proxy.example:8388/unexpected",
 		"vmess://not-base64",
+		vmessTestURL(t, map[string]any{
+			"v": "2", "add": "proxy.example", "port": "443", "id": testUUID,
+			"aid": "0", "scy": "auto", "net": "tcp", "tls": "tls", "alpn": []any{"h2", 1},
+		}),
 	} {
 		if _, err := Normalize(raw); err == nil {
 			t.Fatalf("invalid tunnel accepted: %q", raw)

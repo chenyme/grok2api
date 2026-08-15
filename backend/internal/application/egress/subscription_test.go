@@ -15,6 +15,7 @@ import (
 
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 )
 
 type subscriptionSyncRepositoryStub struct {
@@ -96,6 +97,197 @@ func TestParseProxySubscriptionImportsSupportedTunnelSchemes(t *testing.T) {
 	for _, entry := range entries[1:] {
 		if strings.Contains(entry.ProxyURL, "#") {
 			t.Fatalf("subscription remark was retained: %q", entry.ProxyURL)
+		}
+	}
+}
+
+func TestParseProxySubscriptionAcceptsClashYAML(t *testing.T) {
+	content := `
+proxies:
+  - name: http
+    type: http
+    server: http.example
+    port: 8080
+    username: user
+    password: pass
+  - name: socks
+    type: socks5
+    server: socks.example
+    port: 1080
+  - name: trojan
+    type: trojan
+    server: trojan.example
+    port: 443
+    password: secret
+    network: ws
+    sni: edge.example
+    ws-opts:
+      path: /ws
+      headers:
+        Host: edge.example
+  - name: reality
+    type: vless
+    server: reality.example
+    port: 443
+    uuid: 123e4567-e89b-12d3-a456-426614174000
+    network: tcp
+    tls: true
+    servername: edge.example
+    flow: xtls-rprx-vision
+    client-fingerprint: chrome
+    alpn: [h2, http/1.1]
+    reality-opts:
+      public-key: SOW7P-17ibm_-kz-QUQwGGyitSbsa5wOmRGAigGvDH8
+      short-id: 0123456789abcdef
+  - name: shadowsocks
+    type: ss
+    server: ss.example
+    port: 8388
+    cipher: aes-128-gcm
+    password: secret
+  - name: vmess
+    type: vmess
+    server: vmess.example
+    port: 443
+    uuid: 123e4567-e89b-12d3-a456-426614174000
+    alterId: 0
+    cipher: auto
+    network: ws
+    tls: true
+    servername: edge.example
+    alpn: [h2, http/1.1]
+    ws-opts:
+      path: /vmess
+      headers:
+        Host: edge.example
+  - name: ignored-hysteria
+    type: hysteria2
+    server: hy.example
+    port: 443
+    password: secret
+  - name: ignored-tuic
+    type: tuic
+    server: tuic.example
+    port: 443
+    password: secret
+proxy-groups:
+  - name: auto
+    type: select
+    proxies: [http, socks]
+`
+	entries, skipped, err := parseProxySubscription(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 6 || skipped != 2 {
+		t.Fatalf("Clash entries=%d skipped=%d values=%#v", len(entries), skipped, entries)
+	}
+	var realityConfig tunnelproxy.Config
+	var vmessConfig tunnelproxy.Config
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.ProxyURL, "vless://") && !strings.HasPrefix(entry.ProxyURL, "vmess://") {
+			continue
+		}
+		config, parseErr := tunnelproxy.Parse(entry.ProxyURL)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		switch config.Scheme {
+		case "vless":
+			realityConfig = config
+		case "vmess":
+			vmessConfig = config
+		}
+	}
+	if realityConfig.Security != "reality" || realityConfig.Flow != "xtls-rprx-vision" || realityConfig.RealityPublicKey == "" || realityConfig.RealityShortID != "0123456789abcdef" || strings.Join(realityConfig.ALPN, ",") != "h2,http/1.1" {
+		t.Fatalf("Clash Reality config = %#v", realityConfig)
+	}
+	if strings.Join(vmessConfig.ALPN, ",") != "h2,http/1.1" {
+		t.Fatalf("Clash VMess config = %#v", vmessConfig)
+	}
+}
+
+func TestParseProxySubscriptionSkipsMalformedClashEntriesIndividually(t *testing.T) {
+	content := `
+proxies:
+  - type: http
+    server: valid.example
+    port: "8080"
+  - type: hysteria2
+    server: ignored.example
+    port: invalid
+`
+	entries, skipped, err := parseProxySubscription(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || skipped != 1 || entries[0].ProxyURL != "http://valid.example:8080" {
+		t.Fatalf("entries=%#v skipped=%d", entries, skipped)
+	}
+}
+
+func TestFetchProxySubscriptionUsesClashUserAgent(t *testing.T) {
+	var userAgent string
+	proxy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		userAgent = request.Header.Get("User-Agent")
+		_, _ = writer.Write([]byte("http://proxy.example:8080\n"))
+	}))
+	defer proxy.Close()
+
+	body, err := fetchProxySubscription(context.Background(), "http://1.1.1.1/subscription", proxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userAgent != "Clash.Meta" || !strings.Contains(string(body), "proxy.example") {
+		t.Fatalf("User-Agent=%q body=%q", userAgent, body)
+	}
+}
+
+func TestClashRealityPreservesSupportedClientFingerprints(t *testing.T) {
+	content := `
+proxies:
+  - type: vless
+    server: chrome.example
+    port: 443
+    uuid: 123e4567-e89b-12d3-a456-426614174000
+    flow: xtls-rprx-vision
+    client-fingerprint: chrome
+    reality-opts: &reality
+      public-key: SOW7P-17ibm_-kz-QUQwGGyitSbsa5wOmRGAigGvDH8
+      short-id: 0123456789abcdef
+  - type: vless
+    server: edge.example
+    port: 443
+    uuid: 123e4567-e89b-12d3-a456-426614174000
+    flow: xtls-rprx-vision
+    client-fingerprint: edge
+    reality-opts: *reality
+  - type: vless
+    server: safari.example
+    port: 443
+    uuid: 123e4567-e89b-12d3-a456-426614174000
+    flow: xtls-rprx-vision
+    client-fingerprint: safari
+    reality-opts: *reality
+`
+	entries, skipped, err := parseProxySubscription(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 || skipped != 0 {
+		t.Fatalf("entries=%d skipped=%d", len(entries), skipped)
+	}
+	fingerprints := make(map[string]bool)
+	for _, entry := range entries {
+		config, parseErr := tunnelproxy.Parse(entry.ProxyURL)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		fingerprints[config.ClientFingerprint] = true
+	}
+	for _, fingerprint := range []string{"chrome", "edge", "safari"} {
+		if !fingerprints[fingerprint] {
+			t.Fatalf("missing client fingerprint %q", fingerprint)
 		}
 	}
 }
