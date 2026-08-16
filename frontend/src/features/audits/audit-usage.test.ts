@@ -13,8 +13,8 @@ const labels: AuditUsageLabels = {
   output: "输出",
   cached: "缓存",
   reasoning: "推理",
-  mediaInput: "Media Input",
-  mediaOutput: "output",
+  mediaInput: "媒体输入",
+  mediaOutput: "媒体输出",
   imageCount: (count) => `${count} 张`,
   secondsCount: (count) => `${count} 秒`,
 };
@@ -57,7 +57,7 @@ describe("buildAuditUsageView", () => {
 
     assert.equal(view.mode, "metrics");
     assert.equal(values(view.mediaItems, "mediaInput"), "10 张");
-    assert.equal(view.mediaItems?.find((item) => item.key === "mediaOutput")?.label, "output");
+    assert.equal(view.mediaItems?.find((item) => item.key === "mediaOutput")?.label, "媒体输出");
     assert.equal(values(view.mediaItems, "mediaOutput"), "0 张");
     assert.equal(values(view.tokenItems, "input"), "39,229");
     assert.equal(values(view.tokenItems, "cached"), "128");

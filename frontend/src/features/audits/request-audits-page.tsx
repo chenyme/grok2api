@@ -375,6 +375,9 @@ function RequestValue({ audit }: { audit: AuditDTO }) {
     <div className="min-w-0">
       <span className="block truncate text-xs font-medium">{providerLabel(audit.provider)} · {t(`audits.operations.${audit.operation}`)}</span>
       <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground" title={audit.requestId}>{audit.requestId}</span>
+      {audit.numSourcesUsed > 0 ? (
+        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{t("audits.sources", { count: audit.numSourcesUsed })}</span>
+      ) : null}
     </div>
   );
 }
@@ -616,11 +619,6 @@ function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
           {view.tokenItems.map((item) => (
             <UsageMetric key={item.key} label={item.label} value={item.value} />
           ))}
-        </div>
-      ) : null}
-      {audit.numSourcesUsed > 0 ? (
-        <div className="flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
-          <span>{t("audits.sources", { count: audit.numSourcesUsed })}</span>
         </div>
       ) : null}
     </div>

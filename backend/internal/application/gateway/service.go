@@ -112,6 +112,11 @@ type Input struct {
 }
 
 type Usage struct {
+	// Reported distinguishes a real upstream/estimated usage object from the
+	// zero value used when a response fails before usage is available. Token
+	// counts may legitimately all be zero, so the numeric fields cannot carry
+	// this presence information by themselves.
+	Reported               bool
 	InputTokens            int64
 	CachedInputTokens      int64
 	OutputTokens           int64
@@ -900,7 +905,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	auditBase := audit.Record{
 		EventID: eventID, RequestID: input.RequestID, ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
 		ModelRouteID: route.ID, ModelPublicID: publicModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
-		Provider: string(route.Provider), Operation: operation, UsageSource: usageSource, Streaming: input.Streaming,
+		Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone, Streaming: input.Streaming,
 		MediaInputImages: mediaSummary.InputImages,
 	}
 	if errors.Is(routeErr, clientkeyapp.ErrModelNotAllowed) {
@@ -1349,6 +1354,9 @@ attemptLoop:
 				lease.Release()
 				now := time.Now().UTC()
 				record := auditBase
+				if usage.Reported {
+					record.UsageSource = usageSource
+				}
 				record.AccountID = &accountID
 				record.AccountName = credential.Name
 				record.StatusCode = response.StatusCode

@@ -124,6 +124,7 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 			responseID = event.ID
 		}
 		if event.Usage != nil {
+			usage.Reported = true
 			usage.InputTokens = event.Usage.PromptTokens
 			usage.OutputTokens = event.Usage.CompletionTokens
 			usage.ReasoningTokens = event.Usage.CompletionTokensDetails.ReasoningTokens
