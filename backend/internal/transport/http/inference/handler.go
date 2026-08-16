@@ -1436,13 +1436,23 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 		var event struct {
 			Type  string `json:"type"`
 			Delta string `json:"delta"`
+			Item  struct {
+				ID   string `json:"id"`
+				Type string `json:"type"`
+			} `json:"item"`
 		}
-		if json.Unmarshal(data, &event) != nil || event.Delta == "" {
+		if json.Unmarshal(data, &event) != nil {
 			return false
 		}
 		switch event.Type {
 		case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_text.delta", "response.refusal.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
-			return true
+			return event.Delta != ""
+		case "response.output_item.added":
+			// Native Responses can stream an identified reasoning item with no
+			// text delta when only encrypted_content is requested. That item is
+			// still generation start; waiting for output_text kicks thinking
+			// time out of the TPS denominator.
+			return event.Item.Type == "reasoning" && event.Item.ID != ""
 		}
 	case streamProtocolChat:
 		var event struct {
@@ -1451,6 +1461,7 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 					Content          string `json:"content"`
 					Reasoning        string `json:"reasoning"`
 					ReasoningContent string `json:"reasoning_content"`
+					ThinkingContent  string `json:"thinking_content"`
 					Refusal          string `json:"refusal"`
 					ToolCalls        []struct {
 						Function struct {
@@ -1465,7 +1476,7 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 		}
 		for _, choice := range event.Choices {
 			delta := choice.Delta
-			if delta.Content != "" || delta.Reasoning != "" || delta.ReasoningContent != "" || delta.Refusal != "" {
+			if delta.Content != "" || delta.Reasoning != "" || delta.ReasoningContent != "" || delta.ThinkingContent != "" || delta.Refusal != "" {
 				return true
 			}
 			for _, call := range delta.ToolCalls {

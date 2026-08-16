@@ -32,6 +32,7 @@ type qualityProbeChatEvent struct {
 			Content          string `json:"content"`
 			Reasoning        string `json:"reasoning"`
 			ReasoningContent string `json:"reasoning_content"`
+			ThinkingContent  string `json:"thinking_content"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage *struct {
@@ -133,7 +134,7 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 		}
 		for _, choice := range event.Choices {
 			delta := choice.Delta
-			generated := delta.Content != "" || delta.Reasoning != "" || delta.ReasoningContent != ""
+			generated := qualityProbeHasGeneratedDelta(delta.Content, delta.Reasoning, delta.ReasoningContent, delta.ThinkingContent)
 			if generated && firstGeneratedAt.IsZero() {
 				firstGeneratedAt = time.Now()
 				if result.MarkFirstToken != nil {
@@ -206,4 +207,8 @@ func qualityProbeOutputTokensPerSecond(outputTokens, durationMS, firstTokenMS in
 		return 0
 	}
 	return float64(outputTokens) * 1000 / float64(generationMS)
+}
+
+func qualityProbeHasGeneratedDelta(content, reasoning, reasoningContent, thinkingContent string) bool {
+	return content != "" || reasoning != "" || reasoningContent != "" || thinkingContent != ""
 }

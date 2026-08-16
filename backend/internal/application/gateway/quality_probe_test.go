@@ -39,3 +39,15 @@ func TestQualityProbeOutputTokensPerSecondIncludesReasoningTokens(t *testing.T) 
 		t.Fatalf("output TPS = %v, want 10500", got)
 	}
 }
+
+func TestQualityProbeCountsThinkingContentAsFirstToken(t *testing.T) {
+	if qualityProbeHasGeneratedDelta("", "", "", "") {
+		t.Fatal("empty deltas must not mark first token")
+	}
+	if !qualityProbeHasGeneratedDelta("", "", "", "hmm") {
+		t.Fatal("thinking_content must mark first token so thinking time stays in the generation window")
+	}
+	if !qualityProbeHasGeneratedDelta("", "", "hmm", "") {
+		t.Fatal("reasoning_content must still mark first token")
+	}
+}
