@@ -26,7 +26,11 @@ type webSearchCall struct {
 	Code   string
 }
 
-const maxWebSearchCalls = 32
+const (
+	maxWebSearchCalls = 32
+	// MaxWebSearchDomains mirrors the Grok Build Web Search limit for each allow/exclude list.
+	MaxWebSearchDomains = 5
+)
 
 func unavailableWebSearchCall(query string) webSearchCall {
 	fallback := map[string]string{"type": "web_search", "query": query, "error": "unavailable"}

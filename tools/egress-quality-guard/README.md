@@ -1,9 +1,9 @@
 # Egress Quality Guard
 
 Egress Quality Guard combines passive production-audit monitoring with active
-Grok Build probes through each fixed egress node. A passive hard-threshold
-anomaly quarantines the node immediately; a soft anomaly is confirmed by a
-fixed active probe.
+Grok Build probes through each fixed egress node. A complete production request
+at either passive threshold quarantines the node immediately and holds it until
+the fixed recovery probe is healthy.
 
 This is a heuristic circuit breaker, not a model-quality oracle. Very high
 reported throughput can be caused by upstream or intermediary buffering. Start
@@ -14,6 +14,7 @@ your own traffic before allowing automatic quarantine.
 
 - Supports Grok Build streaming requests after egress nodes and request audits are configured in grok2api.
 - At least one schedulable Grok Build account must be able to serve the probe model. The account does not have to be bound to every managed node.
+- The built-in thinking guard is enforced only when the backend recognizes the configured Build model as reasoning-capable. Keep the default `grok-4.5` or another verified reasoning model when missing-thinking detection is required; unknown and non-reasoning models retain marker/TPS checks without this signal.
 - The main service automatically provisions a non-exportable system probe identity. The sidecar reaches only a scoped internal API over the Compose network.
 - Classification is heuristic evidence. It cannot prove that upstream model capability changed and does not replace application-level regression tests.
 
@@ -32,10 +33,9 @@ your own traffic before allowing automatic quarantine.
    model name.
 4. The fixed probe checks output tokens, chunk cadence, first-token time,
    instruction-marker compliance, and panel-equivalent output-token throughput.
-5. A high-TPS production request at the hard threshold quarantines the node
-   immediately. A soft result triggers a fixed-prompt probe; active hard results
-   quarantine immediately, while active soft results must reach the configured
-   strike count.
+5. A production request at either passive TPS threshold quarantines the node
+   immediately and starts the hold. Active hard results quarantine immediately;
+   active soft results must reach the configured strike count.
 6. Quarantined nodes remain available only to administrator probes. Recovery
    records a generic connectivity probe for diagnosis, then uses the real
    model-quality probe as the authority before re-enabling the node.
@@ -50,9 +50,8 @@ credential, account-block, and quota signals retain their normal transitions.
 `qualityGuard.mode` accepts:
 
 - `passive`: inspect ordinary request audits every few seconds. Routine polling
-  adds no model requests. Hard anomalies quarantine immediately; soft anomalies
-  trigger one active confirmation probe. Recovery probes still run for nodes
-  quarantined by the guard.
+  adds no model requests. Soft and hard anomalies quarantine immediately;
+  recovery probes run only after the hold for nodes quarantined by the guard.
 - `active`: run only fixed per-node probes at the configured interval.
 - `hybrid`: enable both detectors. This is the recommended default.
 
@@ -156,7 +155,7 @@ Default hybrid policy:
 - inspect ordinary request audits every 5 seconds;
 - run active per-node probes every 1,800 seconds, with up to 30 seconds of jitter;
 - quarantine immediately at 1000 visible tokens/second;
-- require two consecutive observations at 500 tokens/second;
+- require two consecutive active-probe observations at 500 tokens/second;
 - require two consecutive probe errors;
 - quarantine for 300 seconds;
 - retain at least three enabled proxied Build nodes.
@@ -195,7 +194,8 @@ API remains available.
 - HTTPS/SSE audits cannot provide reliable proxy transfer-byte counts. The UI reports active-probe output Tokens and does not label them as network traffic.
 - Intermediary buffering can produce unusually high instantaneous Token/s, so thresholds require calibration for each route.
 - Passive monitoring processes only complete successful streaming requests with enough output to calculate speed. Short and failed requests are ignored.
-- A real request may legitimately return cached content, an existing file, or a long constant. Immediate quarantine at the passive hard threshold is therefore intentionally aggressive; raise `hard_tps` when false positives are more costly. Soft anomalies still require a fixed-prompt confirmation.
+- A real request may legitimately return cached content, an existing file, or a long constant. Passive soft and hard anomalies therefore isolate immediately and hold the node until a controlled recovery probe succeeds; raise the thresholds when false positives are more costly.
+- Missing-thinking detection applies only to controlled probe profiles that explicitly require thinking. Arbitrary user traffic may legitimately use a non-reasoning model or disable reasoning and is never isolated solely because `reasoningTokens` is zero.
 - The first run establishes an audit baseline. Cumulative statistics also begin when this version first writes state.
 - Manual quality tests are diagnostic. They are excluded from automatic statistics and do not directly change quarantine state.
 

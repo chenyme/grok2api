@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
@@ -60,15 +62,28 @@ func TestResponseRequestForcedEgressOverridesCredentialBinding(t *testing.T) {
 }
 
 func TestAdapterHotUpdatesDirectResponseHeaderTimeout(t *testing.T) {
-	adapter := NewAdapter(Config{ResponseHeaderTimeout: 2 * time.Minute}, nil)
+	adapter := NewAdapter(Config{ResponseHeaderTimeout: 2 * time.Minute, StreamIdleTimeout: 3 * time.Minute}, nil)
 	before := adapter.base.current.Load()
 	if before.ResponseHeaderTimeout != 2*time.Minute {
 		t.Fatalf("initial timeout = %s", before.ResponseHeaderTimeout)
 	}
-	adapter.UpdateConfig(Config{ResponseHeaderTimeout: 7 * time.Minute})
+	if got := adapter.config().StreamIdleTimeout; got != 3*time.Minute {
+		t.Fatalf("initial stream idle timeout = %s", got)
+	}
+	adapter.UpdateConfig(Config{ResponseHeaderTimeout: 7 * time.Minute, StreamIdleTimeout: 11 * time.Minute})
 	after := adapter.base.current.Load()
 	if after == before || after.ResponseHeaderTimeout != 7*time.Minute {
 		t.Fatalf("updated transport=%p timeout=%s", after, after.ResponseHeaderTimeout)
+	}
+	if got := adapter.config().StreamIdleTimeout; got != 11*time.Minute {
+		t.Fatalf("updated stream idle timeout = %s", got)
+	}
+}
+
+func TestAdapterDefaultsStreamIdleTimeout(t *testing.T) {
+	adapter := NewAdapter(Config{}, nil)
+	if got := adapter.config().StreamIdleTimeout; got != settingsdomain.DefaultBuildStreamIdleTimeout {
+		t.Fatalf("stream idle timeout = %s, want %s", got, settingsdomain.DefaultBuildStreamIdleTimeout)
 	}
 }
 
@@ -1095,6 +1110,40 @@ func TestForwardResponseInjectsPromptCacheKeyAfterChatConversion(t *testing.T) {
 	usage := payload["usage"].(map[string]any)
 	if payload["object"] != "chat.completion" || usage["prompt_tokens"] != float64(11) || usage["cost_in_usd_ticks"] != float64(7000) || usage["context_details"].(map[string]any)["input_tokens"] != float64(10) {
 		t.Fatalf("chat response = %#v", payload)
+	}
+}
+
+func TestForwardResponseRejectsInvalidChatWebSearchBeforeUpstream(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	upstreamCalled := false
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		upstreamCalled = true
+		return nil, errors.New("unexpected upstream call")
+	})
+
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.6", NormalizeBody: true,
+		Operation: conversation.OperationChat,
+		Body: []byte(`{
+			"model":"public","messages":[{"role":"user","content":"search"}],
+			"tools":[{"type":"web_search","filters":{"allowed_domains":["allow.example"],"excluded_domains":["deny.example"]}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if upstreamCalled || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("upstreamCalled=%v status=%d", upstreamCalled, response.StatusCode)
 	}
 }
 

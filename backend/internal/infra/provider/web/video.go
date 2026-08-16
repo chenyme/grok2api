@@ -44,6 +44,32 @@ func (e *webMediaUpstreamError) HTTPStatusCode() int {
 	return e.status
 }
 
+// isClearanceRefreshableMediaError distinguishes browser-session challenges
+// from structured upstream policy responses such as content moderation. Empty
+// and HTML 403 bodies are the forms returned by the media endpoints when the
+// request is rejected before the application response is built.
+func isClearanceRefreshableMediaError(e *webMediaUpstreamError) bool {
+	if e == nil || e.status != http.StatusForbidden {
+		return false
+	}
+	return e.cloudflareChallenge || e.bodyKind == "empty" || e.bodyKind == "html"
+}
+
+func (e *webMediaUpstreamError) providerResponse() *provider.Response {
+	if e == nil {
+		return nil
+	}
+	code := "upstream_forbidden"
+	if e.status != http.StatusForbidden {
+		code = "upstream_unavailable"
+	}
+	return jsonProviderResponse(e.status, map[string]any{"error": map[string]any{
+		"message": e.summary,
+		"type":    "upstream_error",
+		"code":    code,
+	}})
+}
+
 const (
 	webMediaDiagnosticBodyLimit    = 64 << 10
 	webMediaDiagnosticSummaryLimit = 256

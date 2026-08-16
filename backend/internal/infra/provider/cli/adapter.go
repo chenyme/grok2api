@@ -39,6 +39,7 @@ type Config struct {
 	TokenAuth             string
 	UserAgent             string
 	ResponseHeaderTimeout time.Duration
+	StreamIdleTimeout     time.Duration
 }
 
 const (
@@ -68,6 +69,7 @@ type Adapter struct {
 
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
 	cfg.ResponseHeaderTimeout = normalizeBuildResponseHeaderTimeout(cfg.ResponseHeaderTimeout)
+	cfg.StreamIdleTimeout = normalizeBuildStreamIdleTimeout(cfg.StreamIdleTimeout)
 	transport := newBuildDirectTransport(cfg.ResponseHeaderTimeout)
 	httpClient := &http.Client{Transport: transport}
 	// The official CLI uses a persistent machine identity. The gateway does not collect machine fingerprints;
@@ -156,6 +158,7 @@ func buildBotFlaggedFromClaims(claims map[string]any) bool {
 
 func (a *Adapter) UpdateConfig(cfg Config) {
 	cfg.ResponseHeaderTimeout = normalizeBuildResponseHeaderTimeout(cfg.ResponseHeaderTimeout)
+	cfg.StreamIdleTimeout = normalizeBuildStreamIdleTimeout(cfg.StreamIdleTimeout)
 	a.cfgMu.Lock()
 	previousTimeout := a.cfg.ResponseHeaderTimeout
 	a.cfg = cfg
@@ -204,6 +207,13 @@ func normalizeBuildResponseHeaderTimeout(value time.Duration) time.Duration {
 	return value
 }
 
+func normalizeBuildStreamIdleTimeout(value time.Duration) time.Duration {
+	if value <= 0 {
+		return settingsdomain.DefaultBuildStreamIdleTimeout
+	}
+	return value
+}
+
 func (a *Adapter) config() Config {
 	a.cfgMu.RLock()
 	defer a.cfgMu.RUnlock()
@@ -243,7 +253,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return invalidResponsesResponse(err), nil
 		}
-		body, err = normalizeBuildRequest(body, request.Model)
+		body, err = normalizeBuildRequest(body, request.Model, request.Operation)
 		if err != nil {
 			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 				return invalidConversationResponse(request.Operation, err), nil
@@ -363,6 +373,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				Body: append([]byte(nil), body...), BodyTruncated: true,
 			}
 		}
+	}
+	if request.Streaming && isHTTPSuccess(resp.StatusCode) && resp.Body != nil {
+		resp.Body = wrapBuildSemanticIdle(resp.Body, a.config().StreamIdleTimeout)
 	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
 	// Capture or clear reasoning replay in the upstream Responses shape before protocol conversion.

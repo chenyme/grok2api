@@ -1929,7 +1929,7 @@ func writeGatewayError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrResponseStateUnsupported), errors.Is(err, gateway.ErrConversationUnsupported):
 		status, code = http.StatusBadRequest, "unsupported_parameter"
 		message = err.Error()
-	case errors.Is(err, gateway.ErrVideoInputTooLarge), errors.Is(err, gateway.ErrVideoInputUnavailable):
+	case errors.Is(err, gateway.ErrVideoInputTooLarge), errors.Is(err, gateway.ErrVideoInputUnavailable), errors.Is(err, gateway.ErrVideoParameterInvalid):
 		status, code = http.StatusBadRequest, "invalid_request"
 		message = err.Error()
 	case errors.Is(err, gateway.ErrVideoOperationUnsupported):

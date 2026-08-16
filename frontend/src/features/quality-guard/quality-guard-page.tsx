@@ -20,6 +20,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DegradeAccountsPanel } from "@/features/quality-guard/degrade-accounts-panel";
+import { ProbeProfilesPanel } from "@/features/quality-guard/probe-profiles-panel";
 import { getQualityGuardStatus, runQualityTest, updateQualityGuardPolicy, type QualityGuardEvent, type QualityGuardNodeState, type QualityGuardPolicy, type QualityGuardStatistics, type QualityGuardStatus, type QualityTestResult } from "@/features/quality-guard/quality-guard-api";
 import { createEgressNode, deleteEgressNodes, listAllEgressNodes, updateEgressNode, updateEgressNodesEnabled, type EgressNodeDTO, type EgressNodeInput } from "@/features/settings/settings-api";
 import { ErrorState } from "@/shared/components/data-state";
@@ -164,8 +165,12 @@ export function QualityGuardPage() {
       <Tabs defaultValue="nodes">
         <TabsList>
           <TabsTrigger value="nodes">{t("qualityGuard.nodesTab")}</TabsTrigger>
+          <TabsTrigger value="profiles">{t("qualityGuard.profilesTab")}</TabsTrigger>
           <TabsTrigger value="accounts">{t("qualityGuard.degrade.tab")}</TabsTrigger>
         </TabsList>
+        <TabsContent value="profiles" className="mt-6">
+          <ProbeProfilesPanel />
+        </TabsContent>
         <TabsContent value="accounts" className="mt-6">
           <DegradeAccountsPanel
             softTPS={status?.config?.soft_tps}
@@ -514,10 +519,18 @@ function isFresh(status?: QualityGuardStatus): boolean {
 function qualityTestState(result: QualityTestResult, status: QualityGuardStatus): QualityGuardNodeState {
   const softTPS = status.config?.soft_tps ?? 500;
   const hardTPS = status.config?.hard_tps ?? 1000;
+  const profile = status.profiles?.find((item) => item.id === status.activeProfileId);
+  const hasExpected = profile?.has_expected ?? true;
+  const requireThinking = result.thinkingRequired;
+  const failClosed = status.config?.fail_closed ?? false;
+  const minimumGenerationMS = status.config?.min_generation_ms ?? 0;
   let classification = "healthy";
   let reason = "within_threshold";
-  if (!result.expectedMatched) { classification = "soft"; reason = "expected_marker_missing"; }
+  if (hasExpected && !result.expectedMatched) { classification = "hard"; reason = "expected_marker_missing"; }
   else if (result.outputTokens < 32) { classification = "soft"; reason = "insufficient_output_tokens"; }
+  else if (requireThinking && result.outputTokens >= 64 && result.reasoningTokens <= 0) { classification = "hard"; reason = "missing_thinking"; }
+  else if (failClosed && result.generationMs < minimumGenerationMS && result.outputTokensPerSecond >= softTPS) { classification = "hard"; reason = "buffered_burst"; }
+  else if (failClosed && result.generationMs < minimumGenerationMS) { classification = "soft"; reason = "insufficient_generation_window"; }
   else if (result.outputTokensPerSecond >= hardTPS) { classification = "hard"; reason = "hard_tps"; }
   else if (result.outputTokensPerSecond >= softTPS) { classification = "soft"; reason = "soft_tps"; }
   const now = Date.now() / 1000;
