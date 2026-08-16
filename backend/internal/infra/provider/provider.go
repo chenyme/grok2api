@@ -449,6 +449,16 @@ const (
 	VideoOperationExtend   = media.VideoOperationExtend
 )
 
+// ConsoleVideoMaxReferenceImages and ConsoleVideoMaxReferenceDurationSeconds
+// describe the Console reference-to-video contract enforced by the upstream.
+// They are shared by admission control and the Console adapter so invalid
+// asynchronous jobs are rejected before enqueueing without weakening the
+// adapter's final request-boundary validation.
+const (
+	ConsoleVideoMaxReferenceImages          = 7
+	ConsoleVideoMaxReferenceDurationSeconds = 10
+)
+
 type VideoRequest struct {
 	Credential account.Credential
 	// Billing is used only to determine XAI eligibility in Build auto mode; nil means the account tier is unknown.
