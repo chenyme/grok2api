@@ -16,11 +16,15 @@ import (
 
 	"github.com/Asutorufa/yuhaiin/pkg/net/netapi"
 	"github.com/Asutorufa/yuhaiin/pkg/net/proxy/trojan"
-	"github.com/Asutorufa/yuhaiin/pkg/net/proxy/vless"
+	visionproxy "github.com/Asutorufa/yuhaiin/pkg/net/proxy/vision"
+	yuhaiinvless "github.com/Asutorufa/yuhaiin/pkg/net/proxy/vless"
 	"github.com/Asutorufa/yuhaiin/pkg/net/proxy/vmess"
 	"github.com/Asutorufa/yuhaiin/pkg/protos/node/protocol"
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	singvmess "github.com/metacubex/sing-vmess"
+	singvless "github.com/metacubex/sing-vmess/vless"
+	singmetadata "github.com/metacubex/sing/common/metadata"
 	sscore "github.com/shadowsocks/go-shadowsocks2/core"
 	"github.com/shadowsocks/go-shadowsocks2/socks"
 )
@@ -34,9 +38,15 @@ type Config struct {
 	Cipher            string
 	Transport         string
 	TLS               bool
+	Security          string
+	Flow              string
 	ServerName        string
 	Insecure          bool
 	ALPN              []string
+	RealityPublicKey  string
+	RealityShortID    string
+	ClientFingerprint string
+	SpiderX           string
 	WebSocketHost     string
 	WebSocketPath     string
 	CanonicalProxyURL string
@@ -111,9 +121,7 @@ func parseUserInfoProxy(value string) (Config, error) {
 	if transport != "tcp" && transport != "ws" {
 		return Config{}, fmt.Errorf("暂不支持 %s 传输", transport)
 	}
-	if flow := strings.TrimSpace(query.Get("flow")); flow != "" {
-		return Config{}, fmt.Errorf("暂不支持 VLESS flow %q", flow)
-	}
+	flow := strings.ToLower(strings.TrimSpace(query.Get("flow")))
 	if scheme == "vless" {
 		parsedUUID, err := uuid.Parse(credential)
 		if err != nil {
@@ -126,15 +134,38 @@ func parseUserInfoProxy(value string) (Config, error) {
 	}
 	security := strings.ToLower(strings.TrimSpace(query.Get("security")))
 	tlsEnabled := scheme == "trojan"
+	securityMode := "none"
+	if tlsEnabled {
+		securityMode = "tls"
+	}
 	switch security {
 	case "", "tls":
 		if security == "tls" {
 			tlsEnabled = true
+			securityMode = "tls"
 		}
 	case "none":
 		tlsEnabled = false
+		securityMode = "none"
+	case "reality":
+		if scheme != "vless" {
+			return Config{}, errors.New("Reality security 当前仅支持 VLESS")
+		}
+		if transport != "tcp" {
+			return Config{}, errors.New("VLESS Reality 当前仅支持 TCP 传输")
+		}
+		tlsEnabled = true
+		securityMode = "reality"
 	default:
 		return Config{}, fmt.Errorf("暂不支持 %s security %q", strings.ToUpper(scheme), security)
+	}
+	if flow != "" {
+		if scheme != "vless" || flow != "xtls-rprx-vision" {
+			return Config{}, fmt.Errorf("暂不支持 VLESS flow %q", flow)
+		}
+		if transport != "tcp" || (securityMode != "tls" && securityMode != "reality") {
+			return Config{}, errors.New("VLESS Vision 需要 TCP 和 TLS 或 Reality security")
+		}
 	}
 	if headerType := strings.ToLower(strings.TrimSpace(query.Get("headerType"))); headerType != "" && headerType != "none" {
 		return Config{}, fmt.Errorf("暂不支持 %s headerType %q", strings.ToUpper(scheme), headerType)
@@ -144,6 +175,23 @@ func parseUserInfoProxy(value string) (Config, error) {
 		return Config{}, err
 	}
 	serverName := firstNonEmpty(query.Get("sni"), query.Get("peer"), parsed.Hostname())
+	realityPublicKey := firstNonEmpty(query.Get("pbk"), query.Get("public-key"), query.Get("publicKey"))
+	realityShortID := firstNonEmpty(query.Get("sid"), query.Get("short-id"), query.Get("shortId"))
+	fingerprint := strings.ToLower(firstNonEmpty(query.Get("fp"), query.Get("fingerprint"), query.Get("client-fingerprint")))
+	spiderX := firstNonEmpty(query.Get("spx"), query.Get("spider-x"), query.Get("spiderX"))
+	if securityMode == "reality" {
+		if realityPublicKey == "" {
+			return Config{}, errors.New("VLESS Reality public key 不能为空")
+		}
+		if fingerprint == "" {
+			fingerprint = "chrome"
+		}
+		if _, supported := realityClientHelloID(fingerprint); !supported {
+			return Config{}, fmt.Errorf("VLESS Reality 暂不支持客户端指纹 %q", fingerprint)
+		}
+	} else if realityPublicKey != "" || realityShortID != "" || fingerprint != "" || spiderX != "" {
+		return Config{}, errors.New("Reality 参数只能用于 Reality security")
+	}
 	wsHost := firstNonEmpty(query.Get("host"), serverName)
 	if err := validateWebSocketHost(wsHost); transport == "ws" && err != nil {
 		return Config{}, err
@@ -159,8 +207,9 @@ func parseUserInfoProxy(value string) (Config, error) {
 	}
 	config := Config{
 		Scheme: scheme, Server: server, Credential: credential, Transport: transport,
-		TLS: tlsEnabled, ServerName: serverName, Insecure: insecure,
-		ALPN: splitList(query.Get("alpn")), WebSocketHost: wsHost, WebSocketPath: wsPath,
+		TLS: tlsEnabled, Security: securityMode, Flow: flow, ServerName: serverName, Insecure: insecure,
+		ALPN: splitList(query.Get("alpn")), RealityPublicKey: realityPublicKey, RealityShortID: realityShortID,
+		ClientFingerprint: fingerprint, SpiderX: spiderX, WebSocketHost: wsHost, WebSocketPath: wsPath,
 	}
 	config.CanonicalProxyURL = canonicalUserInfoProxyURL(config)
 	if err := validateConfig(config); err != nil {
@@ -172,15 +221,29 @@ func parseUserInfoProxy(value string) (Config, error) {
 func canonicalUserInfoProxyURL(config Config) string {
 	query := make(url.Values)
 	query.Set("type", config.Transport)
-	if config.TLS {
-		query.Set("security", "tls")
-	} else {
-		query.Set("security", "none")
+	security := config.Security
+	if security == "" {
+		security = "none"
+		if config.TLS {
+			security = "tls"
+		}
 	}
+	query.Set("security", security)
 	if config.Scheme == "vless" {
 		query.Set("encryption", "none")
 	}
+	if config.Flow != "" {
+		query.Set("flow", config.Flow)
+	}
 	query.Set("sni", config.ServerName)
+	if security == "reality" {
+		query.Set("pbk", config.RealityPublicKey)
+		query.Set("sid", config.RealityShortID)
+		query.Set("fp", config.ClientFingerprint)
+		if config.SpiderX != "" {
+			query.Set("spx", config.SpiderX)
+		}
+	}
 	if config.Insecure {
 		query.Set("allowInsecure", "1")
 	}
@@ -281,6 +344,7 @@ type vmessShare struct {
 	Network       string `json:"net"`
 	TLS           string `json:"tls,omitempty"`
 	ServerName    string `json:"sni,omitempty"`
+	ALPN          string `json:"alpn,omitempty"`
 	Host          string `json:"host,omitempty"`
 	Path          string `json:"path,omitempty"`
 	AllowInsecure bool   `json:"allowInsecure,omitempty"`
@@ -336,6 +400,10 @@ func parseVMess(value string) (Config, error) {
 	}
 	tlsEnabled := tlsMode == "tls"
 	serverName := firstNonEmpty(jsonString(raw, "sni"), address)
+	alpn, err := jsonStringList(raw, "alpn")
+	if err != nil {
+		return Config{}, err
+	}
 	host := firstNonEmpty(jsonString(raw, "host"), serverName)
 	if err := validateWebSocketHost(host); transport == "ws" && err != nil {
 		return Config{}, err
@@ -355,7 +423,7 @@ func parseVMess(value string) (Config, error) {
 	}
 	share := vmessShare{
 		Version: "2", Address: address, Port: port, UUID: userID, AlterID: strconv.Itoa(alterID), Cipher: cipher,
-		Network: transport, ServerName: serverName, AllowInsecure: insecure,
+		Network: transport, ServerName: serverName, ALPN: strings.Join(alpn, ","), AllowInsecure: insecure,
 	}
 	if transport == "ws" {
 		share.Host = host
@@ -370,7 +438,7 @@ func parseVMess(value string) (Config, error) {
 	}
 	config := Config{
 		Scheme: "vmess", Server: server, Credential: userID, AlterID: alterID, Cipher: cipher,
-		Transport: transport, TLS: tlsEnabled, ServerName: serverName, Insecure: insecure,
+		Transport: transport, TLS: tlsEnabled, ServerName: serverName, Insecure: insecure, ALPN: alpn,
 		WebSocketHost: host, WebSocketPath: path,
 		CanonicalProxyURL: "vmess://" + base64.RawStdEncoding.EncodeToString(canonicalJSON),
 	}
@@ -456,6 +524,12 @@ func buildProxy(config Config) (netapi.Proxy, error) {
 	var current netapi.Proxy = &serverDialer{address: config.Server}
 	if config.Transport == "ws" {
 		current = &websocketProxy{config: config, dialer: current}
+	} else if config.Security == "reality" {
+		var err error
+		current, err = newRealityProxy(config, current)
+		if err != nil {
+			return nil, fmt.Errorf("创建 Reality 客户端: %w", err)
+		}
 	} else if config.TLS {
 		current = &tlsProxy{config: config, dialer: current}
 	}
@@ -467,7 +541,7 @@ func buildProxy(config Config) (netapi.Proxy, error) {
 	case "vless":
 		protocolConfig := &protocol.Vless{}
 		protocolConfig.SetUuid(config.Credential)
-		return newOwnedVLESSProxy(protocolConfig, current)
+		return newOwnedVLESSProxy(protocolConfig, current, config.Flow)
 	case "vmess":
 		protocolConfig := &protocol.Vmess{}
 		protocolConfig.SetUuid(config.Credential)
@@ -487,13 +561,23 @@ type ownedVLESSProxy struct {
 	netapi.EmptyDispatch
 	config *protocol.Vless
 	dialer netapi.Proxy
+	flow   string
+	uuid   [16]byte
 }
 
-func newOwnedVLESSProxy(config *protocol.Vless, dialer netapi.Proxy) (netapi.Proxy, error) {
-	if _, err := vless.NewClient(config, dialer); err != nil {
+func newOwnedVLESSProxy(config *protocol.Vless, dialer netapi.Proxy, flow string) (netapi.Proxy, error) {
+	if _, err := yuhaiinvless.NewClient(config, dialer); err != nil {
 		return nil, err
 	}
-	return &ownedVLESSProxy{config: config, dialer: dialer}, nil
+	proxy := &ownedVLESSProxy{config: config, dialer: dialer, flow: flow}
+	if flow == "xtls-rprx-vision" {
+		userID, err := uuid.Parse(config.GetUuid())
+		if err != nil {
+			return nil, errors.New("VLESS Vision UUID 无效")
+		}
+		copy(proxy.uuid[:], userID[:])
+	}
+	return proxy, nil
 }
 
 func (p *ownedVLESSProxy) Conn(ctx context.Context, address netapi.Address) (net.Conn, error) {
@@ -501,7 +585,20 @@ func (p *ownedVLESSProxy) Conn(ctx context.Context, address netapi.Address) (net
 	if err != nil {
 		return nil, err
 	}
-	client, err := vless.NewClient(p.config, &singleConnectionProxy{connection: connection})
+	if p.flow == "xtls-rprx-vision" {
+		result, requestErr := newVisionVLESSConn(connection, address, p.uuid, p.flow)
+		if requestErr != nil {
+			_ = connection.Close()
+			return nil, fmt.Errorf("发送 VLESS Vision 请求: %w", requestErr)
+		}
+		visionConnection, visionErr := visionproxy.NewVisionConn(result, connection, p.uuid)
+		if visionErr != nil {
+			_ = result.Close()
+			return nil, fmt.Errorf("创建 VLESS Vision 连接: %w", visionErr)
+		}
+		return visionConnection, nil
+	}
+	client, err := yuhaiinvless.NewClient(p.config, &singleConnectionProxy{connection: connection})
 	if err != nil {
 		_ = connection.Close()
 		return nil, err
@@ -509,6 +606,15 @@ func (p *ownedVLESSProxy) Conn(ctx context.Context, address netapi.Address) (net
 	result, err := client.Conn(ctx, address)
 	if err != nil {
 		_ = connection.Close()
+		return nil, err
+	}
+	return result, nil
+}
+
+func newVisionVLESSConn(connection net.Conn, address netapi.Address, userID [16]byte, flow string) (net.Conn, error) {
+	destination := singmetadata.ParseSocksaddrHostPort(address.Hostname(), address.Port())
+	result := singvless.NewConn(connection, userID, singvmess.CommandTCP, destination, flow)
+	if _, err := result.Write(nil); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -742,4 +848,29 @@ func jsonString(value map[string]any, name string) string {
 	default:
 		return ""
 	}
+}
+
+func jsonStringList(value map[string]any, name string) ([]string, error) {
+	raw, ok := value[name]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	if text, ok := raw.(string); ok {
+		return splitList(text), nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s 必须是字符串或字符串数组", name)
+	}
+	result := make([]string, 0, len(items))
+	for _, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s 必须是字符串或字符串数组", name)
+		}
+		if text = strings.TrimSpace(text); text != "" {
+			result = append(result, text)
+		}
+	}
+	return result, nil
 }
