@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "test": "tsc -p tsconfig.test.json && node --experimental-strip-types --test \"src/**/*.test.ts\"",
     "lint": "eslint .",
     "preview": "vite preview"
   },
