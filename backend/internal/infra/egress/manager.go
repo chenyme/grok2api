@@ -812,7 +812,8 @@ func decodeProbeIP(body []byte) (string, error) {
 
 func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, boundNodeID uint64) (*Lease, bool, error) {
 	now := time.Now().UTC()
-	managedClearance := isGrokWebScope(scope) && m.clearanceMode() == "flaresolverr"
+	clearanceMode := m.clearanceMode()
+	managedClearance := isGrokWebScope(scope) && (clearanceMode == "flaresolverr" || clearanceMode == "on_demand")
 	configured := false
 	var available []domain.Node
 	if boundNodeID != 0 {
@@ -1817,7 +1818,14 @@ func (m *Manager) ensureClearance(ctx context.Context, node domain.Node, proxyUR
 		state.lastUsedAt = now
 		m.clearances[key] = state
 	}
-	if cfg.Mode != "flaresolverr" {
+	if cfg.Mode == "on_demand" && !forceRefresh {
+		m.clearanceMu.Unlock()
+		if fallbackAllowed {
+			return fallback.Cookies, fallback.UserAgent, nil
+		}
+		return existingCookies, existingUserAgent, nil
+	}
+	if cfg.Mode != "flaresolverr" && cfg.Mode != "on_demand" {
 		m.clearanceMu.Unlock()
 		return existingCookies, existingUserAgent, nil
 	}
@@ -1843,7 +1851,7 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 	solver := m.solver
 	lock := m.clearanceLock
 	m.clearanceMu.Unlock()
-	if cfg.Mode != "flaresolverr" {
+	if cfg.Mode != "flaresolverr" && cfg.Mode != "on_demand" {
 		return clearanceSolution{}, errors.New("FlareSolverr Clearance 未启用")
 	}
 	timeout := cfg.Timeout
@@ -1874,8 +1882,12 @@ func (m *Manager) refreshNode(ctx context.Context, node domain.Node, proxyURL, k
 			return clearanceSolution{}, errors.New("另一个实例正在刷新 Cloudflare Clearance")
 		}
 		defer release()
-		if !force {
-			if solution, refreshedAt, ok := m.loadPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval); ok {
+		if solution, refreshedAt, ok := m.loadPersistedClearance(ctx, node.ID, fingerprint, bindingFingerprint, interval); ok {
+			// A peer may have refreshed the rejected Clearance immediately before
+			// this instance acquired the distributed lock. Reuse that newer result
+			// instead of performing a duplicate browser solve. A force refresh with
+			// no newer persisted generation must still reach the solver.
+			if !force || (!refreshAfter.IsZero() && refreshedAt.After(refreshAfter)) {
 				m.cacheClearance(key, solution, refreshedAt, solveVersion, fingerprint, bindingFingerprint, interval)
 				return solution, nil
 			}

@@ -71,3 +71,32 @@ func TestProbeQualityRejectsUnsupportedNodeAndMissingProber(t *testing.T) {
 		t.Fatalf("missing prober error = %v", err)
 	}
 }
+
+func TestProbeQualityScopesThinkingGuardToReasoningBuildModels(t *testing.T) {
+	repository := &qualityProbeRepository{node: domain.Node{
+		ID: 7, Scope: domain.ScopeBuild, Enabled: true, EncryptedProxyURL: "encrypted",
+	}}
+	prober := &qualityProberStub{}
+	service := NewService(repository, nil, "")
+	service.SetQualityProber(prober)
+
+	result, err := service.ProbeQuality(context.Background(), 7, QualityProbeInput{
+		ClientKeyID: 3, Model: "grok-4.5", RequireThinking: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !prober.input.RequireThinking || !result.ThinkingRequired {
+		t.Fatalf("reasoning model probe=%#v result=%#v", prober.input, result)
+	}
+
+	result, err = service.ProbeQuality(context.Background(), 7, QualityProbeInput{
+		ClientKeyID: 3, Model: "grok-composer-2.5-fast", RequireThinking: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prober.input.RequireThinking || result.ThinkingRequired {
+		t.Fatalf("non-reasoning model probe=%#v result=%#v", prober.input, result)
+	}
+}

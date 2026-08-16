@@ -29,6 +29,23 @@ func BenchmarkSelectorSegmentedCandidatePlanning(b *testing.B) {
 	}
 }
 
+func TestSegmentedCandidateCohortsRetainOnlyBoundedRotatingWindows(t *testing.T) {
+	const candidateCount = 10_000
+	values := make([]account.RoutingCandidate, candidateCount)
+	for index := range values {
+		values[index] = account.RoutingCandidate{Credential: account.Credential{
+			ID: uint64(index + 1), Provider: account.ProviderBuild, Priority: account.DefaultPriority,
+		}}
+	}
+	buckets := segmentedCandidateCohorts(values, nil, time.Now().UTC(), nil, false, 9980, 64, segmentedWindowsBeforeFullFallback)
+	if len(buckets) != 1 || len(buckets[0].indexes) != 256 {
+		t.Fatalf("bounded cohorts = %#v", buckets)
+	}
+	if buckets[0].indexes[0] != 9980 || buckets[0].indexes[19] != 9999 || buckets[0].indexes[20] != 0 || buckets[0].indexes[255] != 235 {
+		t.Fatalf("rotating indexes = first:%d before-wrap:%d after-wrap:%d last:%d", buckets[0].indexes[0], buckets[0].indexes[19], buckets[0].indexes[20], buckets[0].indexes[255])
+	}
+}
+
 func benchmarkSegmentedSelector(b *testing.B, candidateCount int, enabled, forceFullFallback bool) {
 	b.Helper()
 	limiter := newSegmentedSelectiveLimiter()
@@ -187,15 +204,20 @@ func TestSegmentedActiveCohortOrderingMatchesFullPlannerHardOrder(t *testing.T) 
 	cohorts := make([]segmentedSelectorCohort, 0, 64)
 	for _, supportsModel := range []bool{false, true} {
 		for _, capabilityKnown := range []bool{false, true} {
-			for _, preferFreeBuild := range []bool{false, true} {
-				for _, tier := range []int{0, 2} {
-					for _, priority := range []int{1, 10} {
-						for _, billingFresh := range []bool{false, true} {
-							cohorts = append(cohorts, segmentedSelectorCohort{
-								supportsModel: supportsModel, capabilityKnown: capabilityKnown,
-								preferFreeBuild: preferFreeBuild, tier: tier, priority: priority,
-								billingFresh: billingFresh,
-							})
+			for _, quotaKnown := range []bool{false, true} {
+				for _, quotaAvailable := range []bool{false, true} {
+					for _, preferFreeBuild := range []bool{false, true} {
+						for _, tier := range []int{0, 2} {
+							for _, priority := range []int{1, 10} {
+								for _, billingFresh := range []bool{false, true} {
+									cohorts = append(cohorts, segmentedSelectorCohort{
+										supportsModel: supportsModel, capabilityKnown: capabilityKnown,
+										quotaKnown: quotaKnown, quotaAvailable: quotaAvailable,
+										preferFreeBuild: preferFreeBuild, tier: tier, priority: priority,
+										billingFresh: billingFresh,
+									})
+								}
+							}
 						}
 					}
 				}
@@ -212,8 +234,8 @@ func TestSegmentedActiveCohortOrderingMatchesFullPlannerHardOrder(t *testing.T) 
 				{Credential: account.Credential{ID: 2, Priority: right.priority}, SupportsModel: right.supportsModel, ModelCapabilityKnown: right.capabilityKnown},
 			}
 			scores := []candidateScore{
-				{index: 0, tier: left.tier, preferFreeBuild: left.preferFreeBuild, billingFresh: left.billingFresh},
-				{index: 1, tier: right.tier, preferFreeBuild: right.preferFreeBuild, billingFresh: right.billingFresh},
+				{index: 0, tier: left.tier, quotaKnown: left.quotaKnown, quotaAvailable: left.quotaAvailable, preferFreeBuild: left.preferFreeBuild, billingFresh: left.billingFresh},
+				{index: 1, tier: right.tier, quotaKnown: right.quotaKnown, quotaAvailable: right.quotaAvailable, preferFreeBuild: right.preferFreeBuild, billingFresh: right.billingFresh},
 			}
 			if got, want := segmentedSelectorCohortBetter(left, right), candidateScoreBetter(values, scores[0], scores[1]); got != want {
 				t.Fatalf("cohort order mismatch at %d/%d: got %t want %t", leftIndex, rightIndex, got, want)
@@ -320,6 +342,34 @@ func TestSegmentedActiveFallsBackToFullPlannerAfterBoundedWindows(t *testing.T) 
 	}
 }
 
+func TestSegmentedActiveBindsAndReusesStickyAccount(t *testing.T) {
+	limiter := newSegmentedSelectiveLimiter()
+	selector := newSegmentedActiveTestSelector(100, limiter, nil)
+	selector.UpdateSegmentedSelector(true, 100, 8)
+
+	first, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "sticky-session", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedID := first.Credential.ID
+	first.Release()
+	if sizes := limiter.BatchSizes(); fmt.Sprint(sizes) != "[8]" {
+		t.Fatalf("initial sticky selection did not use bounded window: %v", sizes)
+	}
+
+	second, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "sticky-session", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Release()
+	if second.Credential.ID != selectedID {
+		t.Fatalf("sticky account = %d, want %d", second.Credential.ID, selectedID)
+	}
+	if sizes := limiter.BatchSizes(); fmt.Sprint(sizes) != "[8]" {
+		t.Fatalf("sticky reuse rebuilt concurrency plan: %v", sizes)
+	}
+}
+
 func TestSegmentedActiveWaitsAndRescansAfterCapacityReturns(t *testing.T) {
 	limiter := newSegmentedSelectiveLimiter()
 	for id := uint64(1); id <= 100; id++ {
@@ -406,17 +456,15 @@ func TestSegmentedActiveUsesFullPlannerAfterExhaustingSmallPool(t *testing.T) {
 	}
 }
 
-func TestSegmentedActiveSkipsStickyPinnedAndSmallPools(t *testing.T) {
+func TestSegmentedActiveSkipsPinnedAndSmallPools(t *testing.T) {
 	tests := []struct {
-		name     string
-		count    int
-		affinity string
-		pinned   bool
-		enabled  bool
+		name    string
+		count   int
+		pinned  bool
+		enabled bool
 	}{
 		{name: "disabled", count: 100},
 		{name: "small pool", count: 99, enabled: true},
-		{name: "sticky", count: 100, affinity: "session", enabled: true},
 		{name: "pinned", count: 100, pinned: true, enabled: true},
 	}
 	for _, test := range tests {
@@ -429,7 +477,7 @@ func TestSegmentedActiveSkipsStickyPinnedAndSmallPools(t *testing.T) {
 			if test.pinned {
 				lease, err = selector.AcquirePinned(context.Background(), account.ProviderBuild, 1, 0, "model", "", true)
 			} else {
-				lease, err = selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", test.affinity, nil, false)
+				lease, err = selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 			}
 			if err != nil {
 				t.Fatal(err)

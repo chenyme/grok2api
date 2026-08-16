@@ -3,10 +3,12 @@ package egress
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,7 +19,7 @@ import (
 
 func TestQualityGuardStatusReadsOnlyPublicState(t *testing.T) {
 	path := t.TempDir() + "/state.json"
-	state := `{"version":1,"started_at":10,"updated_at":20,"last_active_cycle_at":15,"last_passive_poll_at":19,"password":"must-not-leak","guard":{"mode":"hybrid","model":"grok-4.5","client_key_id":"6","node_ids":["8"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":3,"max_output_tokens":384,"prompt":"private-probe-prompt","expected":"private-marker"},"protected_node_ids":["9"],"nodes":{"8":{"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_output_tps":42.5,"last_output_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000}},"statistics":{"started_at":11,"active":{"total":7,"healthy":6,"soft":1,"hard":0,"errors":0,"output_tokens":1400},"passive":{"total":9,"healthy":8,"soft":0,"hard":1,"errors":0,"output_tokens":1800},"actions":{"quarantined":1,"restored":0,"suppressed":0}}}`
+	state := `{"version":1,"started_at":10,"updated_at":20,"last_active_cycle_at":15,"last_passive_poll_at":19,"password":"must-not-leak","guard":{"mode":"hybrid","model":"grok-4.5","client_key_id":"6","node_ids":["8"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":3,"max_output_tokens":384,"fail_closed":true,"min_generation_ms":1234,"prompt":"private-probe-prompt","expected":"private-marker"},"protected_node_ids":["9"],"nodes":{"8":{"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_output_tps":42.5,"last_output_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000}},"statistics":{"started_at":11,"active":{"total":7,"healthy":6,"soft":1,"hard":0,"errors":0,"output_tokens":1400},"passive":{"total":9,"healthy":8,"soft":0,"hard":1,"errors":0,"output_tokens":1800},"actions":{"quarantined":1,"restored":0,"suppressed":0}}}`
 	if err := os.WriteFile(path, []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +27,7 @@ func TestQualityGuardStatusReadsOnlyPublicState(t *testing.T) {
 	context, _ := gin.CreateTestContext(recorder)
 	context.Request = httptest.NewRequest("GET", "/egress-quality-guard", nil)
 	NewHandler(nil, path).qualityGuardStatus(context)
-	if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), `"available":true`) || !strings.Contains(recorder.Body.String(), `"last_output_tps":42.5`) || !strings.Contains(recorder.Body.String(), `"output_tokens":1400`) || !strings.Contains(recorder.Body.String(), `"protectedNodeIds":["9"]`) {
+	if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), `"available":true`) || !strings.Contains(recorder.Body.String(), `"last_output_tps":42.5`) || !strings.Contains(recorder.Body.String(), `"output_tokens":1400`) || !strings.Contains(recorder.Body.String(), `"protectedNodeIds":["9"]`) || !strings.Contains(recorder.Body.String(), `"fail_closed":true`) || !strings.Contains(recorder.Body.String(), `"min_generation_ms":1234`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	if strings.Contains(recorder.Body.String(), "must-not-leak") || strings.Contains(recorder.Body.String(), "private-probe-prompt") || strings.Contains(recorder.Body.String(), "private-marker") || strings.Contains(recorder.Body.String(), "client_key_id") || !strings.Contains(recorder.Body.String(), `"recentEvents":[]`) {
@@ -91,6 +93,99 @@ func TestWriteQualityProbeErrorIdentifiesMissingProbeAccount(t *testing.T) {
 	NewHandler(nil).writeQualityProbeError(context, egressapp.ErrQualityProbeNoAccount)
 	if recorder.Code != 503 || !strings.Contains(recorder.Body.String(), `"code":"egressQualityProbeNoAccount"`) || !strings.Contains(recorder.Body.String(), "暂无可调度账号") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestQualityGuardProfilesCRUDAndStatusOmitsPrompt(t *testing.T) {
+	directory := t.TempDir()
+	statePath := directory + "/state.json"
+	configPath := directory + "/runtime-config.json"
+	if err := os.WriteFile(statePath, []byte(`{"version":1,"guard":{"mode":"hybrid","model":"grok-4.5","node_ids":["8"]},"nodes":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(nil, statePath, configPath)
+
+	createRecorder := httptest.NewRecorder()
+	createContext, _ := gin.CreateTestContext(createRecorder)
+	createContext.Request = httptest.NewRequest("POST", "/egress-quality-guard/profiles", bytes.NewBufferString(`{"name":"自定义标记","prompt":"只输出 FLAG_OK","expectedText":"FLAG_OK","matchMode":"last_line","requireThinking":true,"active":true}`))
+	createContext.Request.Header.Set("Content-Type", "application/json")
+	handler.createQualityGuardProfile(createContext)
+	if createRecorder.Code != 200 || !strings.Contains(createRecorder.Body.String(), `"FLAG_OK"`) || !strings.Contains(createRecorder.Body.String(), `"require_thinking":true`) {
+		t.Fatalf("create status=%d body=%s", createRecorder.Code, createRecorder.Body.String())
+	}
+
+	statusRecorder := httptest.NewRecorder()
+	statusContext, _ := gin.CreateTestContext(statusRecorder)
+	statusContext.Request = httptest.NewRequest("GET", "/egress-quality-guard", nil)
+	handler.qualityGuardStatus(statusContext)
+	body := statusRecorder.Body.String()
+	if statusRecorder.Code != 200 || !strings.Contains(body, `"activeProfileId":"p-2"`) || !strings.Contains(body, `"has_expected":true`) || !strings.Contains(body, `"require_thinking":true`) {
+		t.Fatalf("status=%d body=%s", statusRecorder.Code, body)
+	}
+	if strings.Contains(body, "只输出 FLAG_OK") || strings.Contains(body, "FLAG_OK") {
+		t.Fatalf("status leaked probe prompt or marker: %s", body)
+	}
+}
+
+func TestQualityGuardProfileWritesAreSerialized(t *testing.T) {
+	directory := t.TempDir()
+	handler := NewHandler(nil, "", directory+"/runtime-config.json")
+	const count = 32
+	var wait sync.WaitGroup
+	errorsFound := make(chan string, count)
+	for index := 0; index < count; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			body := fmt.Sprintf(`{"name":"profile-%d","prompt":"probe-%d","matchMode":"contains"}`, index, index)
+			context.Request = httptest.NewRequest("POST", "/egress-quality-guard/profiles", bytes.NewBufferString(body))
+			context.Request.Header.Set("Content-Type", "application/json")
+			handler.createQualityGuardProfile(context)
+			if recorder.Code != 200 {
+				errorsFound <- recorder.Body.String()
+			}
+		}(index)
+	}
+	wait.Wait()
+	close(errorsFound)
+	for message := range errorsFound {
+		t.Fatalf("concurrent profile create failed: %s", message)
+	}
+	data, err := loadProbeProfileFile(directory + "/profiles.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	custom := 0
+	for _, profile := range data.Profiles {
+		if !profile.BuiltIn {
+			custom++
+		}
+	}
+	if custom != count {
+		t.Fatalf("custom profiles = %d, want %d", custom, count)
+	}
+}
+
+func TestQualityGuardReservedProfilesAreCanonicalized(t *testing.T) {
+	directory := t.TempDir()
+	path := directory + "/profiles.json"
+	forged := `{"version":1,"active_profile_id":"quality-marker","profiles":{"quality-marker":{"id":"quality-marker","name":"forged","built_in":false,"prompt":"skip checks","expected_text":"","match_mode":"contains","require_thinking":false},"throughput":{"id":"throughput","name":"forged","built_in":false,"prompt":"skip checks","expected_text":"PASS","match_mode":"regex","require_thinking":true}}}`
+	if err := os.WriteFile(path, []byte(forged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := loadProbeProfileFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := data.Profiles[profileQualityMarker]
+	if !marker.BuiltIn || marker.ExpectedText != "QUALITY_OK" || marker.MatchMode != egressapp.MatchLastLine || !marker.RequireThinking {
+		t.Fatalf("quality marker was not canonicalized: %#v", marker)
+	}
+	throughput := data.Profiles[profileThroughput]
+	if !throughput.BuiltIn || throughput.ExpectedText != "" || throughput.MatchMode != egressapp.MatchContains || throughput.RequireThinking {
+		t.Fatalf("throughput profile was not canonicalized: %#v", throughput)
 	}
 }
 

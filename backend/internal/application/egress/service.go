@@ -11,7 +11,9 @@ import (
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	domain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -40,6 +42,8 @@ type QualityProbeInput struct {
 	Model           string
 	Prompt          string
 	Expected        string
+	MatchMode       string
+	RequireThinking bool
 	MaxOutputTokens int
 }
 
@@ -58,6 +62,7 @@ type QualityProbeResult struct {
 	VisibleCharacters     int
 	OutputTokensPerSecond float64
 	ExpectedMatched       bool
+	ThinkingRequired      bool
 	ResponseSHA256        string
 }
 
@@ -127,13 +132,15 @@ func (s *Service) ProbeQuality(ctx context.Context, nodeID uint64, input Quality
 	input.Model = strings.TrimSpace(input.Model)
 	input.Prompt = strings.TrimSpace(input.Prompt)
 	input.Expected = strings.TrimSpace(input.Expected)
+	rawMatchMode := strings.TrimSpace(input.MatchMode)
+	input.MatchMode = NormalizeMatchMode(input.MatchMode)
 	if input.Model == "" {
 		return QualityProbeResult{}, fmt.Errorf("%w: model 必填", ErrInvalidInput)
 	}
 	if input.Prompt == "" {
 		input.Prompt = DefaultQualityProbePrompt
 	}
-	if input.Expected == "" {
+	if input.Expected == "" && rawMatchMode == "" {
 		input.Expected = DefaultQualityProbeExpected
 	}
 	if len(input.Prompt) > MaxQualityProbePromptBytes || len(input.Expected) > MaxQualityProbeExpectedBytes {
@@ -161,7 +168,16 @@ func (s *Service) ProbeQuality(ctx context.Context, nodeID uint64, input Quality
 	if prober == nil {
 		return QualityProbeResult{}, ErrQualityProbeUnavailable
 	}
-	return prober.ProbeEgressQuality(ctx, nodeID, input)
+	// A profile may request the thinking guard, but only a known reasoning-capable
+	// Build model can make zero reasoning tokens meaningful. Unknown/custom and
+	// non-reasoning models stay observable without being falsely quarantined.
+	input.RequireThinking = input.RequireThinking && modeldomain.SupportsReasoningForProvider(accountdomain.ProviderBuild, input.Model)
+	result, err := prober.ProbeEgressQuality(ctx, nodeID, input)
+	if err != nil {
+		return QualityProbeResult{}, err
+	}
+	result.ThinkingRequired = input.RequireThinking
+	return result, nil
 }
 
 // AccountBindingRepository is intentionally narrow so existing account
@@ -851,13 +867,27 @@ func NormalizeProxyURL(value string) (string, error) {
 	}
 	parseValue := strings.ReplaceAll(value, ProxyAccountPlaceholder, proxyAccountSentinel)
 	parsed, err := url.Parse(parseValue)
-	if err != nil || parsed.Host == "" || parsed.Hostname() == "" {
+	if err != nil {
 		return "", errors.New("代理地址格式无效")
 	}
-	switch strings.ToLower(parsed.Scheme) {
+	scheme := strings.ToLower(parsed.Scheme)
+	if tunnelproxy.IsSupportedScheme(scheme) {
+		if hasAccountPlaceholder {
+			return "", errors.New("隧道代理不支持 {account} 占位符")
+		}
+		normalized, normalizeErr := tunnelproxy.Normalize(value)
+		if normalizeErr != nil {
+			return "", normalizeErr
+		}
+		return normalized, nil
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return "", errors.New("代理地址格式无效")
+	}
+	switch scheme {
 	case "http", "https", "socks4", "socks4a", "socks5", "socks5h":
 	default:
-		return "", errors.New("代理地址协议必须是 HTTP、HTTPS、SOCKS4 或 SOCKS5")
+		return "", errors.New("代理地址协议必须是 HTTP、HTTPS、SOCKS4、SOCKS5、Trojan、VLESS、SS 或 VMess")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
 		return "", errors.New("代理地址不能包含路径、查询参数或片段")

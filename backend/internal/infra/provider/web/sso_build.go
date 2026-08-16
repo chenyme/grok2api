@@ -24,7 +24,6 @@ import (
 const (
 	ssoBuildClientID = "b1a00492-073a-47ea-816f-4c329264a828"
 	ssoBuildScope    = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write"
-	ssoAccountsURL   = "https://accounts.x.ai/"
 	ssoDeviceURL     = "https://auth.x.ai/oauth2/device/code"
 	ssoVerifyURL     = "https://auth.x.ai/oauth2/device/verify"
 	ssoApproveURL    = "https://auth.x.ai/oauth2/device/approve"
@@ -75,17 +74,6 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 }
 
 func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Credential) (provider.CredentialSeed, error) {
-	status, finalURL, _, err := f.do(ctx, http.MethodGet, ssoAccountsURL, nil)
-	if err != nil {
-		return provider.CredentialSeed{}, err
-	}
-	if status == http.StatusUnauthorized || strings.Contains(finalURL, "sign-in") || strings.Contains(finalURL, "sign-up") {
-		return provider.CredentialSeed{}, provider.ErrUnauthorized
-	}
-	if status < 200 || status >= 400 {
-		return provider.CredentialSeed{}, fmt.Errorf("校验 Grok Web SSO 失败: %w", conversionHTTPError{status: status})
-	}
-
 	form := url.Values{"client_id": {ssoBuildClientID}, "scope": {ssoBuildScope}}
 	status, _, body, err := f.do(ctx, http.MethodPost, ssoDeviceURL, form)
 	if err != nil {
@@ -95,16 +83,15 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		return provider.CredentialSeed{}, fmt.Errorf("xAI Device Flow 启动失败: %w", conversionHTTPError{status: status})
 	}
 	var device struct {
-		DeviceCode              string `json:"device_code"`
-		UserCode                string `json:"user_code"`
-		VerificationURIComplete string `json:"verification_uri_complete"`
-		Interval                int    `json:"interval"`
-		ExpiresIn               int    `json:"expires_in"`
+		DeviceCode string `json:"device_code"`
+		UserCode   string `json:"user_code"`
+		Interval   int    `json:"interval"`
+		ExpiresIn  int    `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &device); err != nil {
 		return provider.CredentialSeed{}, fmt.Errorf("解析 xAI Device Flow: %w", err)
 	}
-	if device.DeviceCode == "" || device.UserCode == "" || !safeXAIURL(device.VerificationURIComplete) {
+	if device.DeviceCode == "" || device.UserCode == "" {
 		return provider.CredentialSeed{}, fmt.Errorf("xAI Device Flow 返回字段不完整")
 	}
 	if device.Interval <= 0 {
@@ -114,33 +101,37 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		device.ExpiresIn = 1800
 	}
 
-	status, finalURL, _, err = f.do(ctx, http.MethodGet, device.VerificationURIComplete, nil)
+	// verify/approve 已在 auth.x.ai 完成状态变更。重定向目标只是结果页，
+	// 因此不访问 accounts.x.ai，直接解析首个 3xx Location 的状态路径。
+	status, finalURL, _, err := f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
-	if status < 200 || status >= 400 {
-		return provider.CredentialSeed{}, fmt.Errorf("打开 Device Flow 验证页失败: %w", conversionHTTPError{status: status})
-	}
-	status, finalURL, _, err = f.do(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}})
-	if err != nil {
-		return provider.CredentialSeed{}, err
+	if status == http.StatusUnauthorized {
+		return provider.CredentialSeed{}, provider.ErrUnauthorized
 	}
 	if status < 200 || status >= 400 {
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败: %w", conversionHTTPError{status: status})
 	}
-	if !strings.Contains(finalURL, "consent") {
+	if redirectState := ssoDeviceRedirectState(finalURL); redirectState != "consent" {
+		if redirectState == "sign-in" {
+			return provider.CredentialSeed{}, provider.ErrUnauthorized
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败")
 	}
-	status, finalURL, _, err = f.do(ctx, http.MethodPost, ssoApproveURL, url.Values{
+	status, finalURL, _, err = f.doWithFollow(ctx, http.MethodPost, ssoApproveURL, url.Values{
 		"user_code": {device.UserCode}, "action": {"allow"}, "principal_type": {"User"}, "principal_id": {""},
-	})
+	}, false)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
 	if status < 200 || status >= 400 {
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败: %w", conversionHTTPError{status: status})
 	}
-	if !strings.Contains(finalURL, "done") {
+	if redirectState := ssoDeviceRedirectState(finalURL); redirectState != "done" {
+		if redirectState == "sign-in" {
+			return provider.CredentialSeed{}, provider.ErrUnauthorized
+		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败")
 	}
 
@@ -226,6 +217,12 @@ func (f *ssoBuildFlow) pollToken(ctx context.Context, deviceCode string, interva
 }
 
 func (f *ssoBuildFlow) do(ctx context.Context, method, endpoint string, form url.Values) (int, string, []byte, error) {
+	return f.doWithFollow(ctx, method, endpoint, form, true)
+}
+
+// doWithFollow 在 follow=false 时遇到 3xx 直接返回状态码与解析后的 Location 作为 finalURL，
+// 用于重定向目标域会被 Cloudflare 拦截（accounts.x.ai）的请求。
+func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string, form url.Values, follow bool) (int, string, []byte, error) {
 	if !safeXAIURL(endpoint) {
 		return 0, "", nil, fmt.Errorf("xAI OAuth URL 不安全")
 	}
@@ -277,6 +274,9 @@ func (f *ssoBuildFlow) do(ctx context.Context, method, endpoint string, form url
 		if !safeXAIURL(currentURL) {
 			return response.StatusCode, currentURL, data, fmt.Errorf("xAI OAuth 重定向到非受信域名")
 		}
+		if !follow {
+			return response.StatusCode, currentURL, nil, nil
+		}
 		if response.StatusCode == http.StatusSeeOther || ((response.StatusCode == http.StatusMovedPermanently || response.StatusCode == http.StatusFound) && currentMethod != http.MethodGet && currentMethod != http.MethodHead) {
 			currentMethod = http.MethodGet
 			currentForm = nil
@@ -297,6 +297,24 @@ func (f *ssoBuildFlow) captureCookies(response *http.Response) {
 			continue
 		}
 		f.cookies[name] = value
+	}
+}
+
+func ssoDeviceRedirectState(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || !safeXAIURL(raw) {
+		return ""
+	}
+	path := strings.TrimRight(parsed.EscapedPath(), "/")
+	switch path {
+	case "/oauth2/device/consent":
+		return "consent"
+	case "/oauth2/device/done":
+		return "done"
+	case "/sign-in", "/sign-up":
+		return "sign-in"
+	default:
+		return ""
 	}
 }
 

@@ -44,6 +44,7 @@ var (
 	ErrConversationUnsupported    = errors.New("目标模型不支持当前对话协议")
 	ErrVideoInputTooLarge         = errors.New("视频参考图片编码后总输入超过 32 MiB")
 	ErrVideoInputUnavailable      = errors.New("视频临时输入不存在或已过期")
+	ErrVideoParameterInvalid      = errors.New("视频请求参数无效")
 	ErrVideoOperationUnsupported  = errors.New("视频编辑/延长仅支持路由到 Console grok-imagine-video")
 	ErrLedgerUnavailable          = errors.New("计费账本暂不可用")
 )
@@ -179,6 +180,7 @@ type Service struct {
 	selector                    *Selector
 	responses                   repository.ResponseRepository
 	maxAttempts                 atomic.Int64
+	videoMaxAttempts            atomic.Int64
 	buildForbiddenReauth        atomic.Pointer[buildForbiddenReauthPolicy]
 	requestTimeout              atomic.Int64
 	mediaJobs                   repository.MediaJobRepository
@@ -443,6 +445,10 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 }
 
 func (s *Service) UpdateMaxAttempts(maxAttempts int) { s.maxAttempts.Store(int64(maxAttempts)) }
+
+// UpdateVideoMaxAttempts configures create-phase account failover for video jobs.
+// 0 is treated as the general default pool size for legacy configs.
+func (s *Service) UpdateVideoMaxAttempts(maxAttempts int) { s.videoMaxAttempts.Store(int64(maxAttempts)) }
 
 // UpdateMarkBuildChatDeniedAsReauth 热更新 Build chat 永久拒绝是否标 reauthRequired。
 // 默认 false：仅模型级冷却；true 时按旧逻辑将账号标为失效并出池。
@@ -748,6 +754,17 @@ func (s *Service) selectSchedulableMediaRouteWithQuotaMode(ctx context.Context, 
 	eligible, fallback, err := s.eligibleMediaRoutes(routes, key, capability, providerSupported)
 	if err != nil {
 		return fallback, nil, err
+	}
+	return s.selectSchedulableEligibleMediaRouteWithQuotaMode(ctx, eligible, key, consumesQuota, resolveQuotaMode)
+}
+
+// selectSchedulableEligibleMediaRouteWithQuotaMode selects an account plan
+// from routes that already passed capability, client-key, and Provider support
+// checks. Callers may apply request-specific route constraints between the
+// eligibility and scheduling phases without evaluating disallowed routes.
+func (s *Service) selectSchedulableEligibleMediaRouteWithQuotaMode(ctx context.Context, eligible []modeldomain.Route, key clientkey.Key, consumesQuota bool, resolveQuotaMode func(modeldomain.Route) string) (modeldomain.Route, *selectionSession, error) {
+	if len(eligible) == 0 {
+		return modeldomain.Route{}, nil, ErrNoAvailableAccount
 	}
 	var firstSelectionErr error
 	for _, route := range eligible {

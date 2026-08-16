@@ -10,6 +10,7 @@ import (
 	"time"
 
 	_ "github.com/bdandy/go-socks4"
+	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -58,6 +59,12 @@ func newBuildClientWithOptions(proxyURL string, responseHeaderTimeout time.Durat
 				return nil, fmt.Errorf("创建 Grok Build SOCKS 代理: %w", err)
 			}
 			transport.DialContext = dialContext(dialer)
+		case "trojan", "vless", "ss", "vmess":
+			dialer, err := tunnelproxy.NewDialer(proxyURL)
+			if err != nil {
+				return nil, fmt.Errorf("创建 Grok Build 隧道代理: %w", err)
+			}
+			transport.DialContext = dialer.DialContext
 		default:
 			return nil, fmt.Errorf("Grok Build 不支持代理协议 %q", parsed.Scheme)
 		}

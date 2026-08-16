@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
@@ -26,6 +27,7 @@ type Handler struct {
 	guardStatePath  string
 	guardConfigPath string
 	guardProbe      egressapp.QualityProbeInput
+	profilesMu      sync.Mutex
 }
 
 func NewHandler(service *egressapp.Service, guardStatePath ...string) *Handler {
@@ -59,6 +61,10 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/egress-nodes/:id/quality-test", h.testQuality)
 	router.GET("/egress-quality-guard", h.qualityGuardStatus)
 	router.PUT("/egress-quality-guard/config", h.updateQualityGuardConfig)
+	router.GET("/egress-quality-guard/profiles", h.listQualityGuardProfiles)
+	router.POST("/egress-quality-guard/profiles", h.createQualityGuardProfile)
+	router.PUT("/egress-quality-guard/profiles/:id", h.updateQualityGuardProfile)
+	router.DELETE("/egress-quality-guard/profiles/:id", h.deleteQualityGuardProfile)
 	router.POST("/egress-quality-guard/nodes/:id/test", h.testQualityGuardNode)
 	router.POST("/egress-nodes/:id/accounts", h.assignAccounts)
 	router.DELETE("/egress-nodes/accounts", h.unassignAccounts)
@@ -139,6 +145,8 @@ type qualityGuardConfig struct {
 	QuarantineSeconds     int      `json:"quarantine_seconds"`
 	MinHealthyNodes       int      `json:"min_healthy_nodes"`
 	MaxOutputTokens       int      `json:"max_output_tokens"`
+	FailClosed            bool     `json:"fail_closed"`
+	MinGenerationMS       int      `json:"min_generation_ms"`
 	Prompt                string   `json:"prompt"`
 	Expected              string   `json:"expected"`
 }
@@ -194,11 +202,16 @@ func (h *Handler) qualityGuardStatus(c *gin.Context) {
 			"hard_tps": state.Guard.HardTPS, "consecutive_soft": state.Guard.ConsecutiveSoft,
 			"consecutive_errors": state.Guard.ConsecutiveErrors, "quarantine_seconds": state.Guard.QuarantineSeconds,
 			"min_healthy_nodes": state.Guard.MinHealthyNodes, "max_output_tokens": state.Guard.MaxOutputTokens,
+			"fail_closed": state.Guard.FailClosed, "min_generation_ms": state.Guard.MinGenerationMS,
 		},
 		"nodes": state.Nodes, "protectedNodeIds": state.ProtectedNodeIDs, "recentEvents": state.RecentEvents,
 	}
 	if state.Statistics.StartedAt > 0 {
 		payload["statistics"] = state.Statistics
+	}
+	if profiles, err := loadProbeProfileFile(h.profilesPath()); err == nil {
+		payload["activeProfileId"] = profiles.ActiveProfileID
+		payload["profiles"] = profiles.summaries()
 	}
 	response.Success(c, http.StatusOK, payload)
 }
@@ -358,11 +371,24 @@ func (h *Handler) testQualityGuardNode(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.guardProbe.ClientKeyID == 0 || strings.TrimSpace(h.guardProbe.Model) == "" || h.guardProbe.Prompt == "" || h.guardProbe.Expected == "" {
+	if h.guardProbe.ClientKeyID == 0 || strings.TrimSpace(h.guardProbe.Model) == "" {
 		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护配置暂不可用")
 		return
 	}
-	value, err := h.service.ProbeQuality(c.Request.Context(), nodeID, h.guardProbe)
+	var request struct {
+		ProfileID string `json:"profileId"`
+	}
+	_ = c.ShouldBindJSON(&request)
+	input, err := h.resolveProbeInput(strings.TrimSpace(request.ProfileID))
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", err.Error())
+		return
+	}
+	if strings.TrimSpace(input.Prompt) == "" {
+		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护配置暂不可用")
+		return
+	}
+	value, err := h.service.ProbeQuality(c.Request.Context(), nodeID, input)
 	if err != nil {
 		h.writeQualityProbeError(c, err)
 		return
@@ -375,7 +401,8 @@ func (h *Handler) testQualityGuardNode(c *gin.Context) {
 		"visibleTokens": value.VisibleTokens, "visibleCharacters": value.VisibleCharacters,
 		"outputTokensPerSecond":  value.OutputTokensPerSecond,
 		"visibleTokensPerSecond": value.OutputTokensPerSecond, "expectedMatched": value.ExpectedMatched,
-		"responseSha256": value.ResponseSHA256,
+		"thinkingRequired": value.ThinkingRequired,
+		"responseSha256":   value.ResponseSHA256,
 	})
 }
 
@@ -513,7 +540,8 @@ func (h *Handler) testQuality(c *gin.Context) {
 		"visibleTokens": value.VisibleTokens, "visibleCharacters": value.VisibleCharacters,
 		"outputTokensPerSecond":  value.OutputTokensPerSecond,
 		"visibleTokensPerSecond": value.OutputTokensPerSecond, "expectedMatched": value.ExpectedMatched,
-		"responseSha256": value.ResponseSHA256,
+		"thinkingRequired": value.ThinkingRequired,
+		"responseSha256":   value.ResponseSHA256,
 	})
 }
 

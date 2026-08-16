@@ -39,11 +39,14 @@ type Config struct {
 	TokenAuth             string
 	UserAgent             string
 	ResponseHeaderTimeout time.Duration
+	StreamIdleTimeout     time.Duration
 }
 
 const (
 	subscriptionTierTimeout = 10 * time.Second
 	buildControlTimeout     = 30 * time.Second
+	buildGrok45Model        = "grok-4.5"
+	buildGrok46Model        = "grok-4.6"
 )
 
 // Adapter implements the Grok Build CLI Responses, model, Billing, and OAuth protocols.
@@ -66,6 +69,7 @@ type Adapter struct {
 
 func NewAdapter(cfg Config, cipher *security.Cipher) *Adapter {
 	cfg.ResponseHeaderTimeout = normalizeBuildResponseHeaderTimeout(cfg.ResponseHeaderTimeout)
+	cfg.StreamIdleTimeout = normalizeBuildStreamIdleTimeout(cfg.StreamIdleTimeout)
 	transport := newBuildDirectTransport(cfg.ResponseHeaderTimeout)
 	httpClient := &http.Client{Transport: transport}
 	// The official CLI uses a persistent machine identity. The gateway does not collect machine fingerprints;
@@ -154,6 +158,7 @@ func buildBotFlaggedFromClaims(claims map[string]any) bool {
 
 func (a *Adapter) UpdateConfig(cfg Config) {
 	cfg.ResponseHeaderTimeout = normalizeBuildResponseHeaderTimeout(cfg.ResponseHeaderTimeout)
+	cfg.StreamIdleTimeout = normalizeBuildStreamIdleTimeout(cfg.StreamIdleTimeout)
 	a.cfgMu.Lock()
 	previousTimeout := a.cfg.ResponseHeaderTimeout
 	a.cfg = cfg
@@ -202,6 +207,13 @@ func normalizeBuildResponseHeaderTimeout(value time.Duration) time.Duration {
 	return value
 }
 
+func normalizeBuildStreamIdleTimeout(value time.Duration) time.Duration {
+	if value <= 0 {
+		return settingsdomain.DefaultBuildStreamIdleTimeout
+	}
+	return value
+}
+
 func (a *Adapter) config() Config {
 	a.cfgMu.RLock()
 	defer a.cfgMu.RUnlock()
@@ -241,7 +253,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return invalidResponsesResponse(err), nil
 		}
-		body, err = normalizeBuildRequest(body, request.Model)
+		body, err = normalizeBuildRequest(body, request.Model, request.Operation)
 		if err != nil {
 			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 				return invalidConversationResponse(request.Operation, err), nil
@@ -361,6 +373,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				Body: append([]byte(nil), body...), BodyTruncated: true,
 			}
 		}
+	}
+	if request.Streaming && isHTTPSuccess(resp.StatusCode) && resp.Body != nil {
+		resp.Body = wrapBuildSemanticIdle(resp.Body, a.config().StreamIdleTimeout)
 	}
 	modelCatalogChanged := a.modelCatalogChanged(request.Credential.ID, resp.Header.Get("x-models-etag"))
 	// Capture or clear reasoning replay in the upstream Responses shape before protocol conversion.
@@ -618,15 +633,17 @@ func (a *Adapter) ListModels(ctx context.Context, credential account.Credential)
 
 // NormalizeAccountModelCapabilities normalizes capabilities that the OAuth
 // session contract exposes independently of the account's sparse /models list.
-// Composer is available to Build OAuth sessions even though the live catalog can
-// return only grok-4.5. Super always includes video 1.5; Free and Unknown remove
-// video 1.5 exactly. BuildAPIFallback is ignored.
+// Composer is available to Build OAuth sessions independently of the sparse
+// live catalog. Grok 4.6 sessions retain the still-supported Grok 4.5 route for
+// backwards compatibility. Super always includes video 1.5; Free and Unknown
+// remove video 1.5 exactly. BuildAPIFallback is ignored.
 func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *account.Billing, credential account.Credential) []string {
 	super := account.IsBuildSuper(credential, billing)
 	composer := credential.Provider == account.ProviderBuild && credential.AuthType == account.AuthTypeOAuth
 	result := make([]string, 0, len(models)+2)
 	seen := make(map[string]struct{}, len(models)+2)
 	hasVideo15 := false
+	hasGrok46 := false
 	for _, model := range models {
 		model = strings.TrimSpace(model)
 		if model == "" {
@@ -641,8 +658,17 @@ func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *ac
 			}
 			hasVideo15 = true
 		}
+		if model == buildGrok46Model {
+			hasGrok46 = true
+		}
 		seen[model] = struct{}{}
 		result = append(result, model)
+	}
+	if credential.Provider == account.ProviderBuild && hasGrok46 {
+		if _, exists := seen[buildGrok45Model]; !exists {
+			seen[buildGrok45Model] = struct{}{}
+			result = append(result, buildGrok45Model)
+		}
 	}
 	if super && !hasVideo15 {
 		result = append(result, buildVideoModel)

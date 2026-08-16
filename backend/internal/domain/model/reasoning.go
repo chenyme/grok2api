@@ -37,12 +37,14 @@ var reasoningEffortSuffixes = []string{
 // generally accepted by the model family. Provider-specific wire restrictions are
 // applied by providerReasoningEffortOverrides:
 //   - grok-4.5: low/medium/high (reasoning cannot be disabled; no xhigh/max)
+//   - grok-4.6: low/medium/high/xhigh (xhigh is a real upstream effort; max stays guarded)
 //   - grok-4.3: none/low/medium/high
 //   - grok-4.20-multi-agent: low/medium/high/xhigh (effort controls agent count)
 //
 // Unknown models default to none-only and never expand into effort aliases.
 var grokReasoningCapabilities = map[string][]string{
 	"grok-4.5":                     {ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh},
+	"grok-4.6":                     {ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh, ReasoningEffortXHigh},
 	"grok-4.3":                     {ReasoningEffortNone, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh},
 	"grok-build-0.1":               {ReasoningEffortNone},
 	"grok-4.20-0309-reasoning":     {ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh},

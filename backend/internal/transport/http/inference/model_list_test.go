@@ -44,6 +44,7 @@ func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
 	now := time.Unix(100, 0).UTC()
 	base := newModelListItems([]modeldomain.Route{
 		{PublicID: "Build/grok-4.5", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
+		{PublicID: "Build/grok-4.6", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 		{PublicID: "Console/grok-4.3", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 		{PublicID: "Console/grok-4.20-0309-reasoning", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
 		{PublicID: "Build/grok-build-0.1", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses, CreatedAt: now},
@@ -53,7 +54,7 @@ func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
 	for _, item := range expanded {
 		ids[item.ID] = true
 	}
-	for _, want := range []string{"grok-4.5", "grok-4.5-low", "grok-4.5-medium", "grok-4.5-high", "grok-4.3-none", "grok-4.3-low", "grok-4.3-medium", "grok-4.3-high", "grok-build-0.1"} {
+	for _, want := range []string{"grok-4.5", "grok-4.5-low", "grok-4.5-medium", "grok-4.5-high", "grok-4.6", "grok-4.6-low", "grok-4.6-medium", "grok-4.6-high", "grok-4.6-xhigh", "grok-4.3-none", "grok-4.3-low", "grok-4.3-medium", "grok-4.3-high", "grok-build-0.1"} {
 		if !ids[want] {
 			t.Fatalf("missing model %q in %#v", want, expanded)
 		}
@@ -65,6 +66,24 @@ func TestAppendReasoningModelAliasesUsesRealSupportedLevels(t *testing.T) {
 		if ids[reject] {
 			t.Fatalf("unexpected unsupported alias %q", reject)
 		}
+	}
+}
+
+func TestAppendReasoningModelAliasesIncludesConsoleGrok46XHigh(t *testing.T) {
+	expanded := appendReasoningModelAliases([]modelListItem{{
+		ID: "grok-4.6", Provider: account.ProviderConsole, Capability: modeldomain.CapabilityResponses,
+	}})
+	ids := make(map[string]bool, len(expanded))
+	for _, item := range expanded {
+		ids[item.ID] = true
+	}
+	for _, want := range []string{"grok-4.6-low", "grok-4.6-medium", "grok-4.6-high", "grok-4.6-xhigh"} {
+		if !ids[want] {
+			t.Fatalf("missing Console alias %q in %#v", want, expanded)
+		}
+	}
+	if ids["grok-4.6-max"] {
+		t.Fatalf("client compatibility value max must not be advertised as a model alias: %#v", expanded)
 	}
 }
 
@@ -106,6 +125,42 @@ func TestNewCodexModelCatalogIncludesRequiredProtocolFields(t *testing.T) {
 	var envelope map[string]json.RawMessage
 	if err = json.Unmarshal(body, &envelope); err != nil || len(envelope) != 1 || envelope["models"] == nil {
 		t.Fatalf("catalog envelope = %s, err = %v", body, err)
+	}
+}
+
+func TestCodexCatalogUsesGrok46MetadataForBaseAndXHighAlias(t *testing.T) {
+	items := []modelListItem{
+		{ID: "grok-4.6", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+		{ID: "grok-4.6-xhigh", Provider: account.ProviderBuild, Capability: modeldomain.CapabilityResponses},
+	}
+	models := newCodexModelCatalog(items).Models
+	if len(models) != 2 {
+		t.Fatalf("model count = %d, want 2", len(models))
+	}
+
+	base := models[0]
+	if base.ContextWindow != 500000 || base.MaxContextWindow != 500000 {
+		t.Fatalf("grok-4.6 context window = %d/%d, want 500000/500000", base.ContextWindow, base.MaxContextWindow)
+	}
+	if base.Description != "xAI Grok 4.6 frontier model with reasoning and vision." {
+		t.Fatalf("grok-4.6 description = %q", base.Description)
+	}
+	if len(base.InputModalities) != 2 || base.InputModalities[0] != "text" || base.InputModalities[1] != "image" {
+		t.Fatalf("grok-4.6 input modalities = %#v, want text/image", base.InputModalities)
+	}
+	if base.DefaultReasoningLevel != "medium" || len(base.SupportedReasoningLevels) != 4 || base.SupportedReasoningLevels[3].Effort != "xhigh" {
+		t.Fatalf("grok-4.6 reasoning metadata = default %q, levels %#v", base.DefaultReasoningLevel, base.SupportedReasoningLevels)
+	}
+	if !base.SupportsReasoningSummaryParameter || !base.SupportsReasoningSummaries {
+		t.Fatalf("grok-4.6 reasoning support missing: %#v", base)
+	}
+
+	alias := models[1]
+	if alias.ContextWindow != base.ContextWindow || alias.MaxContextWindow != base.MaxContextWindow || alias.Description != base.Description {
+		t.Fatalf("grok-4.6-xhigh did not inherit base metadata: %#v", alias)
+	}
+	if len(alias.InputModalities) != 2 || alias.DefaultReasoningLevel != "xhigh" || len(alias.SupportedReasoningLevels) != 1 || alias.SupportedReasoningLevels[0].Effort != "xhigh" {
+		t.Fatalf("grok-4.6-xhigh metadata = %#v", alias)
 	}
 }
 

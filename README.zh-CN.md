@@ -139,7 +139,7 @@ flowchart LR
 | 路由 | 模型发现、Provider 限定、会话粘滞、额度/并发门禁和有界切换 |
 | 会话 | stored response、compact、Prompt Cache 亲和与可选 reasoning replay |
 | 媒体 | 图片生成与编辑、视频任务、本地归档及 URL/Base64/SSE 输出 |
-| 出口 | HTTP/SOCKS/Resin、订阅、探测、代理池、调配、回退与 FlareSolverr |
+| 出口 | HTTP/SOCKS/Resin 与 Trojan/VLESS/Shadowsocks/VMess 隧道、订阅、探测、代理池、调配、回退与 FlareSolverr |
 | 运维 | Dashboard、模型路由、客户端密钥、审计、运行设置和媒体库 |
 
 ### Provider 边界
@@ -340,13 +340,16 @@ curl http://127.0.0.1:8000/v1/responses \
 
 出口节点按 Build、Web、Console 或 Web 资源隔离。管理端支持：
 
-- HTTP、HTTPS、SOCKS4/4A、SOCKS5/5H 与 Resin
+- HTTP、HTTPS、SOCKS4/4A、SOCKS5/5H、Resin、Trojan、VLESS、Shadowsocks 与 VMess
+- 隧道协议支持 TCP、WebSocket 和 TLS，未实现的传输形态会在导入时拒绝
 - 订阅和文本/Base64 导入
 - 批量探测、筛选、删除、分配与均衡
 - 按作用域配置无回退、直连或固定节点
 - 代理池模式，单次连接失败不会触发全局冷却
 - 固定代理传输失败后立即复测；同节点复测自动合并，后续绑定请求限时等待并在恢复后快速重试
 - 可选的[出口质量守护程序](./tools/egress-quality-guard/README.zh-CN.md)，支持逐节点模型探测、防误杀隔离和自动恢复；通过内置的 `quality-guard` Compose profile 按需启用
+
+Hysteria 与 TUIC 暂未支持。FlareSolverr 仅接受 HTTP/SOCKS 代理地址，因此自动刷新 Clearance 暂不能直接使用隧道分享链接。
 
 首次启用时只需在 `config.yaml` 中增加 `qualityGuard` 并启动 profile。主程序会自动创建并稳定复用不可导出的系统探测身份：
 
@@ -380,7 +383,12 @@ socks5h://Default.{account}:RESIN_PROXY_TOKEN@resin:2260
 docker compose --profile flaresolverr up -d
 ```
 
-随后在 **运行设置 → 媒体与网络 → Clearance** 选择 `FlareSolverr`，地址填写 `http://flaresolverr:8191`。
+随后在 **运行设置 → 媒体与网络 → Clearance** 填写 `http://flaresolverr:8191`，并选择一种托管模式：
+
+- `FlareSolverr` 按配置周期主动刷新固定出口中过期的 Clearance。
+- `按需刷新` 不按时间淘汰最后一次成功的 Clearance，只在上游明确拒绝并将其标记失效后重新求解；后台定时任务不会在该模式下启动浏览器。
+
+`手动维护` 始终不会调用 FlareSolverr。按需模式允许首次请求不携带托管 Clearance；若被 Cloudflare 拒绝，下一次租约会执行一次经过并发去重的求解。
 
 出口层只重试可以确认发生在请求提交前的连接故障，不会重放已经提交的生成请求、认证失败、额度耗尽或上游限流。
 
@@ -409,7 +417,7 @@ GROK2API_DATABASE_URL='postgresql://user:password@host:5432/grok2api?sslmode=req
 
 - `audit.ledgerMode`：`observe` 仅报告账本故障；`enforce` 可暂停新推理以保护计费准确性。
 - `routing.accountIsolatedConnections`：为外部 L4 或按连接哈希的负载均衡器按账号拆分出站 TCP/HTTP 连接池。默认关闭，因为会增加连接数、TLS 握手、内存和文件描述符占用。
-- `routing.segmentedSelectorEnabled`：用于大型账号池，同时保留完整选号回退与原子门禁。
+- `routing.segmentedSelectorEnabled`：默认对至少 3000 个可用账号的大号池启用，限制动态并发读取规模，同时保留额度/等级优先级、会话粘性、完整选号回退与原子门禁。
 - Build 响应头超时和精确匹配的 403 失效规则支持热加载。
 - “同步最新版本”可应用已验证的 Grok Build 客户端版本和 User-Agent。
 

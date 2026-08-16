@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
 
 // normalizeResponsesRequest 改写路由字段和兼容别名，并为上游不支持的新工具协议建立请求级映射。
@@ -16,7 +17,7 @@ func normalizeResponsesRequest(body []byte, model string) ([]byte, *responsesToo
 		return nil, nil, fmt.Errorf("解析 Responses 请求: %w", err)
 	}
 	payload["model"] = mustJSON(model)
-	if _, err := normalizeBuildRequestPayload(payload, model); err != nil {
+	if _, err := normalizeBuildRequestPayload(payload, model, conversation.OperationResponses); err != nil {
 		return nil, nil, err
 	}
 	if responseFormat, exists := payload["response_format"]; exists {
@@ -57,12 +58,12 @@ func normalizeResponsesRequest(body []byte, model string) ([]byte, *responsesToo
 
 // normalizeBuildRequest applies the stable compatibility boundary shared by Responses,
 // Chat Completions, and Anthropic Messages before the request reaches Grok Build.
-func normalizeBuildRequest(body []byte, model string) ([]byte, error) {
+func normalizeBuildRequest(body []byte, model, operation string) ([]byte, error) {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("解析 Build 请求: %w", err)
 	}
-	changed, err := normalizeBuildRequestPayload(payload, model)
+	changed, err := normalizeBuildRequestPayload(payload, model, operation)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +73,7 @@ func normalizeBuildRequest(body []byte, model string) ([]byte, error) {
 	return json.Marshal(payload)
 }
 
-func normalizeBuildRequestPayload(payload map[string]json.RawMessage, model string) (bool, error) {
+func normalizeBuildRequestPayload(payload map[string]json.RawMessage, model, operation string) (bool, error) {
 	changed := false
 	// client_metadata is a Codex transport envelope and may contain local paths,
 	// repository remotes, and installation/session identifiers. It is consumed by
@@ -83,6 +84,27 @@ func normalizeBuildRequestPayload(payload map[string]json.RawMessage, model stri
 	}
 	if normalizeBuildReasoningEffortPayload(payload, model) {
 		changed = true
+	}
+	// grok-build 1.0.4 always requests a concise reasoning summary from its
+	// Responses backend, even when it uses the model's default effort. Chat
+	// Completions has no separate summary parameter, so make that Build-specific
+	// compatibility contract explicit without changing native Responses,
+	// Console, or Web semantics.
+	if operation == conversation.OperationChat {
+		var reasoning map[string]json.RawMessage
+		if raw := payload["reasoning"]; !isEmptyJSON(raw) {
+			if err := json.Unmarshal(raw, &reasoning); err != nil {
+				return false, fmt.Errorf("解析 Build reasoning: %w", err)
+			}
+		}
+		if reasoning == nil {
+			reasoning = make(map[string]json.RawMessage)
+		}
+		if isEmptyJSON(reasoning["summary"]) {
+			reasoning["summary"] = mustJSON("concise")
+			payload["reasoning"] = mustJSON(reasoning)
+			changed = true
+		}
 	}
 	defaultsChanged, err := applyBuildResponseDefaults(payload)
 	if err != nil {
@@ -118,7 +140,9 @@ func applyBuildResponseDefaults(payload map[string]json.RawMessage) (bool, error
 
 // normalizeBuildReasoningEffortPayload maps client aliases to levels accepted by
 // the selected Grok model. Grok 4.5 and unknown models retain the proven defensive
-// xhigh/max -> high behavior; explicitly supported xhigh models keep their value.
+// xhigh/max -> high behavior for models without an xhigh wire contract. Models
+// that explicitly support xhigh keep xhigh and map the client-only max alias to
+// that highest verified upstream level.
 func normalizeBuildReasoningEffortPayload(payload map[string]json.RawMessage, model string) bool {
 	raw, exists := payload["reasoning"]
 	if !exists || isEmptyJSON(raw) {
@@ -156,7 +180,11 @@ func normalizeBuildReasoningEffortPayload(payload map[string]json.RawMessage, mo
 			normalized = modeldomain.ReasoningEffortHigh
 		}
 	case "max":
-		normalized = modeldomain.ReasoningEffortHigh
+		if modeldomain.SupportsReasoningEffort(model, modeldomain.ReasoningEffortXHigh) {
+			normalized = modeldomain.ReasoningEffortXHigh
+		} else {
+			normalized = modeldomain.ReasoningEffortHigh
+		}
 	default:
 		return false
 	}

@@ -38,7 +38,7 @@ services:
   #     - NET_ADMIN
 
   # ================================ FLARESOLVERR ================================
-  # 在管理端将 Clearance 模式设为 FlareSolverr，并使用 http://flaresolverr:8191。
+  # 在管理端将 Clearance 模式设为 FlareSolverr 或按需刷新，并使用 http://flaresolverr:8191。
   # 启动命令：docker compose --profile flaresolverr up -d
   # Podman：podman compose --profile flaresolverr up -d
 
