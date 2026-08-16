@@ -275,13 +275,9 @@ func convertChatTools(raw json.RawMessage) ([]any, error) {
 			object, _ := value.(map[string]any)
 			switch typeName {
 			case "web_search", "web_search_preview", "web_search_preview_2025_03_11", "web_search_2025_08_26":
-				converted := map[string]any{"type": "web_search"}
-				if filters, ok := object["filters"].(map[string]any); ok {
-					if domains, exists := filters["allowed_domains"]; exists {
-						converted["filters"] = map[string]any{"allowed_domains": domains}
-					}
-				} else if domains, exists := object["allowed_domains"]; exists {
-					converted["filters"] = map[string]any{"allowed_domains": domains}
+				converted, err := convertChatWebSearchTool(object)
+				if err != nil {
+					return nil, err
 				}
 				result = append(result, converted)
 			default:
@@ -297,6 +293,89 @@ func convertChatTools(raw json.RawMessage) ([]any, error) {
 		result = append(result, function)
 	}
 	return result, nil
+}
+
+func convertChatWebSearchTool(tool map[string]any) (map[string]any, error) {
+	nested := make(map[string][]any, 2)
+	if rawFilters, exists := tool["filters"]; exists && rawFilters != nil {
+		filters, ok := rawFilters.(map[string]any)
+		if !ok {
+			return nil, errors.New("web_search filters 必须是对象")
+		}
+		for _, field := range []string{"allowed_domains", "excluded_domains"} {
+			if value, exists := filters[field]; exists {
+				domains, err := normalizeChatWebSearchDomains(value, field)
+				if err != nil {
+					return nil, err
+				}
+				nested[field] = domains
+			}
+		}
+	}
+
+	resultFilters := make(map[string]any, 2)
+	for _, field := range []string{"allowed_domains", "excluded_domains"} {
+		var topLevel []any
+		if value, exists := tool[field]; exists {
+			domains, err := normalizeChatWebSearchDomains(value, field)
+			if err != nil {
+				return nil, err
+			}
+			topLevel = domains
+		}
+		domains := nested[field]
+		if len(domains) > 0 && len(topLevel) > 0 && !sameChatWebSearchDomains(domains, topLevel) {
+			return nil, fmt.Errorf("web_search %s 声明冲突", field)
+		}
+		if len(domains) == 0 {
+			domains = topLevel
+		}
+		if len(domains) > 0 {
+			resultFilters[field] = domains
+		}
+	}
+	if _, hasAllowed := resultFilters["allowed_domains"]; hasAllowed {
+		if _, hasExcluded := resultFilters["excluded_domains"]; hasExcluded {
+			return nil, errors.New("web_search 不能同时设置 allowed_domains 和 excluded_domains")
+		}
+	}
+	converted := map[string]any{"type": "web_search"}
+	if len(resultFilters) > 0 {
+		converted["filters"] = resultFilters
+	}
+	return converted, nil
+}
+
+func normalizeChatWebSearchDomains(value any, field string) ([]any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	domains, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("web_search %s 必须是字符串数组", field)
+	}
+	if len(domains) > MaxWebSearchDomains {
+		return nil, fmt.Errorf("web_search %s 不能超过 %d 个域名", field, MaxWebSearchDomains)
+	}
+	for index, value := range domains {
+		domain, ok := value.(string)
+		if !ok || strings.TrimSpace(domain) == "" {
+			return nil, fmt.Errorf("web_search %s[%d] 必须是非空字符串", field, index)
+		}
+	}
+	return domains, nil
+}
+
+func sameChatWebSearchDomains(left, right []any) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func containsToolType(tools []any, kind string) bool {

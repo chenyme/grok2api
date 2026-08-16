@@ -28,7 +28,7 @@ const (
 	ClearanceModeOnDemand         = "on_demand"
 	DefaultStatsigSignerURL       = "https://grok.wodf.de/sign"
 	DefaultFlareSolverrURL        = "http://flaresolverr:8191"
-	RecommendedBuildClientVersion = "0.2.119"
+	RecommendedBuildClientVersion = "1.0.4"
 	RecommendedBuildUserAgent     = "grok-shell/" + RecommendedBuildClientVersion + " (linux; x86_64)"
 
 	maxServerBodyBytes     = 256 << 20
@@ -211,10 +211,10 @@ type LocalMediaConfig struct {
 }
 
 type RoutingConfig struct {
-	StickyTTL       Duration `yaml:"stickyTTL"`
-	CooldownBase    Duration `yaml:"cooldownBase"`
-	CooldownMax     Duration `yaml:"cooldownMax"`
-	CapacityWait    Duration `yaml:"capacityWait"`
+	StickyTTL        Duration `yaml:"stickyTTL"`
+	CooldownBase     Duration `yaml:"cooldownBase"`
+	CooldownMax      Duration `yaml:"cooldownMax"`
+	CapacityWait     Duration `yaml:"capacityWait"`
 	MaxAttempts      int      `yaml:"maxAttempts"`
 	VideoMaxAttempts int      `yaml:"videoMaxAttempts"`
 	PreferFreeBuild  bool     `yaml:"preferFreeBuild"`
