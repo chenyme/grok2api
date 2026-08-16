@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1109,6 +1110,40 @@ func TestForwardResponseInjectsPromptCacheKeyAfterChatConversion(t *testing.T) {
 	usage := payload["usage"].(map[string]any)
 	if payload["object"] != "chat.completion" || usage["prompt_tokens"] != float64(11) || usage["cost_in_usd_ticks"] != float64(7000) || usage["context_details"].(map[string]any)["input_tokens"] != float64(10) {
 		t.Fatalf("chat response = %#v", payload)
+	}
+}
+
+func TestForwardResponseRejectsInvalidChatWebSearchBeforeUpstream(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	upstreamCalled := false
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		upstreamCalled = true
+		return nil, errors.New("unexpected upstream call")
+	})
+
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.6", NormalizeBody: true,
+		Operation: conversation.OperationChat,
+		Body: []byte(`{
+			"model":"public","messages":[{"role":"user","content":"search"}],
+			"tools":[{"type":"web_search","filters":{"allowed_domains":["allow.example"],"excluded_domains":["deny.example"]}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if upstreamCalled || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("upstreamCalled=%v status=%d", upstreamCalled, response.StatusCode)
 	}
 }
 

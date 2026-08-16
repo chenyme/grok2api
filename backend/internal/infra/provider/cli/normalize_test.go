@@ -65,7 +65,7 @@ func TestNormalizeBuildReasoningEffort(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			body := []byte(`{"reasoning":{"effort":"` + test.effort + `"},"input":"hello"}`)
-			normalized, err := normalizeBuildRequest(body, test.model)
+			normalized, err := normalizeBuildRequest(body, test.model, conversation.OperationResponses)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -81,13 +81,55 @@ func TestNormalizeBuildReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestNormalizeBuildChatRequestsVisibleReasoningSummary(t *testing.T) {
+	tests := []struct {
+		name        string
+		operation   string
+		body        string
+		wantSummary string
+		wantEffort  string
+		wantObject  bool
+	}{
+		{name: "Chat model default", operation: conversation.OperationChat, body: `{"input":"hello"}`, wantSummary: "concise", wantObject: true},
+		{name: "Chat explicit effort", operation: conversation.OperationChat, body: `{"input":"hello","reasoning":{"effort":"high"}}`, wantSummary: "concise", wantEffort: "high", wantObject: true},
+		{name: "Chat explicit summary", operation: conversation.OperationChat, body: `{"input":"hello","reasoning":{"effort":"high","summary":"detailed"}}`, wantSummary: "detailed", wantEffort: "high", wantObject: true},
+		{name: "native Responses remains caller controlled", operation: conversation.OperationResponses, body: `{"input":"hello"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			normalized, err := normalizeBuildRequest([]byte(test.body), "grok-4.6", test.operation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(normalized, &payload); err != nil {
+				t.Fatal(err)
+			}
+			reasoning, ok := payload["reasoning"].(map[string]any)
+			if ok != test.wantObject {
+				t.Fatalf("reasoning = %#v, want object %v", payload["reasoning"], test.wantObject)
+			}
+			if !ok {
+				return
+			}
+			if reasoning["summary"] != test.wantSummary {
+				t.Fatalf("summary = %#v, want %q", reasoning["summary"], test.wantSummary)
+			}
+			if effort, _ := reasoning["effort"].(string); effort != test.wantEffort {
+				t.Fatalf("effort = %q, want %q", effort, test.wantEffort)
+			}
+		})
+	}
+}
+
 func TestNormalizeBuildMaxAcrossCompatibilityProtocols(t *testing.T) {
 	tests := []struct {
-		name string
-		body []byte
+		name      string
+		body      []byte
+		operation string
 	}{
-		{name: "responses", body: []byte(`{"reasoning":{"effort":"max"},"input":"hello"}`)},
-		{name: "chat completions", body: func() []byte {
+		{name: "responses", operation: conversation.OperationResponses, body: []byte(`{"reasoning":{"effort":"max"},"input":"hello"}`)},
+		{name: "chat completions", operation: conversation.OperationChat, body: func() []byte {
 			converted, _, err := conversation.ConvertRequestWithOptions(
 				[]byte(`{"model":"public","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"max"}`),
 				"grok-4.6",
@@ -98,7 +140,7 @@ func TestNormalizeBuildMaxAcrossCompatibilityProtocols(t *testing.T) {
 			}
 			return converted
 		}()},
-		{name: "anthropic messages", body: func() []byte {
+		{name: "anthropic messages", operation: conversation.OperationMessages, body: func() []byte {
 			converted, _, err := conversation.ConvertRequestWithOptions(
 				[]byte(`{"model":"public","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"max"}}`),
 				"grok-4.6",
@@ -113,7 +155,7 @@ func TestNormalizeBuildMaxAcrossCompatibilityProtocols(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			normalized, err := normalizeBuildRequest(test.body, "grok-4.6")
+			normalized, err := normalizeBuildRequest(test.body, "grok-4.6", test.operation)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -131,11 +173,12 @@ func TestNormalizeBuildMaxAcrossCompatibilityProtocols(t *testing.T) {
 
 func TestNormalizeBuildComposerStripsReasoningEffort(t *testing.T) {
 	tests := []struct {
-		name string
-		body []byte
+		name      string
+		body      []byte
+		operation string
 	}{
-		{name: "responses", body: []byte(`{"reasoning":{"effort":"high","summary":"auto"},"input":"hello"}`)},
-		{name: "chat conversion", body: func() []byte {
+		{name: "responses", operation: conversation.OperationResponses, body: []byte(`{"reasoning":{"effort":"high","summary":"auto"},"input":"hello"}`)},
+		{name: "chat conversion", operation: conversation.OperationChat, body: func() []byte {
 			converted, _, err := conversation.ConvertRequestWithOptions(
 				[]byte(`{"model":"public","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"high"}`),
 				modeldomain.GrokComposer25Fast,
@@ -146,7 +189,7 @@ func TestNormalizeBuildComposerStripsReasoningEffort(t *testing.T) {
 			}
 			return converted
 		}()},
-		{name: "messages conversion", body: func() []byte {
+		{name: "messages conversion", operation: conversation.OperationMessages, body: func() []byte {
 			converted, _, err := conversation.ConvertRequestWithOptions(
 				[]byte(`{"model":"public","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"thinking":{"type":"adaptive"},"output_config":{"effort":"xhigh"}}`),
 				modeldomain.GrokComposer25Fast,
@@ -160,7 +203,7 @@ func TestNormalizeBuildComposerStripsReasoningEffort(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			normalized, err := normalizeBuildRequest(test.body, modeldomain.GrokComposer25Fast)
+			normalized, err := normalizeBuildRequest(test.body, modeldomain.GrokComposer25Fast, test.operation)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -176,7 +219,7 @@ func TestNormalizeBuildComposerStripsReasoningEffort(t *testing.T) {
 		})
 	}
 
-	stripped, err := normalizeBuildRequest([]byte(`{"reasoning":{"effort":"medium"},"input":"hello"}`), modeldomain.GrokComposer25Fast)
+	stripped, err := normalizeBuildRequest([]byte(`{"reasoning":{"effort":"medium"},"input":"hello"}`), modeldomain.GrokComposer25Fast, conversation.OperationResponses)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +237,7 @@ func TestNormalizeBuildRequestAppliesSafeDefaultsAndStripsCodexEnvelope(t *testi
 		"client_metadata":{"cwd":"/private/workspace","git_remote":"ssh://private/repo"},
 		"include":["web_search_call.action.sources"]
 	}`)
-	normalized, err := normalizeBuildRequest(body, "grok-4.5")
+	normalized, err := normalizeBuildRequest(body, "grok-4.5", conversation.OperationResponses)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +259,7 @@ func TestNormalizeBuildRequestAppliesSafeDefaultsAndStripsCodexEnvelope(t *testi
 
 func TestNormalizeBuildRequestPreservesExplicitStoreAndEncryptedInclude(t *testing.T) {
 	body := []byte(`{"input":"hello","store":true,"include":["reasoning.encrypted_content"],"stream_tool_calls":true}`)
-	normalized, err := normalizeBuildRequest(body, "grok-4.5")
+	normalized, err := normalizeBuildRequest(body, "grok-4.5", conversation.OperationResponses)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +273,7 @@ func TestNormalizeBuildRequestPreservesExplicitStoreAndEncryptedInclude(t *testi
 }
 
 func TestNormalizeBuildRequestDoesNotInventStreamToolCalls(t *testing.T) {
-	normalized, err := normalizeBuildRequest([]byte(`{"input":"hello"}`), "grok-4.5")
+	normalized, err := normalizeBuildRequest([]byte(`{"input":"hello"}`), "grok-4.5", conversation.OperationResponses)
 	if err != nil {
 		t.Fatal(err)
 	}
