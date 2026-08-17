@@ -34,6 +34,20 @@ func (c *streamConverter) chatDelta(delta map[string]any) error {
 	})
 }
 
+// markChatReasoningStart emits a timing-only marker so first-token includes
+// encrypted or buffered thinking. Clients that ignore unknown delta keys keep
+// the same visible stream.
+func (c *streamConverter) markChatReasoningStart() error {
+	if c.chatReasoningMark {
+		return nil
+	}
+	if err := c.chatDelta(map[string]any{"reasoning_started": true}); err != nil {
+		return err
+	}
+	c.chatReasoningMark = true
+	return nil
+}
+
 func (c *streamConverter) toolStartChat(item responseItem, _ int) error {
 	if err := c.start(); err != nil {
 		return err

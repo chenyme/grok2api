@@ -372,7 +372,7 @@ def classify_result(result: dict[str, Any], config: Config, profile: dict[str, A
     speed = float(speed_value or 0.0)
     generation_ms = int(result.get("generationMs") or 0)
     if generation_ms <= 0:
-        generation_ms = max(0, int(result.get("durationMs") or 0) - int(result.get("firstTokenMs") or 0))
+        generation_ms = generation_window_ms(int(result.get("firstTokenMs") or 0), int(result.get("durationMs") or 0))
     # QUALITY_OK is a content marker, not a quality proof. Apply the same
     # token / window / TPS rules used for user-traffic audits.
     if output_tokens < 32:
@@ -465,7 +465,7 @@ def classify_audit(value: dict[str, Any], config: Config) -> tuple[str, str, flo
     first_token_ms = value.get("firstTokenMs")
     if first_token_ms is None:
         return "ignored", "missing_first_token", 0.0, 0
-    generation_ms = int(value.get("durationMs") or 0) - int(first_token_ms)
+    generation_ms = generation_window_ms(int(first_token_ms), int(value.get("durationMs") or 0))
     output_tokens = max(0, int(value.get("outputTokens") or 0))
     if generation_ms <= 0 or output_tokens < 32:
         return "ignored", "insufficient_output_tokens", 0.0, output_tokens
@@ -477,6 +477,19 @@ def classify_audit(value: dict[str, Any], config: Config) -> tuple[str, str, flo
     if speed >= config.soft_tps:
         return "soft", "soft_tps", speed, output_tokens
     return "healthy", "within_threshold", speed, output_tokens
+
+
+def generation_window_ms(first_token_ms: int, duration_ms: int) -> int:
+    if duration_ms <= 0:
+        return 0
+    if first_token_ms < 0:
+        first_token_ms = 0
+    if first_token_ms >= duration_ms:
+        return 0
+    generation_ms = duration_ms - first_token_ms
+    if generation_ms < first_token_ms and generation_ms < 1000:
+        return duration_ms
+    return generation_ms
 
 
 def default_node_state() -> dict[str, Any]:

@@ -93,6 +93,12 @@ func TestAuditResponseDerivesOutputThroughput(t *testing.T) {
 	if unmeasured.OutputTokensPerSecond != nil {
 		t.Fatalf("unmeasured throughput = %v", *unmeasured.OutputTokensPerSecond)
 	}
+
+	lateFirst := int64(19763)
+	late := newAuditResponse(auditdomain.Record{StatusCode: http.StatusOK, Streaming: true, FirstTokenMS: &lateFirst, DurationMS: 19827, OutputTokens: 1511})
+	if late.OutputTokensPerSecond == nil || *late.OutputTokensPerSecond != float64(1511)*1000/19827 {
+		t.Fatalf("late first-token throughput = %#v", late)
+	}
 }
 
 func TestQualityGuardAuditListMarksOwnProbeWithoutExposingKeyIdentity(t *testing.T) {

@@ -864,6 +864,32 @@ func TestConvertResponsesStreamChatErrorIsTerminal(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesStreamMarksChatReasoningStart(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`, "",
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning","status":"in_progress"}}`, "",
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`, "",
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"hi"}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"status":"completed"}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if strings.Count(text, `"reasoning_started":true`) != 1 {
+		t.Fatalf("expected one reasoning start marker: %s", text)
+	}
+	if !strings.Contains(text, `"content":"hi"`) {
+		t.Fatalf("missing visible content: %s", text)
+	}
+}
+
 func TestConvertResponsesStreamMessagesNormalizesTerminalError(t *testing.T) {
 	stream := strings.Join([]string{
 		`event: response.failed`,

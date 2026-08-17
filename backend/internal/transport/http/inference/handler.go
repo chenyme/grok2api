@@ -1463,6 +1463,7 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 					ReasoningContent string `json:"reasoning_content"`
 					ThinkingContent  string `json:"thinking_content"`
 					Refusal          string `json:"refusal"`
+					ReasoningStarted bool   `json:"reasoning_started"`
 					ToolCalls        []struct {
 						Function struct {
 							Arguments string `json:"arguments"`
@@ -1476,7 +1477,7 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 		}
 		for _, choice := range event.Choices {
 			delta := choice.Delta
-			if delta.Content != "" || delta.Reasoning != "" || delta.ReasoningContent != "" || delta.ThinkingContent != "" || delta.Refusal != "" {
+			if delta.Content != "" || delta.Reasoning != "" || delta.ReasoningContent != "" || delta.ThinkingContent != "" || delta.Refusal != "" || delta.ReasoningStarted {
 				return true
 			}
 			for _, call := range delta.ToolCalls {
@@ -1488,6 +1489,9 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 	case streamProtocolAnthropic:
 		var event struct {
 			Type  string `json:"type"`
+			ContentBlock struct {
+				Type string `json:"type"`
+			} `json:"content_block"`
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
@@ -1495,7 +1499,13 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
 		}
-		if json.Unmarshal(data, &event) != nil || event.Type != "content_block_delta" {
+		if json.Unmarshal(data, &event) != nil {
+			return false
+		}
+		if event.Type == "content_block_start" {
+			return event.ContentBlock.Type == "thinking"
+		}
+		if event.Type != "content_block_delta" {
 			return false
 		}
 		switch event.Delta.Type {

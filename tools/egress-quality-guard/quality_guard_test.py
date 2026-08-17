@@ -58,11 +58,21 @@ class ClassificationTests(unittest.TestCase):
         cfg = config()
         classification, reason, speed, output = quality_guard.classify_audit({
             "provider": "grok_build", "streaming": True, "statusCode": 200,
-            "firstTokenMs": 1000, "durationMs": 1100,
+            "firstTokenMs": 200, "durationMs": 1200,
             "outputTokens": 1050, "reasoningTokens": 950,
         }, cfg)
         self.assertEqual((classification, reason, output), ("hard", "hard_tps", 1050))
-        self.assertEqual(speed, 10500)
+        self.assertEqual(speed, 1050)
+
+    def test_passive_late_first_token_uses_full_duration(self):
+        cfg = config()
+        classification, reason, speed, output = quality_guard.classify_audit({
+            "provider": "grok_build", "streaming": True, "statusCode": 200,
+            "firstTokenMs": 19763, "durationMs": 19827,
+            "outputTokens": 1511, "reasoningTokens": 1471,
+        }, cfg)
+        self.assertEqual((classification, reason, output), ("healthy", "within_threshold", 1511))
+        self.assertAlmostEqual(speed, 1511 * 1000 / 19827)
 
     def test_passive_audit_does_not_infer_thinking_requirement(self):
         cfg = config(fail_closed=True, min_generation_ms=1000)
@@ -515,7 +525,6 @@ class GuardTests(unittest.TestCase):
                 "generationMs": 1500,
             }
             audit = self.audit("user", "1", 600)
-            audit.update({"durationMs": 2500, "outputTokens": 900})
             api = FakeApi(self.nodes(3), [good], [
                 {"items": [], "hasMore": False, "nextCursor": ""},
                 {"items": [audit], "hasMore": False, "nextCursor": ""},
@@ -920,12 +929,12 @@ class GuardTests(unittest.TestCase):
 
     @staticmethod
     def audit(audit_id, node_id, output_tps, quality_probe=False):
-        generation_ms = 100
+        generation_ms = 2000
         output_tokens = int(output_tps * generation_ms / 1000)
         return {
             "id": audit_id, "requestId": f"request-{audit_id}", "qualityProbe": quality_probe,
             "provider": "grok_build", "streaming": True,
-            "statusCode": 200, "firstTokenMs": 1000, "durationMs": 1000 + generation_ms,
+            "statusCode": 200, "firstTokenMs": 200, "durationMs": 200 + generation_ms,
             "outputTokens": output_tokens, "reasoningTokens": min(100, max(0, output_tokens - 1)),
             "egressNodeId": node_id, "errorCode": None,
         }
@@ -933,3 +942,4 @@ class GuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

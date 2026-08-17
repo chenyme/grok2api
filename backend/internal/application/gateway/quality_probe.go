@@ -33,6 +33,7 @@ type qualityProbeChatEvent struct {
 			Reasoning        string `json:"reasoning"`
 			ReasoningContent string `json:"reasoning_content"`
 			ThinkingContent  string `json:"thinking_content"`
+			ReasoningStarted bool   `json:"reasoning_started"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage *struct {
@@ -135,6 +136,9 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 		for _, choice := range event.Choices {
 			delta := choice.Delta
 			generated := qualityProbeHasGeneratedDelta(delta.Content, delta.Reasoning, delta.ReasoningContent, delta.ThinkingContent)
+			if delta.ReasoningStarted {
+				generated = true
+			}
 			if generated && firstGeneratedAt.IsZero() {
 				firstGeneratedAt = time.Now()
 				if result.MarkFirstToken != nil {
@@ -171,7 +175,7 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 	durationMS := completedAt.Sub(startedAt).Milliseconds()
 	var generationMS int64
 	if !firstGeneratedAt.IsZero() {
-		generationMS = durationMS - firstTokenMS
+		generationMS = audit.GenerationWindowMS(firstTokenMS, durationMS)
 		if generationMS < 1 {
 			generationMS = 1
 		}
@@ -202,11 +206,7 @@ func normalizeQualityProbeRequestError(err error) error {
 }
 
 func qualityProbeOutputTokensPerSecond(outputTokens, durationMS, firstTokenMS int64) float64 {
-	generationMS := durationMS - firstTokenMS
-	if outputTokens <= 0 || generationMS <= 0 {
-		return 0
-	}
-	return float64(outputTokens) * 1000 / float64(generationMS)
+	return audit.OutputTokensPerSecond(outputTokens, firstTokenMS, durationMS)
 }
 
 func qualityProbeHasGeneratedDelta(content, reasoning, reasoningContent, thinkingContent string) bool {
