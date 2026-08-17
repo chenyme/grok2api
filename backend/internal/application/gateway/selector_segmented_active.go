@@ -193,8 +193,12 @@ func segmentedCandidateCohorts(values []account.RoutingCandidate, indexes []int,
 	}
 	cohortFor := func(index int) segmentedSelectorCohort {
 		candidate := values[index]
+		supportsModel, capabilityKnown := candidate.SupportsModel, candidate.ModelCapabilityKnown
+		if candidate.Credential.Provider == account.ProviderWeb && len(tierOrder) > 0 && webTierInOrder(tierOrder, candidate.Credential.WebTier) {
+			supportsModel, capabilityKnown = true, true
+		}
 		cohort := segmentedSelectorCohort{
-			supportsModel: candidate.SupportsModel, capabilityKnown: candidate.ModelCapabilityKnown,
+			supportsModel: supportsModel, capabilityKnown: capabilityKnown,
 			preferFreeBuild: preferFreeBuild && candidate.IsKnownFreeBuild(),
 			tier:            tierOrderRank(tierOrder, candidate.Credential.WebTier), priority: candidate.Credential.Priority,
 		}

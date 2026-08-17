@@ -306,12 +306,7 @@ func (s *Service) executeImage(
 				}
 			}
 			quotaKind, _ := s.providers.QuotaKind(route.Provider)
-			refreshMode := effectiveQuotaMode
-			decrementMode := effectiveQuotaMode
-			if quotaRefreshGroup != "" {
-				refreshMode = quotaRefreshGroup
-				decrementMode = quotaMode
-			}
+			refreshMode, decrementMode := imageQuotaFinalizationModes(effectiveQuotaMode, quotaRefreshGroup)
 			if successful && quotaKind == provider.QuotaRemoteWindow && refreshMode != "" {
 				if decrementMode != "" && decrementMode != "weekly" {
 					units := max(1, response.QuotaUnits)
@@ -338,4 +333,17 @@ func (s *Service) executeImage(
 	}
 	finalizationOwnsReservation = true
 	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
+}
+
+// imageQuotaFinalizationModes separates the immediate local consumption fence
+// from the authoritative provider refresh. A refresh group may update several
+// upstream windows atomically, while the local fence must charge the exact
+// window selected for this account so concurrent requests cannot over-allocate
+// during the short refresh delay.
+func imageQuotaFinalizationModes(effectiveMode, refreshGroup string) (refreshMode, decrementMode string) {
+	refreshMode = effectiveMode
+	if refreshGroup != "" {
+		refreshMode = refreshGroup
+	}
+	return refreshMode, effectiveMode
 }

@@ -49,6 +49,36 @@ const modelConsoleStaticSupportAvailabilityExpression = `(route.provider = 'grok
 	)
 ))`
 
+// Web image editing is a catalog capability for every Web tier. Older account
+// snapshots may predate Basic support, so the catalog route (and aliases that
+// resolve to the same catalog capability) must remain discoverable while the
+// runtime selector still enforces the adapter's current tier order.
+const modelWebImageEditStaticSupportExpression = `(model_routes.provider = 'grok_web'
+	AND model_routes.upstream_model = 'imagine-image-edit'
+	AND (
+		model_routes.origin = 'catalog'
+		OR EXISTS (
+			SELECT 1 FROM model_routes web_catalog_route
+			WHERE web_catalog_route.provider = model_routes.provider
+				AND web_catalog_route.upstream_model = model_routes.upstream_model
+				AND web_catalog_route.capability = model_routes.capability
+				AND web_catalog_route.origin = 'catalog'
+		)
+	))`
+
+const modelWebImageEditStaticSupportAvailabilityExpression = `(route.provider = 'grok_web'
+	AND route.upstream_model = 'imagine-image-edit'
+	AND (
+		route.origin = 'catalog'
+		OR EXISTS (
+			SELECT 1 FROM model_routes web_catalog_route
+			WHERE web_catalog_route.provider = route.provider
+				AND web_catalog_route.upstream_model = route.upstream_model
+				AND web_catalog_route.capability = route.capability
+				AND web_catalog_route.origin = 'catalog'
+		)
+	))`
+
 const availableRoutePredicate = `
 	EXISTS (
 		SELECT 1 FROM provider_accounts account
@@ -65,6 +95,7 @@ const availableRoutePredicate = `
 					NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id)
 					AND (
 						` + modelConsoleStaticSupportExpression + `
+						OR ` + modelWebImageEditStaticSupportExpression + `
 						OR EXISTS (
 							SELECT 1 FROM account_model_capabilities capability
 							WHERE capability.account_id = account.id
@@ -143,6 +174,7 @@ const modelRouteAccountCapabilityPredicate = `(
 		NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id)
 		AND (
 			` + modelConsoleStaticSupportExpression + `
+			OR ` + modelWebImageEditStaticSupportExpression + `
 			OR EXISTS (
 				SELECT 1 FROM account_model_capabilities capability
 				WHERE capability.account_id = account.id
@@ -163,6 +195,7 @@ const modelAvailableRouteAccountCapabilityPredicate = `(
 		NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id)
 		AND (
 			` + modelConsoleStaticSupportExpression + `
+			OR ` + modelWebImageEditStaticSupportExpression + `
 			OR EXISTS (
 				SELECT 1 FROM account_model_capabilities capability
 				WHERE capability.account_id = account.id
@@ -207,7 +240,7 @@ func modelTierAvailabilityPredicateWithAvailability(tiers []string, activeOnly b
 
 const (
 	modelProviderPriorityExpression = "CASE model_routes.provider WHEN 'grok_build' THEN 0 WHEN 'grok_web' THEN 1 WHEN 'grok_console' THEN 2 ELSE 3 END"
-	modelSupportSortExpression      = `(SELECT COUNT(*) FROM provider_accounts account WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active' AND (EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id AND binding.account_id = account.id) OR (NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id) AND (` + modelConsoleStaticSupportExpression + ` OR EXISTS (SELECT 1 FROM account_model_capabilities capability WHERE capability.account_id = account.id AND capability.upstream_model = model_routes.upstream_model) OR ` + modelSharedPaidBuildSupportSortExpression + `))))`
+	modelSupportSortExpression      = `(SELECT COUNT(*) FROM provider_accounts account WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active' AND (EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id AND binding.account_id = account.id) OR (NOT EXISTS (SELECT 1 FROM model_route_accounts binding WHERE binding.model_route_id = model_routes.id) AND (` + modelConsoleStaticSupportExpression + ` OR ` + modelWebImageEditStaticSupportExpression + ` OR EXISTS (SELECT 1 FROM account_model_capabilities capability WHERE capability.account_id = account.id AND capability.upstream_model = model_routes.upstream_model) OR ` + modelSharedPaidBuildSupportSortExpression + `))))`
 	modelSyncedSortExpression       = `(SELECT MAX(sync.last_success_at) FROM provider_accounts account JOIN account_model_sync_states sync ON sync.account_id = account.id WHERE account.provider = model_routes.provider AND account.enabled = TRUE AND account.auth_status = 'active')`
 )
 
@@ -1190,7 +1223,7 @@ func (r *ModelRepository) annotateAvailability(ctx context.Context, values []mod
 		SELECT route.id AS route_id,
 			CASE WHEN COUNT(DISTINCT binding.account_id) > 0
 				THEN COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND binding.account_id IS NOT NULL THEN account.id END)
-				ELSE COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND (`+modelConsoleStaticSupportAvailabilityExpression+` OR capability.account_id IS NOT NULL OR `+modelSharedPaidBuildSupportAvailabilityExpression+`) THEN account.id END)
+				ELSE COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND (`+modelConsoleStaticSupportAvailabilityExpression+` OR `+modelWebImageEditStaticSupportAvailabilityExpression+` OR capability.account_id IS NOT NULL OR `+modelSharedPaidBuildSupportAvailabilityExpression+`) THEN account.id END)
 			END AS supported_accounts,
 			CASE WHEN COUNT(DISTINCT binding.account_id) > 0
 				THEN COUNT(DISTINCT CASE WHEN account.enabled = TRUE AND account.auth_status = ? AND binding.account_id IS NOT NULL AND sync.last_success_at IS NOT NULL THEN account.id END)
