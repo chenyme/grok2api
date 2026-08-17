@@ -49,6 +49,7 @@ type streamConverter struct {
 	thinkingClosed    bool
 	thinkingIndex     int
 	thinkingItemID    string
+	chatReasoningMark bool
 	nextIndex         int
 	tools             map[string]streamTool
 	webSearch         []webSearchCall
@@ -265,6 +266,9 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		_ = json.Unmarshal(root["item"], &item)
 		if item.Type == "reasoning" && c.operation == OperationMessages && c.options.AnthropicThinking {
 			return c.thinkingStart(item.ID)
+		}
+		if item.Type == "reasoning" && item.ID != "" && c.operation == OperationChat {
+			return c.markChatReasoningStart()
 		}
 		if item.Type == "web_search_call" && c.operation == OperationMessages && c.options.AnthropicWebSearch {
 			if call, ok := parseWebSearchCallItem(item); ok {

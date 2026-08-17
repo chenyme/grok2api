@@ -25,8 +25,10 @@ func TestQualityProbeModelIsPinnedToBuildNamespace(t *testing.T) {
 }
 
 func TestQualityProbeOutputTokensPerSecondMatchesAuditPanel(t *testing.T) {
-	got := qualityProbeOutputTokensPerSecond(1335, 17320, 17100)
-	want := float64(1335) * 1000 / 220
+	got := qualityProbeOutputTokensPerSecond(1335, 1200, 17320, 17100)
+	// 17100ms wait vs 220ms tail: use full duration so buffered thinking is
+	// not crushed into the flush window.
+	want := float64(1335) * 1000 / 17320
 	if got != want {
 		t.Fatalf("output TPS = %v, want %v", got, want)
 	}
@@ -34,8 +36,36 @@ func TestQualityProbeOutputTokensPerSecondMatchesAuditPanel(t *testing.T) {
 
 func TestQualityProbeOutputTokensPerSecondIncludesReasoningTokens(t *testing.T) {
 	// The panel reports completion/output tokens, including reasoning tokens.
-	got := qualityProbeOutputTokensPerSecond(1050, 1100, 1000)
-	if got != 10500 {
-		t.Fatalf("output TPS = %v, want 10500", got)
+	// 100ms tail after 1000ms wait is a short flush, so the window is duration.
+	got := qualityProbeOutputTokensPerSecond(1050, 1000, 1100, 1000)
+	want := float64(1050) * 1000 / 1100
+	if got != want {
+		t.Fatalf("output TPS = %v, want %v", got, want)
+	}
+}
+
+func TestQualityProbeOutputTokensPerSecondKeepsNormalTail(t *testing.T) {
+	got := qualityProbeOutputTokensPerSecond(200, 0, 2200, 200)
+	if got != 100 {
+		t.Fatalf("output TPS = %v, want 100", got)
+	}
+}
+
+func TestQualityProbeOutputTokensPerSecondKeepsBurstWithoutReasoning(t *testing.T) {
+	got := qualityProbeOutputTokensPerSecond(2000, 0, 10100, 10000)
+	if got != 20000 {
+		t.Fatalf("output TPS = %v, want 20000", got)
+	}
+}
+
+func TestQualityProbeCountsThinkingContentAsFirstToken(t *testing.T) {
+	if qualityProbeHasGeneratedDelta("", "", "", "") {
+		t.Fatal("empty deltas must not mark first token")
+	}
+	if !qualityProbeHasGeneratedDelta("", "", "", "hmm") {
+		t.Fatal("thinking_content must mark first token so thinking time stays in the generation window")
+	}
+	if !qualityProbeHasGeneratedDelta("", "", "hmm", "") {
+		t.Fatal("reasoning_content must still mark first token")
 	}
 }

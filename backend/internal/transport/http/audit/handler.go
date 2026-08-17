@@ -535,6 +535,9 @@ func auditOutputTokensPerSecond(value auditdomain.Record) *float64 {
 	if !value.Streaming || value.StatusCode < 200 || value.StatusCode >= 300 || value.ErrorCode != "" || value.FirstTokenMS == nil || value.OutputTokens <= 0 || value.DurationMS <= *value.FirstTokenMS {
 		return nil
 	}
-	throughput := float64(value.OutputTokens) * 1000 / float64(value.DurationMS-*value.FirstTokenMS)
+	throughput := auditdomain.OutputTokensPerSecond(value.OutputTokens, value.ReasoningTokens, *value.FirstTokenMS, value.DurationMS)
+	if throughput <= 0 {
+		return nil
+	}
 	return &throughput
 }

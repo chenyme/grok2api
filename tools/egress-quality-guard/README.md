@@ -21,8 +21,11 @@ your own traffic before allowing automatic quarantine.
 ## How it works
 
 1. Passive mode polls recent successful streaming audits and computes the same
-   speed shown by the grok2api panel: `output / (duration - first token)`.
-   `output` intentionally includes reasoning tokens.
+   speed shown by the grok2api panel: `output / generation window`.
+   `output` includes reasoning tokens. The window is `duration - first token`,
+   except when that tail is both shorter than the first-token wait and under
+   1s: then the full duration is used so buffered thinking is not assigned to
+   a few milliseconds.
 2. Active mode calls a quality-guard-only internal probe endpoint. The scoped
    credential cannot access account exports, administrator management, or the
    rest of the administrator API.
