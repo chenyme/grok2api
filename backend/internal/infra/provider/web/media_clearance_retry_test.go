@@ -107,7 +107,8 @@ func TestGenerateWSImageReacquiresAfterChallengeHandshake(t *testing.T) {
 	adapter, credential := testMediaAdapter(t, server.URL)
 	enableTestClearance(adapter, server.URL)
 	response, err := adapter.GenerateImage(context.Background(), provider.ImageGenerationRequest{
-		Credential: credential, Model: "grok-imagine-image-quality", Prompt: "draw a teapot", Count: 1, ResponseFormat: "b64_json",
+		Credential: credential, Model: "grok-imagine-image-quality", Prompt: "draw a teapot", Count: 1,
+		Resolution: "2k", Quality: "medium", ResponseFormat: "b64_json",
 	})
 	if err != nil {
 		t.Fatal(err)
