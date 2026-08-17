@@ -1158,6 +1158,9 @@ export function AccountsPage() {
 
   const summary = summaryQuery.data;
   const recoveringAccounts = summary?.recovering ?? 0;
+  const cooldownAccounts = summary?.recovery.cooldown ?? 0;
+  const waitingResetAccounts = summary?.recovery.waitingReset ?? 0;
+  const probingAccounts = summary?.recovery.probing ?? 0;
   const disabledAccounts = summary?.issues.disabled ?? 0;
   const invalidAccounts = summary?.issues.reauthRequired ?? 0;
   const riskAccounts = summary?.risk ?? 0;
@@ -1259,7 +1262,9 @@ export function AccountsPage() {
           label={t("accounts.abnormalAccountCount")}
           value={summaryUnavailable ? "-" : formatNumber(abnormalAccounts, i18n.language, 0)}
           detail={[
-            `${t("accounts.statusCooldown")} ${formatNumber(recoveringAccounts, i18n.language, 0)}`,
+            `${t("accounts.statusCooldown")} ${formatNumber(cooldownAccounts, i18n.language, 0)}`,
+            `${t("accounts.waitingReset")} ${formatNumber(waitingResetAccounts, i18n.language, 0)}`,
+            `${t("accounts.probing")} ${formatNumber(probingAccounts, i18n.language, 0)}`,
             `${t("accounts.riskAccountCount", { count: formatNumber(riskAccounts, i18n.language, 0) })}`,
             `${t("accounts.statusDisabled")} ${formatNumber(disabledAccounts, i18n.language, 0)}`,
             `${t("accounts.statusReauthRequired")} ${formatNumber(invalidAccounts, i18n.language, 0)}`,
