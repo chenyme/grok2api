@@ -791,10 +791,10 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 		if uploadErr != nil {
 			return nil, uploadErr
 		}
-		if uploaded.ID == "" {
+		if uploaded.MetadataID == "" {
 			return nil, fmt.Errorf("上传图片成功但上游未返回 fileMetadataId")
 		}
-		assets = append(assets, uploaded.ID)
+		assets = append(assets, uploaded.MetadataID)
 	}
 	payload := buildImageEditPayload(request.Prompt, assets, ratio)
 	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine")
@@ -834,17 +834,17 @@ func (a *Adapter) EditImage(ctx context.Context, request provider.ImageEditReque
 }
 
 func buildImageEditPayload(prompt string, assets []string, aspectRatio string) map[string]any {
-	_ = aspectRatio // 网页端编辑请求不携带宽高比, 保持协议一致
+	imageToImage := map[string]any{
+		"prompt":      prompt,
+		"inputAssets": assets,
+	}
+	if aspectRatio != "" {
+		imageToImage["aspectRatio"] = aspectRatio
+	}
 	return map[string]any{
 		"modelName": "imagine-image-edit", "message": prompt,
 		"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
-		"responseMetadata": map[string]any{"modelConfigOverride": map[string]any{"modelMap": map[string]any{
-			"imageEditModel": "imagine",
-		}}},
-		"mediaGenInput": map[string]any{"imageToImage": map[string]any{
-			"prompt": prompt, "inputAssets": assets,
-		}},
-		"kind": "CONVERSATION_KIND_IMAGINE",
+		"mediaGenInput": map[string]any{"imageToImage": imageToImage},
 	}
 }
 
@@ -1279,23 +1279,25 @@ func decodeDirectFileUploadResponse(source io.Reader) (uploadedFile, error) {
 	if directFileUploadTerminalError(value.TerminalError) {
 		return uploadedFile{}, errors.New("V2 上传文件被上游拒绝")
 	}
-	if value.FileMetadata.ID == "" {
-		value.FileMetadata.ID = value.FileMetadata.FileID
+	metadataID := strings.TrimSpace(value.FileMetadata.ID)
+	fileID := metadataID
+	if fileID == "" {
+		fileID = strings.TrimSpace(value.FileMetadata.FileID)
 	}
-	if value.FileMetadata.ID == "" {
+	if fileID == "" {
 		// Some successful uploads complete asynchronously and only expose the
 		// upload task ID. Gateway accepts it as the file reference; prefer the
 		// browser's fileMetadataId whenever it is already available.
-		value.FileMetadata.ID = strings.TrimSpace(value.UploadID)
+		fileID = strings.TrimSpace(value.UploadID)
 	}
 	fileURI := ""
 	if value.FileMetadata.FileURI != "" {
 		fileURI = absoluteAssetURL(value.FileMetadata.FileURI)
 	}
-	if value.FileMetadata.ID == "" && fileURI == "" {
+	if fileID == "" && fileURI == "" {
 		return uploadedFile{}, fmt.Errorf("V2 上传文件成功但上游未返回完整文件标识")
 	}
-	return uploadedFile{ID: value.FileMetadata.ID, URI: fileURI}, nil
+	return uploadedFile{ID: fileID, MetadataID: metadataID, URI: fileURI}, nil
 }
 
 func directFileUploadTerminalError(raw json.RawMessage) bool {

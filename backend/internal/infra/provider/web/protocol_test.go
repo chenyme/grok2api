@@ -862,25 +862,34 @@ func TestImageEditRejectsUnconfirmedCountAndResolution(t *testing.T) {
 	}
 }
 
-func TestBuildImageEditPayloadMatchesCapturedAspectRatioShape(t *testing.T) {
-	payload := buildImageEditPayload("改成兔子", []string{"https://assets.grok.com/users/test/reference/content"}, "post_1", "1:1")
-	metadata, _ := payload["responseMetadata"].(map[string]any)
-	override, _ := metadata["modelConfigOverride"].(map[string]any)
-	modelMap, _ := override["modelMap"].(map[string]any)
-	config, _ := modelMap["imageEditModelConfig"].(map[string]any)
-	if payload["modelName"] != "imagine-image-edit" || payload["imageGenerationCount"] != 2 || modelMap["imageEditModel"] != "imagine" {
+func TestBuildImageEditPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
+	assets := []string{"metadata-1", "metadata-2"}
+	payload := buildImageEditPayload("改成兔子", assets, "1:1")
+	mediaGenInput, ok := payload["mediaGenInput"].(map[string]any)
+	if !ok {
+		t.Fatalf("mediaGenInput = %#v", payload["mediaGenInput"])
+	}
+	imageToImage, ok := mediaGenInput["imageToImage"].(map[string]any)
+	if !ok {
+		t.Fatalf("imageToImage = %#v", mediaGenInput["imageToImage"])
+	}
+	if len(payload) != 6 || payload["modelName"] != "imagine-image-edit" || payload["message"] != "改成兔子" ||
+		payload["enableImageStreaming"] != true || payload["enableSideBySide"] != true || payload["sendFinalMetadata"] != true {
 		t.Fatalf("payload = %#v", payload)
 	}
-	if config["aspectRatio"] != "1:1" || config["parentPostId"] != "post_1" || !slices.Equal(config["imageReferences"].([]string), []string{"https://assets.grok.com/users/test/reference/content"}) {
-		t.Fatalf("image edit config = %#v", config)
+	if imageToImage["prompt"] != "改成兔子" || imageToImage["aspectRatio"] != "1:1" || !slices.Equal(imageToImage["inputAssets"].([]string), assets) {
+		t.Fatalf("imageToImage = %#v", imageToImage)
 	}
-	withoutRatio := buildImageEditPayload("edit", []string{"reference"}, "post_2", "")
-	metadata = withoutRatio["responseMetadata"].(map[string]any)
-	override = metadata["modelConfigOverride"].(map[string]any)
-	modelMap = override["modelMap"].(map[string]any)
-	config = modelMap["imageEditModelConfig"].(map[string]any)
-	if _, exists := config["aspectRatio"]; exists {
-		t.Fatalf("empty aspect ratio leaked into payload: %#v", config)
+	for _, field := range []string{"temporary", "enableImageGeneration", "imageGenerationCount", "config", "responseMetadata", "kind", "parentPostId"} {
+		if _, exists := payload[field]; exists {
+			t.Fatalf("legacy field %q leaked into payload: %#v", field, payload)
+		}
+	}
+	withoutRatio := buildImageEditPayload("edit", []string{"metadata-1"}, "")
+	mediaGenInput = withoutRatio["mediaGenInput"].(map[string]any)
+	imageToImage = mediaGenInput["imageToImage"].(map[string]any)
+	if _, exists := imageToImage["aspectRatio"]; exists {
+		t.Fatalf("empty aspect ratio leaked into payload: %#v", imageToImage)
 	}
 }
 
@@ -1132,12 +1141,16 @@ func TestDecodeDirectFileUploadResponse(t *testing.T) {
 		"uploadId":"upload-1",
 		"fileMetadata":{"fileMetadataId":"metadata-1","fileUri":"users/test/reference/content"}
 	}`))
-	if err != nil || uploaded.ID != "metadata-1" || uploaded.URI != "https://assets.grok.com/users/test/reference/content" {
+	if err != nil || uploaded.ID != "metadata-1" || uploaded.MetadataID != "metadata-1" || uploaded.URI != "https://assets.grok.com/users/test/reference/content" {
 		t.Fatalf("uploaded=%#v err=%v", uploaded, err)
 	}
 	uploaded, err = decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","terminalError":{}}`))
-	if err != nil || uploaded.ID != "upload-1" || uploaded.URI != "" {
+	if err != nil || uploaded.ID != "upload-1" || uploaded.MetadataID != "" || uploaded.URI != "" {
 		t.Fatalf("uploadId-only response: uploaded=%#v err=%v", uploaded, err)
+	}
+	uploaded, err = decodeDirectFileUploadResponse(strings.NewReader(`{"fileMetadata":{"fileId":"file-1"}}`))
+	if err != nil || uploaded.ID != "file-1" || uploaded.MetadataID != "" {
+		t.Fatalf("fileId-only response: uploaded=%#v err=%v", uploaded, err)
 	}
 	if _, err := decodeDirectFileUploadResponse(strings.NewReader(`{"uploadId":"upload-1","terminalError":{"message":"rejected"}}`)); err == nil {
 		t.Fatal("terminal upload error was accepted")
