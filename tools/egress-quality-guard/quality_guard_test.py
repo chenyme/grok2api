@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import stat
 import sys
 import tempfile
@@ -228,6 +229,36 @@ class ConfigTests(unittest.TestCase):
             }), encoding="utf-8")
             loaded = quality_guard.Config.from_bootstrap(path)
             self.assertEqual((loaded.node_ids, loaded.internal_token), (("2", "9"), "scoped-secret"))
+            self.assertEqual(loaded.base_url, "http://grok2api:8000")
+
+    def test_bootstrap_honors_grok2api_base_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bootstrap.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "enabled": True,
+                "internal_token": "scoped-secret",
+                "config": {
+                    "model": "grok-4.5", "node_ids": ["2"], "mode": "hybrid",
+                    "prompt": "probe", "expected": "QUALITY_OK",
+                    "active_interval_seconds": 1800, "passive_poll_seconds": 5,
+                    "soft_tps": 500, "hard_tps": 1000, "consecutive_soft": 2, "consecutive_errors": 2,
+                    "quarantine_seconds": 300, "no_account_backoff_seconds": 300,
+                    "min_healthy_nodes": 1, "max_output_tokens": 384, "fail_closed": False,
+                    "min_generation_ms": 1000, "rotation_url": "", "rotation_token": "",
+                    "rotation_timeout_seconds": 45, "rotatable_node_ids": [],
+                },
+            }), encoding="utf-8")
+            previous = os.environ.get("GROK2API_BASE_URL")
+            os.environ["GROK2API_BASE_URL"] = "http://127.0.0.1:18182/"
+            try:
+                loaded = quality_guard.Config.from_bootstrap(path)
+            finally:
+                if previous is None:
+                    os.environ.pop("GROK2API_BASE_URL", None)
+                else:
+                    os.environ["GROK2API_BASE_URL"] = previous
+            self.assertEqual(loaded.base_url, "http://127.0.0.1:18182")
 
     def test_disabled_bootstrap_exits_cleanly(self):
         with tempfile.TemporaryDirectory() as directory:
