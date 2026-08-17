@@ -21,6 +21,19 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type chunkErrorReader struct {
+	data []byte
+	done bool
+}
+
+func (r *chunkErrorReader) Read(target []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	r.done = true
+	return copy(target, r.data), errors.New("upstream cut")
+}
+
 func TestVideoGenerationUsesOfficialXAIEndpointsAndFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -851,11 +864,6 @@ func TestStreamInspectorMarksFirstGeneratedTokenOnce(t *testing.T) {
 			delta:   `data: {"choices":[{"delta":{"thinking_content":"thinking"}}]}` + "\n\n",
 		},
 		{
-			name: "chat reasoning started", protocol: streamProtocolChat,
-			prelude: `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n",
-			delta:   `data: {"choices":[{"delta":{"reasoning_started":true}}]}` + "\n\n",
-		},
-		{
 			name: "anthropic tool input", protocol: streamProtocolAnthropic,
 			prelude: `data: {"type":"message_start","message":{"id":"msg_1"}}` + "\n\n",
 			delta:   `data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}` + "\n\n",
@@ -895,6 +903,72 @@ func TestStreamInspectorDoesNotMarkImageEvents(t *testing.T) {
 	inspector.markFirstTokenForwarded()
 	if marked != 0 {
 		t.Fatalf("image stream marked first token %d times", marked)
+	}
+}
+
+func TestStreamInspectorMarksChatReasoningComment(t *testing.T) {
+	marked := 0
+	inspector := &responseInspector{protocol: streamProtocolChat, onFirstToken: func() { marked++ }}
+	inspector.Inspect([]byte(": grok2api-reasoning-start\n\n"))
+	if marked != 0 {
+		t.Fatalf("reasoning comment marked first token before forwarding %d times", marked)
+	}
+	inspector.markFirstTokenForwarded()
+	if marked != 1 {
+		t.Fatalf("reasoning comment marked first token %d times", marked)
+	}
+}
+
+func TestInternalSSEMarkerFilterAcrossChunkBoundaries(t *testing.T) {
+	marker := reasoningStartSSEComment + "\n\n"
+	input := []byte("data: before\n\n" + marker + "data: after\n\n")
+	want := "data: before\n\ndata: after\n\n"
+	for split := 0; split <= len(input); split++ {
+		filter := internalSSEMarkerFilter{enabled: true}
+		var output []byte
+		output = append(output, filter.Filter(input[:split], false)...)
+		output = append(output, filter.Filter(input[split:], false)...)
+		output = append(output, filter.Filter(nil, true)...)
+		if string(output) != want {
+			t.Fatalf("split %d output = %q, want %q", split, output, want)
+		}
+	}
+}
+
+func TestCopyStreamConsumesInternalReasoningMarker(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	body := `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n" +
+		": grok2api-reasoning-start\n\n" +
+		`data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+	marked := 0
+	if _, err := copyStream(context.Writer, strings.NewReader(body), streamProtocolChat, func() { marked++ }); err != nil {
+		t.Fatal(err)
+	}
+	if marked != 1 {
+		t.Fatalf("first token marked %d times", marked)
+	}
+	if strings.Contains(recorder.Body.String(), "grok2api-reasoning-start") {
+		t.Fatalf("internal marker leaked to client: %q", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"content":"hello"`) {
+		t.Fatalf("visible Chat delta missing: %q", recorder.Body.String())
+	}
+}
+
+func TestCopyStreamPreservesBufferedTailOnReadError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	body := []byte(`data: {"choices":[{"delta":{"content":"partial"}}]}` + "\n\n:")
+	_, err := copyStream(context.Writer, &chunkErrorReader{data: body}, streamProtocolChat, nil)
+	if !errors.Is(err, errUpstreamStreamRead) {
+		t.Fatalf("copy error = %v", err)
+	}
+	if !bytes.Equal(recorder.Body.Bytes(), body) {
+		t.Fatalf("interrupted body = %q, want %q", recorder.Body.Bytes(), body)
 	}
 }
 

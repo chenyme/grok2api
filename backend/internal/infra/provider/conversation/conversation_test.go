@@ -882,8 +882,11 @@ func TestConvertResponsesStreamMarksChatReasoningStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(converted)
-	if strings.Count(text, `"reasoning_started":true`) != 1 {
+	if strings.Count(text, ": grok2api-reasoning-start\n\n") != 1 {
 		t.Fatalf("expected one reasoning start marker: %s", text)
+	}
+	if strings.Contains(text, "reasoning_started") {
+		t.Fatalf("internal timing marker leaked into Chat JSON: %s", text)
 	}
 	if !strings.Contains(text, `"content":"hi"`) {
 		t.Fatalf("missing visible content: %s", text)

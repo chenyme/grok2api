@@ -74,6 +74,16 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual((classification, reason, output), ("healthy", "within_threshold", 1511))
         self.assertAlmostEqual(speed, 1511 * 1000 / 19827)
 
+    def test_passive_late_first_token_without_reasoning_remains_burst(self):
+        cfg = config(fail_closed=True, min_generation_ms=1000)
+        classification, reason, speed, output = quality_guard.classify_audit({
+            "provider": "grok_build", "streaming": True, "statusCode": 200,
+            "firstTokenMs": 10000, "durationMs": 10100,
+            "outputTokens": 2000, "reasoningTokens": 0,
+        }, cfg)
+        self.assertEqual((classification, reason, output), ("hard", "buffered_burst", 2000))
+        self.assertEqual(speed, 20000)
+
     def test_passive_audit_does_not_infer_thinking_requirement(self):
         cfg = config(fail_closed=True, min_generation_ms=1000)
         base = {
@@ -942,4 +952,3 @@ class GuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

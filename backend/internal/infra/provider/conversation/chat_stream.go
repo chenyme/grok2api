@@ -34,14 +34,17 @@ func (c *streamConverter) chatDelta(delta map[string]any) error {
 	})
 }
 
-// markChatReasoningStart emits a timing-only marker so first-token includes
-// encrypted or buffered thinking. Clients that ignore unknown delta keys keep
-// the same visible stream.
+// markChatReasoningStart emits an SSE comment so the gateway can include
+// encrypted or buffered thinking in its generation window. SSE clients ignore
+// comments, so the public Chat Completions JSON contract remains unchanged.
 func (c *streamConverter) markChatReasoningStart() error {
 	if c.chatReasoningMark {
 		return nil
 	}
-	if err := c.chatDelta(map[string]any{"reasoning_started": true}); err != nil {
+	if err := c.start(); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(c.writer, ": grok2api-reasoning-start\n\n"); err != nil {
 		return err
 	}
 	c.chatReasoningMark = true

@@ -17,12 +17,12 @@ const (
 // output tokens / GenerationWindowMS. In fail-closed mode, short generation
 // windows with a soft-or-higher rate are buffered_burst; otherwise the hard
 // and soft thresholds apply in that order.
-func ClassifyOutputSpeed(outputTokens, firstTokenMS, durationMS int64, softTPS, hardTPS float64, minGenMS int64, failClosed bool) (class string, tps float64, genMS int64) {
-	genMS = GenerationWindowMS(firstTokenMS, durationMS)
+func ClassifyOutputSpeed(outputTokens, reasoningTokens, firstTokenMS, durationMS int64, softTPS, hardTPS float64, minGenMS int64, failClosed bool) (class string, tps float64, genMS int64) {
+	genMS = GenerationWindowMS(firstTokenMS, durationMS, reasoningTokens)
 	if genMS <= 0 || outputTokens <= 0 {
 		return "", 0, genMS
 	}
-	tps = OutputTokensPerSecond(outputTokens, firstTokenMS, durationMS)
+	tps = OutputTokensPerSecond(outputTokens, reasoningTokens, firstTokenMS, durationMS)
 	if failClosed && minGenMS > 0 && genMS < minGenMS && tps >= softTPS {
 		return DegradeClassBurst, tps, genMS
 	}
@@ -38,11 +38,12 @@ func ClassifyOutputSpeed(outputTokens, firstTokenMS, durationMS int64, softTPS, 
 // GenerationWindowMS is the Token/s denominator shared by the audit panel,
 // dashboard, probes, and quality guard.
 //
-// Normally that is duration − first token. When the remaining tail is shorter
-// than both the first-token wait and DefaultDegradeMinGenMS, thinking was
-// almost certainly encrypted or buffered and then flushed. Fall back to the
-// full request duration so those tokens are not assigned to a few milliseconds.
-func GenerationWindowMS(firstTokenMS, durationMS int64) int64 {
+// Normally that is duration − first token. Older audit rows may have measured
+// first token only when buffered reasoning was finally flushed. For rows that
+// actually report reasoning tokens, use the full duration when the remaining
+// tail is implausibly short. Rows without reasoning evidence retain the tail so
+// real buffered output bursts remain visible to the fail-closed guard.
+func GenerationWindowMS(firstTokenMS, durationMS, reasoningTokens int64) int64 {
 	if durationMS <= 0 {
 		return 0
 	}
@@ -53,14 +54,14 @@ func GenerationWindowMS(firstTokenMS, durationMS int64) int64 {
 		return 0
 	}
 	generationMS := durationMS - firstTokenMS
-	if generationMS < firstTokenMS && generationMS < DefaultDegradeMinGenMS {
+	if reasoningTokens > 0 && generationMS < firstTokenMS && generationMS < DefaultDegradeMinGenMS {
 		return durationMS
 	}
 	return generationMS
 }
 
-func OutputTokensPerSecond(outputTokens, firstTokenMS, durationMS int64) float64 {
-	generationMS := GenerationWindowMS(firstTokenMS, durationMS)
+func OutputTokensPerSecond(outputTokens, reasoningTokens, firstTokenMS, durationMS int64) float64 {
+	generationMS := GenerationWindowMS(firstTokenMS, durationMS, reasoningTokens)
 	if outputTokens <= 0 || generationMS <= 0 {
 		return 0
 	}

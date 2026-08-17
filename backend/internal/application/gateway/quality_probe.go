@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -33,7 +34,6 @@ type qualityProbeChatEvent struct {
 			Reasoning        string `json:"reasoning"`
 			ReasoningContent string `json:"reasoning_content"`
 			ThinkingContent  string `json:"thinking_content"`
-			ReasoningStarted bool   `json:"reasoning_started"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage *struct {
@@ -110,6 +110,15 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 			return egressapp.QualityProbeResult{}, fmt.Errorf("质量探测响应超过 %d MiB", qualityProbeMaxStreamBytes>>20)
 		}
 		line = []byte(strings.TrimSpace(string(line)))
+		if bytes.Equal(line, []byte(": grok2api-reasoning-start")) {
+			if firstGeneratedAt.IsZero() {
+				firstGeneratedAt = time.Now()
+				if result.MarkFirstToken != nil {
+					result.MarkFirstToken()
+				}
+			}
+			continue
+		}
 		if !strings.HasPrefix(string(line), "data:") {
 			continue
 		}
@@ -136,9 +145,6 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 		for _, choice := range event.Choices {
 			delta := choice.Delta
 			generated := qualityProbeHasGeneratedDelta(delta.Content, delta.Reasoning, delta.ReasoningContent, delta.ThinkingContent)
-			if delta.ReasoningStarted {
-				generated = true
-			}
 			if generated && firstGeneratedAt.IsZero() {
 				firstGeneratedAt = time.Now()
 				if result.MarkFirstToken != nil {
@@ -175,14 +181,14 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 	durationMS := completedAt.Sub(startedAt).Milliseconds()
 	var generationMS int64
 	if !firstGeneratedAt.IsZero() {
-		generationMS = audit.GenerationWindowMS(firstTokenMS, durationMS)
+		generationMS = audit.GenerationWindowMS(firstTokenMS, durationMS, usage.ReasoningTokens)
 		if generationMS < 1 {
 			generationMS = 1
 		}
 	}
 	var outputTokensPerSecond float64
 	if !firstGeneratedAt.IsZero() {
-		outputTokensPerSecond = qualityProbeOutputTokensPerSecond(usage.OutputTokens, durationMS, firstTokenMS)
+		outputTokensPerSecond = qualityProbeOutputTokensPerSecond(usage.OutputTokens, usage.ReasoningTokens, durationMS, firstTokenMS)
 	}
 	digest := sha256.Sum256([]byte(text))
 	return egressapp.QualityProbeResult{
@@ -205,8 +211,8 @@ func normalizeQualityProbeRequestError(err error) error {
 	return err
 }
 
-func qualityProbeOutputTokensPerSecond(outputTokens, durationMS, firstTokenMS int64) float64 {
-	return audit.OutputTokensPerSecond(outputTokens, firstTokenMS, durationMS)
+func qualityProbeOutputTokensPerSecond(outputTokens, reasoningTokens, durationMS, firstTokenMS int64) float64 {
+	return audit.OutputTokensPerSecond(outputTokens, reasoningTokens, firstTokenMS, durationMS)
 }
 
 func qualityProbeHasGeneratedDelta(content, reasoning, reasoningContent, thinkingContent string) bool {
