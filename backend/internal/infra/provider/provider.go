@@ -631,6 +631,13 @@ type CredentialCodecAdapter interface {
 	MarshalCredentials(values []CredentialSeed) ([]byte, error)
 }
 
+// CredentialImportPreparer exchanges incomplete imported credentials before
+// persistence. Implementations must preserve provider token rotation.
+type CredentialImportPreparer interface {
+	Adapter
+	PrepareImportedCredential(ctx context.Context, seed CredentialSeed) (CredentialSeed, error)
+}
+
 // CredentialMetadata contains non-sensitive display data safely derived from a stored credential.
 // Raw tokens and complete JWT claims must never be exposed through this structure.
 type CredentialMetadata struct {
