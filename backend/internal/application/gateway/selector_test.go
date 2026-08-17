@@ -1519,6 +1519,42 @@ func TestMarkFailureSoftNetworkCooldown(t *testing.T) {
 	if hard.CooldownUntil == nil || hard.CooldownUntil.Sub(time.Now().UTC()) < 20*time.Second {
 		t.Fatalf("hard cooldown too short: %v", hard.CooldownUntil)
 	}
+
+	before = time.Now().UTC()
+	selector.MarkFailure(ctx, hard, 0, 0)
+	preserved, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.FailureCount != hard.FailureCount {
+		t.Fatalf("ordinary soft failure count = %d, want preserved %d", preserved.FailureCount, hard.FailureCount)
+	}
+	if preserved.CooldownUntil == nil {
+		t.Fatal("ordinary soft failure did not set cooldown")
+	}
+	cooldown = preserved.CooldownUntil.Sub(before)
+	if cooldown < 4*time.Second || cooldown > 6*time.Second {
+		t.Fatalf("ordinary soft cooldown = %s, want ~5s", cooldown)
+	}
+
+	before = time.Now().UTC()
+	if err := selector.MarkFailureAfterSuccess(ctx, preserved, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	reset, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.FailureCount != 0 {
+		t.Fatalf("after-success soft failure count = %d, want 0", reset.FailureCount)
+	}
+	if reset.CooldownUntil == nil {
+		t.Fatal("after-success soft failure did not set cooldown")
+	}
+	cooldown = reset.CooldownUntil.Sub(before)
+	if cooldown < 4*time.Second || cooldown > 6*time.Second {
+		t.Fatalf("after-success soft cooldown = %s, want ~5s", cooldown)
+	}
 }
 
 type batchConcurrencyLimiter struct {

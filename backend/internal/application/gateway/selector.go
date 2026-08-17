@@ -1108,25 +1108,25 @@ func (s *Selector) clearQuotaConsumptionAccount(provider account.Provider, accou
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {
-	_ = s.markFailure(ctx, credential, credential.FailureCount+1, status, retryAfter)
+	_ = s.markFailure(ctx, credential, credential.FailureCount, credential.FailureCount+1, status, retryAfter)
 }
 
 // MarkFailureAfterSuccess records a stream failure from a fresh health baseline.
 // The upstream already returned a successful response header, so failures that
 // preceded this request must not be carried into the new cooldown calculation.
 func (s *Selector) MarkFailureAfterSuccess(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) error {
-	return s.markFailure(ctx, credential, 1, status, retryAfter)
+	return s.markFailure(ctx, credential, 0, 1, status, retryAfter)
 }
 
-func (s *Selector) markFailure(ctx context.Context, credential account.Credential, failureCount, status int, retryAfter time.Duration) error {
+func (s *Selector) markFailure(ctx context.Context, credential account.Credential, baselineFailureCount, nextFailureCount, status int, retryAfter time.Duration) error {
 	_, cooldownBase, cooldownMax, _ := s.routingConfig()
 	// 网络/超时（status 0）只短隔离本号，不累加失败次数，避免瞬时抖动把号池指数冻空。
 	// 上游返回的 4xx/5xx 仍按原指数冷却：那是上游明确给出的状态，不是本地网络抖动。
 	softNetwork := status == 0
-	effectiveFailureCount := failureCount
+	effectiveFailureCount := nextFailureCount
 	cooldown := cooldownBase
 	if softNetwork {
-		effectiveFailureCount = credential.FailureCount
+		effectiveFailureCount = baselineFailureCount
 		cooldown = softNetworkCooldown
 		if retryAfter > cooldown {
 			cooldown = retryAfter

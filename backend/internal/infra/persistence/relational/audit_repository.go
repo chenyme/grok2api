@@ -911,7 +911,7 @@ func (r *AuditRepository) degradeClassifiedQuery(tx *gorm.DB, input repository.D
 	if r.db.dialect == "postgres" {
 		castType = "DOUBLE PRECISION"
 	}
-	generationExpression := "(a.duration_ms - a.first_token_ms)"
+	generationExpression := fmt.Sprintf("(CASE WHEN a.reasoning_tokens > 0 AND a.duration_ms - a.first_token_ms < a.first_token_ms AND a.duration_ms - a.first_token_ms < %d THEN a.duration_ms ELSE a.duration_ms - a.first_token_ms END)", audit.DefaultDegradeMinGenMS)
 	// NULLIF keeps PostgreSQL safe even if its planner evaluates the throughput
 	// expression before the duration guard in the WHERE clause.
 	tpsExpression := fmt.Sprintf("(CAST(a.output_tokens AS %s) * 1000.0 / NULLIF(%s, 0))", castType, generationExpression)

@@ -1358,7 +1358,7 @@ attemptLoop:
 				budget := newFinalizationBudget(string(operation), string(route.Provider))
 				if isUpstreamStreamFailure(errorCode) {
 					if err := budget.run("account_health", finalizationHealthBudget, func(stageCtx context.Context) error {
-						return s.selector.MarkFailureAfterSuccess(stageCtx, credential, http.StatusBadGateway, 0)
+						return s.selector.MarkFailureAfterSuccess(stageCtx, credential, 0, 0)
 					}); err != nil {
 						s.logger.Warn("stream_failure_health_write_failed", "account_id", credential.ID, "provider", credential.Provider, "error", err)
 					}

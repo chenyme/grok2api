@@ -34,6 +34,23 @@ func (c *streamConverter) chatDelta(delta map[string]any) error {
 	})
 }
 
+// markChatReasoningStart emits an SSE comment so the gateway can include
+// encrypted or buffered thinking in its generation window. SSE clients ignore
+// comments, so the public Chat Completions JSON contract remains unchanged.
+func (c *streamConverter) markChatReasoningStart() error {
+	if c.chatReasoningMark {
+		return nil
+	}
+	if err := c.start(); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(c.writer, ": grok2api-reasoning-start\n\n"); err != nil {
+		return err
+	}
+	c.chatReasoningMark = true
+	return nil
+}
+
 func (c *streamConverter) toolStartChat(item responseItem, _ int) error {
 	if err := c.start(); err != nil {
 		return err

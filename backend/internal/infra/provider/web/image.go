@@ -846,27 +846,19 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 		}
 		images = append(images, image)
 	}
-	refs := make([]string, 0, len(images))
-	parentID := ""
+	assets := make([]string, 0, len(images))
 	for _, image := range images {
 		uploaded, uploadErr := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "image_edit_upload")
 		if uploadErr != nil {
 			return nil, uploadErr
 		}
-		if uploaded.URI == "" {
-			return nil, fmt.Errorf("上传图片成功但上游未返回 fileUri")
+		if uploaded.MetadataID == "" {
+			return nil, fmt.Errorf("上传图片成功但上游未返回 fileMetadataId")
 		}
-		refs = append(refs, uploaded.URI)
-		postID, postErr := a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", uploaded.URI, "", "image_edit_media_post")
-		if postErr != nil {
-			return nil, postErr
-		}
-		if parentID == "" {
-			parentID = postID
-		}
+		assets = append(assets, uploaded.MetadataID)
 	}
-	payload := buildImageEditPayload(request.Prompt, refs, parentID, ratio)
-	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine/post/"+parentID)
+	payload := buildImageEditPayload(request.Prompt, assets, ratio)
+	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine")
 	if err != nil {
 		return nil, err
 	}
@@ -908,20 +900,18 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	return result, err
 }
 
-func buildImageEditPayload(prompt string, refs []string, parentID, aspectRatio string) map[string]any {
-	config := map[string]any{"imageReferences": refs, "parentPostId": parentID}
+func buildImageEditPayload(prompt string, assets []string, aspectRatio string) map[string]any {
+	imageToImage := map[string]any{
+		"prompt":      prompt,
+		"inputAssets": assets,
+	}
 	if aspectRatio != "" {
-		config["aspectRatio"] = aspectRatio
+		imageToImage["aspectRatio"] = aspectRatio
 	}
 	return map[string]any{
-		"temporary": true, "modelName": "imagine-image-edit", "message": prompt,
-		"enableImageGeneration": true, "returnImageBytes": false, "returnRawGrokInXaiRequest": false,
-		"enableImageStreaming": true, "imageGenerationCount": 2, "forceConcise": false,
-		"enableSideBySide": true, "sendFinalMetadata": true, "isReasoning": false,
-		"disableTextFollowUps": true, "disableMemory": false, "forceSideBySide": false,
-		"responseMetadata": map[string]any{"modelConfigOverride": map[string]any{"modelMap": map[string]any{
-			"imageEditModel": "imagine", "imageEditModelConfig": config,
-		}}},
+		"modelName": "imagine-image-edit", "message": prompt,
+		"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
+		"mediaGenInput": map[string]any{"imageToImage": imageToImage},
 	}
 }
 
@@ -1356,23 +1346,25 @@ func decodeDirectFileUploadResponse(source io.Reader) (uploadedFile, error) {
 	if directFileUploadTerminalError(value.TerminalError) {
 		return uploadedFile{}, errors.New("V2 上传文件被上游拒绝")
 	}
-	if value.FileMetadata.ID == "" {
-		value.FileMetadata.ID = value.FileMetadata.FileID
+	metadataID := strings.TrimSpace(value.FileMetadata.ID)
+	fileID := metadataID
+	if fileID == "" {
+		fileID = strings.TrimSpace(value.FileMetadata.FileID)
 	}
-	if value.FileMetadata.ID == "" {
+	if fileID == "" {
 		// Some successful uploads complete asynchronously and only expose the
 		// upload task ID. Gateway accepts it as the file reference; prefer the
 		// browser's fileMetadataId whenever it is already available.
-		value.FileMetadata.ID = strings.TrimSpace(value.UploadID)
+		fileID = strings.TrimSpace(value.UploadID)
 	}
 	fileURI := ""
 	if value.FileMetadata.FileURI != "" {
 		fileURI = absoluteAssetURL(value.FileMetadata.FileURI)
 	}
-	if value.FileMetadata.ID == "" && fileURI == "" {
+	if fileID == "" && fileURI == "" {
 		return uploadedFile{}, fmt.Errorf("V2 上传文件成功但上游未返回完整文件标识")
 	}
-	return uploadedFile{ID: value.FileMetadata.ID, URI: fileURI}, nil
+	return uploadedFile{ID: fileID, MetadataID: metadataID, URI: fileURI}, nil
 }
 
 func directFileUploadTerminalError(raw json.RawMessage) bool {
