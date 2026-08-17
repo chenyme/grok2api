@@ -36,8 +36,7 @@ const (
 	//     8 references answer 400 "Too many reference images: 8. Maximum allowed is 7."
 	// The two are mutually exclusive below and their limits are never summed, so a
 	// combined ceiling would accept payloads that upstream then rejects.
-	consoleMaxVideoFirstFrames     = 1
-	consoleMaxVideoReferenceImages = 7
+	consoleMaxVideoFirstFrames = 1
 )
 
 type consoleMediaUpstreamError struct {
@@ -468,8 +467,8 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if firstFrames > consoleMaxVideoFirstFrames {
 		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张首帧图，当前为 %d 张", modelName, consoleMaxVideoFirstFrames, firstFrames)
 	}
-	if referenceImages > consoleMaxVideoReferenceImages {
-		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张参考图，当前为 %d 张", modelName, consoleMaxVideoReferenceImages, referenceImages)
+	if referenceImages > provider.ConsoleVideoMaxReferenceImages {
+		return provider.VideoResult{}, fmt.Errorf("Console %s 最多支持 %d 张参考图，当前为 %d 张", modelName, provider.ConsoleVideoMaxReferenceImages, referenceImages)
 	}
 	if operation == provider.VideoOperationGenerate {
 		if request.Duration < 1 || request.Duration > 15 {
@@ -480,8 +479,8 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		//   -> 400 "Duration 15s exceeds the maximum allowed for reference-to-video, which is 10s."
 		// image-to-video (the image field) and grok-imagine-video-1.5 both keep 15s,
 		// so the cap keys on reference_images plus the base model, not on duration alone.
-		if modelName == "grok-imagine-video" && referenceImages > 0 && request.Duration > 10 {
-			return provider.VideoResult{}, fmt.Errorf("%s 的参考图生视频最长 10 秒，当前为 %d 秒", modelName, request.Duration)
+		if modelName == "grok-imagine-video" && referenceImages > 0 && request.Duration > provider.ConsoleVideoMaxReferenceDurationSeconds {
+			return provider.VideoResult{}, fmt.Errorf("%s 的参考图生视频最长 %d 秒，当前为 %d 秒", modelName, provider.ConsoleVideoMaxReferenceDurationSeconds, request.Duration)
 		}
 	} else if operation == provider.VideoOperationExtend {
 		// Official /v1/videos/extensions defaults to 6s and accepts 2-10s.

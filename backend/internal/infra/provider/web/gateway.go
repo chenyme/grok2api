@@ -49,6 +49,11 @@ type gatewaySender struct {
 	connection *websocket.Conn
 }
 
+type gatewayOpenOptions struct {
+	enforceStreamIdle bool
+	deferForbidden    bool
+}
+
 func (s *gatewaySender) write(value any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -56,7 +61,7 @@ func (s *gatewaySender) write(value any) error {
 	return s.connection.WriteJSON(value)
 }
 
-func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput, enforceStreamIdle bool) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
+func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Credential, previousResponseID string, spec ModelSpec, input normalizedChatInput, options gatewayOpenOptions) (*http.Response, *infraegress.Lease, *inferencedomain.WebResponseState, string, error) {
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
@@ -99,7 +104,7 @@ func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Creden
 	}
 	requestCtx, totalCancel := context.WithTimeout(ctx, time.Duration(cfg.ChatTimeoutSeconds)*time.Second)
 	var idleCancel context.CancelCauseFunc
-	if enforceStreamIdle && cfg.StreamIdleTimeoutSeconds > 0 {
+	if options.enforceStreamIdle && cfg.StreamIdleTimeoutSeconds > 0 {
 		requestCtx, idleCancel = context.WithCancelCause(requestCtx)
 	}
 	cancel := func() {
@@ -108,7 +113,14 @@ func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Creden
 		}
 		totalCancel()
 	}
-	connection, handshake, dialErr := lease.DialWebSocket(requestCtx, endpoint, gatewayHeaders(origin, userID, token, lease), gatewayHandshakeTimeout)
+	var connection *websocket.Conn
+	var handshake *fhttp.Response
+	var dialErr error
+	if options.deferForbidden {
+		connection, handshake, dialErr = lease.DialWebSocketDeferredForbidden(requestCtx, endpoint, gatewayHeaders(origin, userID, token, lease), gatewayHandshakeTimeout)
+	} else {
+		connection, handshake, dialErr = lease.DialWebSocket(requestCtx, endpoint, gatewayHeaders(origin, userID, token, lease), gatewayHandshakeTimeout)
+	}
 	if dialErr != nil {
 		cancel()
 		if handshake != nil {

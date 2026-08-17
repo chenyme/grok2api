@@ -12,6 +12,7 @@ import { listModels } from "@/entities/model/model-api";
 import { listClientKeys } from "@/features/client-keys/client-keys-api";
 import { listAccounts } from "@/features/accounts/accounts-api";
 import { RequestAuditDetailDialog } from "@/features/audits/request-audit-detail-dialog";
+import { buildAuditUsageView } from "@/features/audits/audit-usage";
 import { getRequestAudits, getRequestAuditSummary, type AuditBillingBreakdownDTO, type AuditBillingComponentDTO, type AuditDTO, type AuditPeriod } from "@/features/audits/request-audits-api";
 import { EmptyState, ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
@@ -277,7 +278,7 @@ export function RequestAuditsPage() {
         {auditsQuery.isError ? <ErrorState message={auditsQuery.error.message} onRetry={() => void auditsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {auditsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table viewportRows={20} rowHeight={72} aria-busy={auditsQuery.isFetching} className={cn("min-w-[1184px] table-fixed text-xs transition-opacity", auditsQuery.isPlaceholderData && "pointer-events-none opacity-60")}>
+          <Table viewportRows={20} rowHeight={96} aria-busy={auditsQuery.isFetching} className={cn("min-w-[1184px] table-fixed text-xs transition-opacity", auditsQuery.isPlaceholderData && "pointer-events-none opacity-60")}>
             <colgroup>
               <col className="w-44" />
               <col className="w-36" />
@@ -303,7 +304,7 @@ export function RequestAuditsPage() {
             {auditsQuery.isPending ? (
               <TableBody><TableLoadingRow colSpan={8} /></TableBody>
             ) : (
-              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={72} overscan={6} renderRow={renderAuditRow} />
+              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={96} overscan={6} renderRow={renderAuditRow} />
             )}
           </Table>
         ) : null}
@@ -317,7 +318,7 @@ const AuditRow = memo(function AuditRow({ audit, locale, onOpen }: { audit: Audi
   const createdAt = formatCompactDateTime(audit.createdAt, locale);
   const createdAtLabel = formatDateTime(audit.createdAt, locale);
   return (
-    <TableRow className="h-[72px]">
+    <TableRow className="h-[96px]">
       <TableCell><RequestValue audit={audit} /></TableCell>
       <TableCell>
         <ModelRouteValue
@@ -374,6 +375,9 @@ function RequestValue({ audit }: { audit: AuditDTO }) {
     <div className="min-w-0">
       <span className="block truncate text-xs font-medium">{providerLabel(audit.provider)} · {t(`audits.operations.${audit.operation}`)}</span>
       <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground" title={audit.requestId}>{audit.requestId}</span>
+      {audit.numSourcesUsed > 0 ? (
+        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{t("audits.sources", { count: audit.numSourcesUsed })}</span>
+      ) : null}
     </div>
   );
 }
@@ -570,7 +574,17 @@ function ModelRouteValue({ model, upstreamModel, account, clientKey }: { model: 
 
 function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
   const { t } = useTranslation();
-  if (audit.operation === "compaction" && audit.totalTokens === 0) {
+  const view = buildAuditUsageView(audit, (value) => formatNumber(value, locale), {
+    input: t("audits.input"),
+    output: t("audits.output"),
+    cached: t("audits.cached"),
+    reasoning: t("audits.reasoning"),
+    mediaInput: t("audits.mediaInput"),
+    mediaOutput: t("audits.mediaOutput"),
+    imageCount: (count) => t("audits.imageCount", { count }),
+    secondsCount: (count) => t("audits.secondsCount", { count }),
+  });
+  if (view.mode === "compaction") {
     return (
       <div className="flex h-[52px] w-full items-center gap-2 rounded-md bg-muted/45 px-2.5 text-[11px]">
         <Minimize2 className="size-3.5 shrink-0 text-muted-foreground" />
@@ -581,59 +595,41 @@ function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
       </div>
     );
   }
-  if (audit.operation === "video") {
-    return <MediaUsage input={t("audits.imageCount", { count: audit.mediaInputImages })} output={t("audits.secondsCount", { count: audit.mediaOutputSeconds })} />;
-  }
-  if (audit.operation === "tts" || audit.operation === "stt" || audit.operation === "realtime" || audit.operation === "voice") {
+  if (view.mode === "duration") {
     return (
       <div className="flex h-[52px] w-full items-center gap-2 rounded-md bg-muted/45 px-2.5 text-[11px]">
         <div className="min-w-0">
           <p className="truncate font-medium">{t(`audits.operations.${audit.operation}`)}</p>
-          <p className="truncate text-muted-foreground">{(audit.durationMs / 1000).toFixed(2)}s</p>
+          <p className="truncate text-muted-foreground">{view.durationSeconds}s</p>
         </div>
       </div>
     );
   }
-  if (audit.operation === "image" || audit.operation === "image_edit" || audit.mediaInputImages > 0 || audit.mediaOutputImages > 0) {
-    return <MediaUsage input={t("audits.imageCount", { count: audit.mediaInputImages })} output={t("audits.imageCount", { count: audit.mediaOutputImages })} />;
-  }
-  const items = [
-    { label: t("audits.input"), value: audit.inputTokens },
-    { label: t("audits.output"), value: audit.outputTokens },
-    { label: t("audits.cached"), value: audit.cachedInputTokens },
-    { label: t("audits.reasoning"), value: audit.reasoningTokens },
-  ];
   return (
-    <div className="w-full">
-      <div className="grid grid-cols-2 gap-1">
-        {items.map((item) => (
-          <div key={item.label} className="flex h-6 min-w-0 items-center justify-between gap-2 rounded-md bg-muted/45 px-2 text-[11px]">
-            <span className="text-muted-foreground">{item.label}</span>
-            <span className="font-medium tabular-nums">{formatNumber(item.value, locale)}</span>
-          </div>
-        ))}
-      </div>
-      {audit.numSourcesUsed > 0 ? (
-        <div className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-muted-foreground">
-          <span>{t("audits.sources", { count: audit.numSourcesUsed })}</span>
+    <div className="w-full space-y-1">
+      {view.mediaItems?.length ? (
+        <div className="grid grid-cols-2 gap-1">
+          {view.mediaItems.map((item) => (
+            <UsageMetric key={item.key} label={item.label} value={item.value} />
+          ))}
+        </div>
+      ) : null}
+      {view.tokenItems?.length ? (
+        <div className="grid grid-cols-2 gap-1">
+          {view.tokenItems.map((item) => (
+            <UsageMetric key={item.key} label={item.label} value={item.value} />
+          ))}
         </div>
       ) : null}
     </div>
   );
 }
 
-function MediaUsage({ input, output }: { input: string; output: string }) {
-  const { t } = useTranslation();
+function UsageMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="grid w-full gap-1">
-      <div className="flex h-6 items-center justify-between gap-3 rounded-md bg-muted/45 px-2 text-[11px]">
-        <span className="text-muted-foreground">{t("audits.mediaInput")}</span>
-        <span className="font-medium tabular-nums">{input}</span>
-      </div>
-      <div className="flex h-6 items-center justify-between gap-3 rounded-md bg-muted/45 px-2 text-[11px]">
-        <span className="text-muted-foreground">{t("audits.output")}</span>
-        <span className="font-medium tabular-nums">{output}</span>
-      </div>
+    <div className="flex h-6 min-w-0 items-center justify-between gap-2 rounded-md bg-muted/45 px-2 text-[11px]">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
     </div>
   );
 }

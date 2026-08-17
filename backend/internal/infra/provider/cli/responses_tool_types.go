@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
 
 var nativeHostedToolChoiceTypes = map[string]string{
@@ -33,6 +35,8 @@ var webSearchCompatibilityFields = map[string]struct{}{
 	"max_search_results":   {},
 	"safe_search":          {},
 }
+
+const maxWebSearchDomains = conversation.MaxWebSearchDomains
 
 // normalizeNativeTool preserves native Build tools and removes Tool Search-only fields.
 func (c *responsesToolCompatibility) normalizeNativeTool(tool map[string]any, _ string) ([]any, error) {
@@ -84,7 +88,7 @@ func (c *responsesToolCompatibility) normalizeXSearchTool(tool map[string]any, p
 	return c.normalizeNativeTool(converted, param)
 }
 
-// normalizeWebSearchTool preserves Build's allowed_domains constraint and safely
+// normalizeWebSearchTool preserves Build's allowed/excluded domain constraints and safely
 // reduces newer controls that cannot be represented with equivalent semantics.
 func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any, kind, param string) ([]any, error) {
 	if external, exists := tool["external_web_access"]; exists {
@@ -129,6 +133,11 @@ func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any,
 			c.addWarning("web_search_allowed_domains_normalized")
 			continue
 		}
+		if key == "excluded_domains" {
+			c.changed = true
+			c.addWarning("web_search_excluded_domains_normalized")
+			continue
+		}
 		if _, compatible := webSearchCompatibilityFields[key]; !compatible {
 			c.changed = true
 			c.addWarning("web_search_unknown_controls_ignored")
@@ -151,57 +160,83 @@ func (c *responsesToolCompatibility) normalizeWebSearchTool(tool map[string]any,
 }
 
 func (c *responsesToolCompatibility) normalizeWebSearchFilters(tool map[string]any, param string) (map[string]any, error) {
-	var nestedDomains []any
+	nested := make(map[string][]any, 2)
 	if rawFilters, exists := tool["filters"]; exists && rawFilters != nil {
 		filters, ok := rawFilters.(map[string]any)
 		if !ok {
 			return nil, &responsesRequestError{Message: "web_search filters 必须是对象", Param: param + ".filters", Code: "invalid_parameter"}
 		}
 		for key := range filters {
-			if key != "allowed_domains" {
+			if key != "allowed_domains" && key != "excluded_domains" {
 				c.changed = true
 				c.addWarning("web_search_filters_downgraded")
 			}
 		}
-		if rawDomains, exists := filters["allowed_domains"]; exists {
-			values, err := normalizeAllowedDomains(rawDomains, param+".filters.allowed_domains")
+		for _, field := range []string{"allowed_domains", "excluded_domains"} {
+			rawDomains, exists := filters[field]
+			if !exists {
+				continue
+			}
+			values, err := normalizeWebSearchDomains(rawDomains, field, param+".filters."+field)
 			if err != nil {
 				return nil, err
 			}
-			nestedDomains = values
+			nested[field] = values
 		}
 	}
 
-	var topLevelDomains []any
-	if rawDomains, exists := tool["allowed_domains"]; exists {
-		values, err := normalizeAllowedDomains(rawDomains, param+".allowed_domains")
-		if err != nil {
-			return nil, err
+	topLevel := make(map[string][]any, 2)
+	for _, field := range []string{"allowed_domains", "excluded_domains"} {
+		if rawDomains, exists := tool[field]; exists {
+			values, err := normalizeWebSearchDomains(rawDomains, field, param+"."+field)
+			if err != nil {
+				return nil, err
+			}
+			topLevel[field] = values
 		}
-		topLevelDomains = values
 	}
-	if len(nestedDomains) > 0 && len(topLevelDomains) > 0 && !sameStringValues(nestedDomains, topLevelDomains) {
-		return nil, &responsesRequestError{Message: "web_search allowed_domains 声明冲突", Param: param + ".allowed_domains", Code: "invalid_parameter"}
+
+	result := make(map[string]any, 2)
+	for _, field := range []string{"allowed_domains", "excluded_domains"} {
+		nestedDomains := nested[field]
+		topLevelDomains := topLevel[field]
+		if len(nestedDomains) > 0 && len(topLevelDomains) > 0 && !sameStringValues(nestedDomains, topLevelDomains) {
+			return nil, &responsesRequestError{Message: "web_search " + field + " 声明冲突", Param: param + "." + field, Code: "invalid_parameter"}
+		}
+		domains := nestedDomains
+		if len(domains) == 0 {
+			domains = topLevelDomains
+		}
+		if len(domains) > 0 {
+			result[field] = cloneJSONValue(domains)
+		}
 	}
-	domains := nestedDomains
-	if len(domains) == 0 {
-		domains = topLevelDomains
+	if _, hasAllowed := result["allowed_domains"]; hasAllowed {
+		if _, hasExcluded := result["excluded_domains"]; hasExcluded {
+			return nil, &responsesRequestError{Message: "web_search 不能同时设置 allowed_domains 和 excluded_domains", Param: param + ".filters", Code: "invalid_parameter"}
+		}
 	}
-	if len(domains) == 0 {
+	if len(result) == 0 {
 		return nil, nil
 	}
-	return map[string]any{"allowed_domains": cloneJSONValue(domains)}, nil
+	return result, nil
 }
 
-func normalizeAllowedDomains(value any, param string) ([]any, error) {
+func normalizeWebSearchDomains(value any, field, param string) ([]any, error) {
+	if value == nil {
+		return nil, nil
+	}
 	values, ok := value.([]any)
 	if !ok {
-		return nil, &responsesRequestError{Message: "allowed_domains 必须是字符串数组", Param: param, Code: "invalid_parameter"}
+		return nil, &responsesRequestError{Message: field + " 必须是字符串数组", Param: param, Code: "invalid_parameter"}
+	}
+	if len(values) > maxWebSearchDomains {
+		return nil, &responsesRequestError{Message: fmt.Sprintf("%s 不能超过 %d 个域名", field, maxWebSearchDomains), Param: param, Code: "invalid_parameter"}
 	}
 	for index, value := range values {
 		domain, ok := value.(string)
 		if !ok || strings.TrimSpace(domain) == "" {
-			return nil, &responsesRequestError{Message: "allowed_domains 必须包含有效域名", Param: fmt.Sprintf("%s[%d]", param, index), Code: "invalid_parameter"}
+			return nil, &responsesRequestError{Message: field + " 必须包含有效域名", Param: fmt.Sprintf("%s[%d]", param, index), Code: "invalid_parameter"}
 		}
 	}
 	return values, nil

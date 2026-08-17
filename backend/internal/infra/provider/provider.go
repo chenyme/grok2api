@@ -449,6 +449,16 @@ const (
 	VideoOperationExtend   = media.VideoOperationExtend
 )
 
+// ConsoleVideoMaxReferenceImages and ConsoleVideoMaxReferenceDurationSeconds
+// describe the Console reference-to-video contract enforced by the upstream.
+// They are shared by admission control and the Console adapter so invalid
+// asynchronous jobs are rejected before enqueueing without weakening the
+// adapter's final request-boundary validation.
+const (
+	ConsoleVideoMaxReferenceImages          = 7
+	ConsoleVideoMaxReferenceDurationSeconds = 10
+)
+
 type VideoRequest struct {
 	Credential account.Credential
 	// Billing is used only to determine XAI eligibility in Build auto mode; nil means the account tier is unknown.
@@ -755,6 +765,13 @@ type RoutingMetadataAdapter interface {
 	Adapter
 	QuotaMode(upstreamModel string) string
 	TierOrder(upstreamModel string) []account.WebTier
+}
+
+// QuotaTierOrderAdapter optionally narrows account tiers for a concrete quota
+// product. It is used when one public model exposes parameter variants backed
+// by different upstream entitlements.
+type QuotaTierOrderAdapter interface {
+	TierOrderForQuotaMode(upstreamModel, quotaMode string) []account.WebTier
 }
 
 // ModelAlias resolves a hidden compatibility model name to one public route and can fix reasoning effort.
@@ -1136,6 +1153,21 @@ func (r *Registry) TierOrder(value account.Provider, upstreamModel string) []acc
 	adapter, ok := r.Get(value)
 	if !ok {
 		return nil
+	}
+	metadata, ok := adapter.(RoutingMetadataAdapter)
+	if !ok {
+		return nil
+	}
+	return metadata.TierOrder(upstreamModel)
+}
+
+func (r *Registry) TierOrderForQuotaMode(value account.Provider, upstreamModel, quotaMode string) []account.WebTier {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil
+	}
+	if metadata, ok := adapter.(QuotaTierOrderAdapter); ok {
+		return metadata.TierOrderForQuotaMode(upstreamModel, quotaMode)
 	}
 	metadata, ok := adapter.(RoutingMetadataAdapter)
 	if !ok {

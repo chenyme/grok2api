@@ -120,12 +120,12 @@ export function ConsoleQuota({ windows, locale }: { windows: NonNullable<Account
   if (windows.length === 0) return <span className="text-xs text-muted-foreground">{t("accounts.quotaNotSynced")}</span>;
   const windowsByMode = new Map(windows.map((window) => [window.mode, window]));
   const modes = [
-    { mode: "console", label: t("creativeConsole.modes.chat") },
-    { mode: "console_image", label: t("creativeConsole.modes.image") },
-    { mode: "console_video", label: t("creativeConsole.modes.video") },
+    { mode: "console", label: "Chat" },
+    { mode: "console_image", label: "Image" },
+    { mode: "console_video", label: "Video" },
   ] as const;
   return (
-    <div className="grid w-full min-w-0 grid-cols-3 divide-x divide-border/70">
+    <div className="grid w-full min-w-0 grid-cols-[2fr_1fr_1fr] divide-x divide-border/70">
       {modes.map(({ mode, label }) => {
         const window = windowsByMode.get(mode);
         if (!window) {
@@ -163,9 +163,11 @@ export function WebQuota({ windows, locale, tier }: { windows: NonNullable<Accou
 
   if (imagineWindows.length === 0) return mainBlock;
   return (
-    <div className="w-full min-w-0 space-y-1.5">
-      {mainBlock}
-      <ImagineQuotaRow windows={imagineWindows} locale={locale} t={t} />
+    <div className="grid w-full min-w-0 grid-cols-2 divide-x divide-border/70">
+      <div className="min-w-0 pr-2">{mainBlock}</div>
+      <div className="min-w-0 pl-2">
+        <ImagineQuotaRow windows={imagineWindows} locale={locale} t={t} />
+      </div>
     </div>
   );
 }
@@ -201,7 +203,7 @@ function ImagineQuotaRow({ windows, locale, t }: { windows: WebQuotaWindow[]; lo
                   ) : hasTotal ? (
                     <span className="shrink-0 tabular-nums text-muted-foreground">{formatNumber(window.remaining, locale, 0)}/{formatNumber(window.total, locale, 0)}</span>
                   ) : (
-                    <span className="shrink-0 tabular-nums text-muted-foreground">{t("accounts.imagineQuotaRemaining", { remaining: formatNumber(window.remaining, locale, 0) })}</span>
+                    <span className="shrink-0 tabular-nums text-muted-foreground">{formatNumber(window.remaining, locale, 0)}/-</span>
                   )}
                 </div>
                 <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
