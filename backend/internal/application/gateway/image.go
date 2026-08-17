@@ -154,13 +154,20 @@ func (s *Service) executeImage(
 		}
 	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
+	pricingResolution, pricingQuality := resolution, quality
+	if route.Provider == accountdomain.ProviderWeb && operation == audit.OperationImage {
+		// Grok Web Imagine selects the product through the catalog model and
+		// only forwards aspect_ratio/n. Do not reserve or record a price tier
+		// derived from Console-only resolution/quality compatibility fields.
+		pricingResolution, pricingQuality = "", ""
+	}
 	var reservation audit.PricingResult
 	var priced bool
 	switch operation {
 	case audit.OperationImage:
-		reservation, priced = audit.EstimateOfficialImageCost(pricingModel, resolution, quality, requestedCount)
+		reservation, priced = audit.EstimateOfficialImageCost(pricingModel, pricingResolution, pricingQuality, requestedCount)
 	case audit.OperationImageEdit:
-		reservation, priced = audit.EstimateOfficialImageEditCost(pricingModel, resolution, quality, requestedCount, inputImageCount)
+		reservation, priced = audit.EstimateOfficialImageEditCost(pricingModel, pricingResolution, pricingQuality, requestedCount, inputImageCount)
 	}
 	reserved := false
 	if priced {
@@ -295,9 +302,9 @@ func (s *Service) executeImage(
 				var priced bool
 				switch operation {
 				case audit.OperationImage:
-					pricing, priced = audit.EstimateOfficialImageCost(pricingModel, resolution, quality, requestedCount)
+					pricing, priced = audit.EstimateOfficialImageCost(pricingModel, pricingResolution, pricingQuality, requestedCount)
 				case audit.OperationImageEdit:
-					pricing, priced = audit.EstimateOfficialImageEditCost(pricingModel, resolution, quality, requestedCount, inputImageCount)
+					pricing, priced = audit.EstimateOfficialImageEditCost(pricingModel, pricingResolution, pricingQuality, requestedCount, inputImageCount)
 				}
 				if priced {
 					record.EstimatedCostInUSDTicks = pricing.CostInUSDTicks
@@ -306,12 +313,7 @@ func (s *Service) executeImage(
 				}
 			}
 			quotaKind, _ := s.providers.QuotaKind(route.Provider)
-			refreshMode := effectiveQuotaMode
-			decrementMode := effectiveQuotaMode
-			if quotaRefreshGroup != "" {
-				refreshMode = quotaRefreshGroup
-				decrementMode = quotaMode
-			}
+			refreshMode, decrementMode := quotaFinalizationModes(effectiveQuotaMode, quotaRefreshGroup)
 			if successful && quotaKind == provider.QuotaRemoteWindow && refreshMode != "" {
 				if decrementMode != "" && decrementMode != "weekly" {
 					units := max(1, response.QuotaUnits)
@@ -338,4 +340,17 @@ func (s *Service) executeImage(
 	}
 	finalizationOwnsReservation = true
 	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
+}
+
+// quotaFinalizationModes separates the immediate local consumption fence from
+// the authoritative provider refresh. A refresh group may update several
+// upstream windows atomically, while the local fence must charge the exact
+// window selected for this account so concurrent media requests cannot
+// over-allocate during the short refresh delay.
+func quotaFinalizationModes(effectiveMode, refreshGroup string) (refreshMode, decrementMode string) {
+	refreshMode = effectiveMode
+	if refreshGroup != "" {
+		refreshMode = refreshGroup
+	}
+	return refreshMode, effectiveMode
 }

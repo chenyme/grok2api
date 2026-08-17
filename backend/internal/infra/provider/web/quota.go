@@ -200,7 +200,11 @@ func decodeImagineQuotaSnapshot(body []byte, accountID uint64, now time.Time) ([
 		if product.NextAvailableAt != nil {
 			value := product.NextAvailableAt.UTC()
 			resetAt = &value
-		} else if !*product.Available || remaining == 0 {
+		} else {
+			// Imagine exposes the quota-window length but omits its anchor while
+			// the product is available. Match Web chat quota semantics by using
+			// the observation time as the rolling prediction anchor; every sync
+			// replaces this estimate, while an explicit nextAvailableAt wins.
 			value := now.Add(time.Duration(windowSeconds) * time.Second)
 			resetAt = &value
 		}
