@@ -137,6 +137,24 @@ func (a *Adapter) TierOrder(upstreamModel string) []account.WebTier {
 	}
 }
 
+func (a *Adapter) TierOrderForQuotaMode(upstreamModel, quotaMode string) []account.WebTier {
+	order := a.TierOrder(upstreamModel)
+	spec, ok := Resolve(upstreamModel)
+	if !ok || spec.Capability != modeldomain.CapabilityVideo || quotaMode == account.QuotaModeWebVideo720p {
+		return order
+	}
+	// Basic video entitlement is currently confirmed only for the default
+	// 720p product. Other video quota products remain on paid Web tiers until
+	// independently verified upstream.
+	filtered := make([]account.WebTier, 0, len(order))
+	for _, tier := range order {
+		if tier != account.WebTierBasic {
+			filtered = append(filtered, tier)
+		}
+	}
+	return filtered
+}
+
 func (a *Adapter) PricingModel(upstreamModel string) string {
 	spec, ok := Resolve(upstreamModel)
 	if ok {

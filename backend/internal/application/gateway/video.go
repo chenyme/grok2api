@@ -736,12 +736,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		return
 	}
 	s.selector.MarkSuccess(context.Background(), lease.Credential)
-	refreshMode := lease.QuotaMode
-	decrementMode := lease.QuotaMode
-	if quotaRefreshGroup != "" {
-		refreshMode = quotaRefreshGroup
-		decrementMode = quotaMode
-	}
+	refreshMode, decrementMode := quotaFinalizationModes(lease.QuotaMode, quotaRefreshGroup)
 	if decrementMode != "" && decrementMode != "weekly" {
 		quotaCtx, quotaCancel := context.WithTimeout(context.Background(), accountStateWriteTimeout)
 		updated, quotaErr := s.accounts.DecrementQuota(quotaCtx, job.AccountID, decrementMode, 1)

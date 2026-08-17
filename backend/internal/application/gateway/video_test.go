@@ -46,6 +46,13 @@ func TestVideoQuotaModeUsesWeb720pProduct(t *testing.T) {
 	}
 }
 
+func TestVideoQuotaFinalizationKeepsEffectiveConsumptionFence(t *testing.T) {
+	refreshMode, decrementMode := quotaFinalizationModes(account.QuotaModeWebVideo720p, account.QuotaGroupWebImagine)
+	if refreshMode != account.QuotaGroupWebImagine || decrementMode != account.QuotaModeWebVideo720p {
+		t.Fatalf("refresh=%q decrement=%q", refreshMode, decrementMode)
+	}
+}
+
 func TestGetVideoExposesOnlyReadableResultAsset(t *testing.T) {
 	completed := media.Job{
 		ID: "video_status", ClientKeyID: 7, Status: media.StatusCompleted,

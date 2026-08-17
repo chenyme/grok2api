@@ -1205,13 +1205,27 @@ func TestModelsUseLowestSufficientTierFirst(t *testing.T) {
 		{model: "grok-imagine-image", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
 		{model: "grok-imagine-image-quality", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
 		{model: "imagine-image-edit", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
-		{model: "grok-imagine-video", want: []account.WebTier{account.WebTierSuper, account.WebTierHeavy}},
+		{model: "grok-imagine-video", want: []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}},
 	}
 	for _, test := range tests {
 		got := adapter.TierOrder(test.model)
 		if !slices.Equal(got, test.want) {
 			t.Fatalf("tier order for %s = %v, want %v", test.model, got, test.want)
 		}
+	}
+}
+
+func TestWebVideoTierOrderFollowsConfirmedQuotaProduct(t *testing.T) {
+	adapter := &Adapter{}
+	if got := adapter.TierOrderForQuotaMode("grok-imagine-video", account.QuotaModeWebVideo720p); !slices.Equal(got, []account.WebTier{
+		account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy,
+	}) {
+		t.Fatalf("720p video tier order = %v", got)
+	}
+	if got := adapter.TierOrderForQuotaMode("grok-imagine-video", account.QuotaModeWebVideo); !slices.Equal(got, []account.WebTier{
+		account.WebTierSuper, account.WebTierHeavy,
+	}) {
+		t.Fatalf("unverified video product tier order = %v", got)
 	}
 }
 

@@ -835,7 +835,7 @@ func TestWebRediscoveryRestoresCatalogRouteDefaults(t *testing.T) {
 	}
 }
 
-func TestWebImageEditCatalogRemainsAvailableAcrossStaleBasicSnapshots(t *testing.T) {
+func TestWebBasicMediaCatalogRemainsAvailableAcrossStaleSnapshots(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)
 	accounts := NewAccountRepository(database)
@@ -847,29 +847,38 @@ func TestWebImageEditCatalogRemainsAvailableAcrossStaleBasicSnapshots(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Record a successful historical sync that does not contain image edit.
+	// Record a successful historical sync that predates Basic image-edit and
+	// video support.
 	if err := models.ReplaceAccountCapabilities(ctx, basic.ID, []string{"grok-chat-fast"}, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
-	if err := models.UpsertRoutes(ctx, []model.Route{{
-		PublicID: "grok-imagine-image-edit", Provider: account.ProviderWeb, UpstreamModel: "imagine-image-edit",
-		Capability: model.CapabilityImageEdit, Origin: model.OriginCatalog, Enabled: true,
-	}}); err != nil {
+	if err := models.UpsertRoutes(ctx, []model.Route{
+		{
+			PublicID: "grok-imagine-image-edit", Provider: account.ProviderWeb, UpstreamModel: "imagine-image-edit",
+			Capability: model.CapabilityImageEdit, Origin: model.OriginCatalog, Enabled: true,
+		},
+		{
+			PublicID: "grok-imagine-video", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-video",
+			Capability: model.CapabilityVideo, Origin: model.OriginCatalog, Enabled: true,
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	routes, err := models.ListEnabled(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var imageEdit *model.Route
+	mediaRoutes := make(map[string]model.Route)
 	for index := range routes {
-		if routes[index].Provider == account.ProviderWeb && routes[index].UpstreamModel == "imagine-image-edit" {
-			imageEdit = &routes[index]
-			break
+		if routes[index].Provider == account.ProviderWeb {
+			mediaRoutes[routes[index].UpstreamModel] = routes[index]
 		}
 	}
-	if imageEdit == nil || imageEdit.SupportedAccounts != 1 || imageEdit.TotalAccounts != 1 {
-		t.Fatalf("Web image-edit catalog route = %#v; routes=%#v", imageEdit, routes)
+	for _, upstreamModel := range []string{"imagine-image-edit", "grok-imagine-video"} {
+		value, ok := mediaRoutes[upstreamModel]
+		if !ok || value.SupportedAccounts != 1 || value.TotalAccounts != 1 {
+			t.Fatalf("Web Basic media route %s = %#v; routes=%#v", upstreamModel, value, routes)
+		}
 	}
 	unknown, err := models.Create(ctx, model.Route{
 		PublicID: "unknown-web-image-edit", Provider: account.ProviderWeb, UpstreamModel: "unknown-image-edit",

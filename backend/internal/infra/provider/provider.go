@@ -767,6 +767,13 @@ type RoutingMetadataAdapter interface {
 	TierOrder(upstreamModel string) []account.WebTier
 }
 
+// QuotaTierOrderAdapter optionally narrows account tiers for a concrete quota
+// product. It is used when one public model exposes parameter variants backed
+// by different upstream entitlements.
+type QuotaTierOrderAdapter interface {
+	TierOrderForQuotaMode(upstreamModel, quotaMode string) []account.WebTier
+}
+
 // ModelAlias resolves a hidden compatibility model name to one public route and can fix reasoning effort.
 type ModelAlias struct {
 	Alias           string
@@ -1146,6 +1153,21 @@ func (r *Registry) TierOrder(value account.Provider, upstreamModel string) []acc
 	adapter, ok := r.Get(value)
 	if !ok {
 		return nil
+	}
+	metadata, ok := adapter.(RoutingMetadataAdapter)
+	if !ok {
+		return nil
+	}
+	return metadata.TierOrder(upstreamModel)
+}
+
+func (r *Registry) TierOrderForQuotaMode(value account.Provider, upstreamModel, quotaMode string) []account.WebTier {
+	adapter, ok := r.Get(value)
+	if !ok {
+		return nil
+	}
+	if metadata, ok := adapter.(QuotaTierOrderAdapter); ok {
+		return metadata.TierOrderForQuotaMode(upstreamModel, quotaMode)
 	}
 	metadata, ok := adapter.(RoutingMetadataAdapter)
 	if !ok {
