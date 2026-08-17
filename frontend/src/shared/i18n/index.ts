@@ -665,6 +665,7 @@ const resources = {
         weeklyLimit: "周限制剩余 {{percent}}%",
         freeObservedUsage: "最近 24 小时观测到 {{used}} tokens",
         freeEstimatedUsage: "约 {{used}} / {{limit}} tokens",
+        freeConfirmedUsage: "{{used}} / {{limit}} tokens",
         freeEstimatedDescription: "基于 Grok Build Free 实测特征估算，耗尽后以上游额度为准",
         observedRolling: "Free 账号采用本代理滚动观测，可能与上游计费数据存在差异",
         upstreamConfirmed: "上游已确认耗尽",
@@ -2206,6 +2207,9 @@ Object.assign(resources.en.translation.accounts as unknown as Record<string, unk
   detectOutcome: { ok: "Healthy", invalid: "Invalid", failed: "Failed" },
   batchDetected: "Detection complete: {{succeeded}} succeeded, {{failed}} failed",
   allDetected: "Full detection complete: {{succeeded}} succeeded, {{failed}} failed",
+});
+Object.assign(resources.en.translation.accounts as unknown as Record<string, string>, {
+  freeConfirmedUsage: "{{used}} / {{limit}} tokens",
 });
 Object.assign(resources["zh-CN"].translation.settings.routing as unknown as Record<string, string>, {
   maxAttemptsHelp: "单次请求的最大路由尝试轮次；初次选择计 1 次，切号或出口重试各增加 1 次。范围为 1–65535。",
