@@ -658,6 +658,50 @@ func TestSelectorUsesTierSpecificWebImageEditQuotaAndPrefersBasic(t *testing.T) 
 	}
 }
 
+func TestSelectorAllowsBasicOnlyForConfirmedWebVideoQuota(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-web-basic-video.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	models := relational.NewModelRepository(database)
+	basic, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierBasic,
+		Name: "basic-video", SourceKey: "basic-video", EncryptedAccessToken: "encrypted",
+		AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accounts.SaveQuotaWindows(ctx, basic.ID, account.WebTierBasic, now, []account.QuotaWindow{{
+		AccountID: basic.ID, Mode: account.QuotaModeWebVideo720p, Remaining: 1, Total: 1,
+		SyncedAt: &now, Source: account.QuotaSourceUpstream,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.ReplaceAccountCapabilities(ctx, basic.ID, []string{"grok-chat-fast"}, now); err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), webVideoTierOrder{}, time.Hour, time.Second, time.Minute)
+	lease, err := selector.Acquire(ctx, account.ProviderWeb, 0, "grok-imagine-video", account.QuotaModeWebVideo720p, "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Credential.ID != basic.ID || lease.QuotaMode != account.QuotaModeWebVideo720p {
+		t.Fatalf("720p Basic video lease = %#v", lease)
+	}
+	lease.Release()
+	if _, err := selector.Acquire(ctx, account.ProviderWeb, 0, "grok-imagine-video", account.QuotaModeWebVideo, "", nil, false); err == nil {
+		t.Fatal("Basic account was selected for an unverified Web video quota product")
+	}
+}
+
 func TestSelectorWebCatalogCapabilityStillEnforcesTier(t *testing.T) {
 	candidate := account.RoutingCandidate{
 		Credential:           account.Credential{Provider: account.ProviderWeb, WebTier: account.WebTierBasic},
@@ -666,19 +710,19 @@ func TestSelectorWebCatalogCapabilityStillEnforcesTier(t *testing.T) {
 	imageSelector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, staticTierOrder{order: []account.WebTier{
 		account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy,
 	}}, time.Hour, time.Second, time.Minute)
-	if !imageSelector.candidateSupportsModel(account.ProviderWeb, "imagine-image-edit", candidate) {
+	if !imageSelector.candidateSupportsModel(account.ProviderWeb, "imagine-image-edit", account.QuotaModeWebImageEdit, candidate) {
 		t.Fatal("recognized Basic image-edit capability was blocked by a stale snapshot")
 	}
 	videoSelector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, staticTierOrder{order: []account.WebTier{
 		account.WebTierSuper, account.WebTierHeavy,
 	}}, time.Hour, time.Second, time.Minute)
-	if videoSelector.candidateSupportsModel(account.ProviderWeb, "grok-imagine-video", candidate) {
+	if videoSelector.candidateSupportsModel(account.ProviderWeb, "grok-imagine-video", account.QuotaModeWebVideo, candidate) {
 		t.Fatal("Basic account bypassed the video tier requirement")
 	}
 }
 
 func TestImageQuotaFinalizationKeepsEffectiveConsumptionFence(t *testing.T) {
-	refreshMode, decrementMode := imageQuotaFinalizationModes(account.QuotaModeWebImagePro, account.QuotaGroupWebImagine)
+	refreshMode, decrementMode := quotaFinalizationModes(account.QuotaModeWebImagePro, account.QuotaGroupWebImagine)
 	if refreshMode != account.QuotaGroupWebImagine || decrementMode != account.QuotaModeWebImagePro {
 		t.Fatalf("refresh=%q decrement=%q", refreshMode, decrementMode)
 	}
@@ -1475,6 +1519,42 @@ func TestMarkFailureSoftNetworkCooldown(t *testing.T) {
 	if hard.CooldownUntil == nil || hard.CooldownUntil.Sub(time.Now().UTC()) < 20*time.Second {
 		t.Fatalf("hard cooldown too short: %v", hard.CooldownUntil)
 	}
+
+	before = time.Now().UTC()
+	selector.MarkFailure(ctx, hard, 0, 0)
+	preserved, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.FailureCount != hard.FailureCount {
+		t.Fatalf("ordinary soft failure count = %d, want preserved %d", preserved.FailureCount, hard.FailureCount)
+	}
+	if preserved.CooldownUntil == nil {
+		t.Fatal("ordinary soft failure did not set cooldown")
+	}
+	cooldown = preserved.CooldownUntil.Sub(before)
+	if cooldown < 4*time.Second || cooldown > 6*time.Second {
+		t.Fatalf("ordinary soft cooldown = %s, want ~5s", cooldown)
+	}
+
+	before = time.Now().UTC()
+	if err := selector.MarkFailureAfterSuccess(ctx, preserved, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	reset, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset.FailureCount != 0 {
+		t.Fatalf("after-success soft failure count = %d, want 0", reset.FailureCount)
+	}
+	if reset.CooldownUntil == nil {
+		t.Fatal("after-success soft failure did not set cooldown")
+	}
+	cooldown = reset.CooldownUntil.Sub(before)
+	if cooldown < 4*time.Second || cooldown > 6*time.Second {
+		t.Fatalf("after-success soft cooldown = %s, want ~5s", cooldown)
+	}
 }
 
 type batchConcurrencyLimiter struct {
@@ -1505,6 +1585,19 @@ type staticTierOrder struct{ order []account.WebTier }
 
 func (value staticTierOrder) TierOrder(account.Provider, string) []account.WebTier {
 	return value.order
+}
+
+type webVideoTierOrder struct{}
+
+func (webVideoTierOrder) TierOrder(account.Provider, string) []account.WebTier {
+	return []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}
+}
+
+func (webVideoTierOrder) TierOrderForQuotaMode(_ account.Provider, _ string, quotaMode string) []account.WebTier {
+	if quotaMode == account.QuotaModeWebVideo720p {
+		return []account.WebTier{account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy}
+	}
+	return []account.WebTier{account.WebTierSuper, account.WebTierHeavy}
 }
 
 func (f failingConcurrencyLimiter) Acquire(context.Context, string, int) (func(), bool, error) {

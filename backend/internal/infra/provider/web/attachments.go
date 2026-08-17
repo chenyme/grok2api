@@ -32,8 +32,14 @@ var (
 )
 
 type uploadedFile struct {
-	ID  string
-	URI string
+	// ID is the best available generic attachment reference. Some upload
+	// responses only contain fileId or uploadId, which remain valid for chat
+	// attachment flows that already accept those references.
+	ID string
+	// MetadataID is populated only from fileMetadata.fileMetadataId. Current
+	// Imagine image-edit requests require this exact identifier in inputAssets.
+	MetadataID string
+	URI        string
 }
 
 type remoteImageTarget struct {

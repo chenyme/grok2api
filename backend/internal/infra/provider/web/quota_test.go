@@ -452,13 +452,14 @@ func writeEmptyImagineQuota(writer http.ResponseWriter) {
 }
 
 func TestDecodeImagineQuotaSnapshotMatchesObservedProtocol(t *testing.T) {
-	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 8, 17, 4, 0, 0, 0, time.UTC)
+	videoResetAt := time.Date(2026, 8, 18, 4, 47, 49, 902572219, time.UTC)
 	body := []byte(`{
 		"image": null,
 		"imageEdit": null,
-		"imagePro": {"available":true,"remainingQueries":4,"windowSizeSeconds":86400},
+		"imagePro": {"available":true,"remainingQueries":2,"windowSizeSeconds":86400},
 		"video": null,
-		"video720p": {"available":true,"remainingQueries":1,"windowSizeSeconds":86400}
+		"video720p": {"available":true,"remainingQueries":0,"windowSizeSeconds":86400,"nextAvailableAt":"2026-08-18T04:47:49.902572219Z"}
 	}`)
 	windows, err := decodeImagineQuotaSnapshot(body, 42, now)
 	if err != nil {
@@ -467,11 +468,28 @@ func TestDecodeImagineQuotaSnapshotMatchesObservedProtocol(t *testing.T) {
 	if len(windows) != 2 {
 		t.Fatalf("windows = %#v", windows)
 	}
-	if windows[0].Mode != account.QuotaModeWebImagePro || windows[0].Remaining != 4 || windows[0].Total != 0 || windows[0].ResetAt != nil {
+	wantResetAt := now.Add(24 * time.Hour)
+	if windows[0].Mode != account.QuotaModeWebImagePro || windows[0].Remaining != 2 || windows[0].Total != 0 || windows[0].ResetAt == nil || !windows[0].ResetAt.Equal(wantResetAt) {
 		t.Fatalf("image_pro = %#v", windows[0])
 	}
-	if windows[1].Mode != account.QuotaModeWebVideo720p || windows[1].Remaining != 1 || windows[1].Total != 0 || windows[1].ResetAt != nil {
+	if windows[1].Mode != account.QuotaModeWebVideo720p || windows[1].Remaining != 0 || windows[1].Total != 0 || windows[1].ResetAt == nil || !windows[1].ResetAt.Equal(videoResetAt) {
 		t.Fatalf("video_720p = %#v", windows[1])
+	}
+}
+
+func TestDecodeImagineQuotaSnapshotPrefersUpstreamNextAvailableAt(t *testing.T) {
+	now := time.Date(2026, 8, 13, 8, 0, 0, 0, time.UTC)
+	upstreamResetAt := now.Add(37 * time.Minute)
+	body := []byte(`{
+		"image":null,"imageEdit":null,"video":null,"video720p":null,
+		"imagePro":{"available":true,"remainingQueries":4,"windowSizeSeconds":86400,"nextAvailableAt":"` + upstreamResetAt.Format(time.RFC3339) + `"}
+	}`)
+	windows, err := decodeImagineQuotaSnapshot(body, 42, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 1 || windows[0].ResetAt == nil || !windows[0].ResetAt.Equal(upstreamResetAt) {
+		t.Fatalf("windows = %#v", windows)
 	}
 }
 

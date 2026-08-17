@@ -38,9 +38,9 @@ const (
 var errLiteImageReady = errors.New("Lite 图片已完成")
 
 type imagineModelConfig struct {
-	Pro             bool
-	NativeBatchSize int
-	MaxReturnCount  int
+	Pro            bool
+	ExpectedCount  int
+	MaxReturnCount int
 }
 
 type imagineImageValue struct {
@@ -69,24 +69,11 @@ type imagineCollector struct {
 	terminalCount int
 }
 
-func resolveImagineModel(model, resolution string, count int) (imagineModelConfig, bool) {
+func resolveImagineModel(model string, pro bool, count int) (imagineModelConfig, bool) {
 	if model != "imagine" {
 		return imagineModelConfig{}, false
 	}
-	batchSize := 4
-	if count > 8 {
-		batchSize = 12
-	} else if count > 4 {
-		batchSize = 8
-	}
-	return imagineModelConfig{Pro: resolution == "2k", NativeBatchSize: batchSize, MaxReturnCount: 10}, true
-}
-
-func imagineUpstreamGenerationCount(streaming bool, count int, config imagineModelConfig) int {
-	if streaming {
-		return count
-	}
-	return config.NativeBatchSize
+	return imagineModelConfig{Pro: pro, ExpectedCount: count, MaxReturnCount: 10}, true
 }
 
 func invalidImageRequest(message string) (*provider.Response, error) {
@@ -275,9 +262,6 @@ func numberAsInt(value any) (int, bool) {
 }
 
 func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
-	if strings.TrimSpace(request.Quality) != "" {
-		return invalidImageRequest("Grok Web 图片模型不支持 quality")
-	}
 	count := request.Count
 	if count <= 0 {
 		count = 1
@@ -319,21 +303,14 @@ func (a *Adapter) GenerateImage(ctx context.Context, request provider.ImageGener
 	if err != nil {
 		return invalidImageRequest(err.Error())
 	}
-	resolution := strings.ToLower(strings.TrimSpace(request.Resolution))
-	if resolution == "" {
-		resolution = "1k"
-	}
-	if resolution != "1k" && resolution != "2k" {
-		return invalidImageRequest("resolution 必须是 1k 或 2k")
-	}
-	modelConfig, ok := resolveImagineModel(protocolModel, resolution, count)
+	modelConfig, ok := resolveImagineModel(protocolModel, spec.ImaginePro, count)
 	if !ok {
 		return invalidImageRequest("模型不支持图片生成")
 	}
 	if count > modelConfig.MaxReturnCount {
-		return invalidImageRequest(fmt.Sprintf("resolution=%s 时 n 不能超过 %d", resolution, modelConfig.MaxReturnCount))
+		return invalidImageRequest(fmt.Sprintf("n 不能超过 %d", modelConfig.MaxReturnCount))
 	}
-	return a.generateWSImage(ctx, request, count, format, ratio, resolution, modelConfig)
+	return a.generateWSImage(ctx, request, count, format, ratio, modelConfig)
 }
 
 func (a *Adapter) generateLiteImage(ctx context.Context, request provider.ImageGenerationRequest, count int, format string) (*provider.Response, error) {
@@ -642,9 +619,9 @@ func liteImageMarkdown(item map[string]any) string {
 	return ""
 }
 
-func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGenerationRequest, count int, format, ratio, resolution string, modelConfig imagineModelConfig) (*provider.Response, error) {
+func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGenerationRequest, count int, format, ratio string, modelConfig imagineModelConfig) (*provider.Response, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		response, err := a.generateWSImageAttempt(ctx, request, count, format, ratio, resolution, modelConfig)
+		response, err := a.generateWSImageAttempt(ctx, request, count, format, ratio, modelConfig)
 		if err == nil {
 			return response, nil
 		}
@@ -660,7 +637,7 @@ func (a *Adapter) generateWSImage(ctx context.Context, request provider.ImageGen
 	return nil, fmt.Errorf("Imagine WebSocket Clearance 重试耗尽")
 }
 
-func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.ImageGenerationRequest, count int, format, ratio, resolution string, modelConfig imagineModelConfig) (*provider.Response, error) {
+func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.ImageGenerationRequest, count int, format, ratio string, modelConfig imagineModelConfig) (*provider.Response, error) {
 	cfg := a.config()
 	token, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
@@ -729,8 +706,7 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return nil, err
 	}
-	upstreamCount := imagineUpstreamGenerationCount(request.Streaming, count, modelConfig)
-	if err := connection.WriteJSON(imagineRequestMessage(newWebID("img"), request.Prompt, ratio, cfg.AllowNSFW, modelConfig.Pro, upstreamCount)); err != nil {
+	if err := connection.WriteJSON(imagineRequestMessage(newWebID("img"), request.Prompt, ratio, cfg.AllowNSFW, modelConfig.Pro, modelConfig.ExpectedCount)); err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return nil, err
 	}
@@ -744,7 +720,7 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 	}
 
 	collector := newImagineCollector()
-	for collector.UsableCount() < count && !collector.Done(modelConfig.NativeBatchSize) {
+	for collector.UsableCount() < count && !collector.Done(modelConfig.ExpectedCount) {
 		messageType, data, readErr := connection.ReadMessage()
 		if readErr != nil {
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, readErr)
@@ -870,27 +846,19 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 		}
 		images = append(images, image)
 	}
-	refs := make([]string, 0, len(images))
-	parentID := ""
+	assets := make([]string, 0, len(images))
 	for _, image := range images {
 		uploaded, uploadErr := a.uploadFileV2Direct(ctx, cfg, lease, token, image, cfg.BaseURL+"/imagine", imagineSelfUploadSource, "image_edit_upload")
 		if uploadErr != nil {
 			return nil, uploadErr
 		}
-		if uploaded.URI == "" {
-			return nil, fmt.Errorf("上传图片成功但上游未返回 fileUri")
+		if uploaded.MetadataID == "" {
+			return nil, fmt.Errorf("上传图片成功但上游未返回 fileMetadataId")
 		}
-		refs = append(refs, uploaded.URI)
-		postID, postErr := a.createMediaPost(ctx, cfg, lease, token, "MEDIA_POST_TYPE_IMAGE", uploaded.URI, "", "image_edit_media_post")
-		if postErr != nil {
-			return nil, postErr
-		}
-		if parentID == "" {
-			parentID = postID
-		}
+		assets = append(assets, uploaded.MetadataID)
 	}
-	payload := buildImageEditPayload(request.Prompt, refs, parentID, ratio)
-	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine/post/"+parentID)
+	payload := buildImageEditPayload(request.Prompt, assets, ratio)
+	response, err := a.postJSONWithReferer(ctx, cfg, lease, token, cfg.BaseURL+"/rest/app-chat/conversations/new", payload, time.Duration(cfg.ImageTimeoutSeconds)*time.Second, cfg.BaseURL+"/imagine")
 	if err != nil {
 		return nil, err
 	}
@@ -932,20 +900,18 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	return result, err
 }
 
-func buildImageEditPayload(prompt string, refs []string, parentID, aspectRatio string) map[string]any {
-	config := map[string]any{"imageReferences": refs, "parentPostId": parentID}
+func buildImageEditPayload(prompt string, assets []string, aspectRatio string) map[string]any {
+	imageToImage := map[string]any{
+		"prompt":      prompt,
+		"inputAssets": assets,
+	}
 	if aspectRatio != "" {
-		config["aspectRatio"] = aspectRatio
+		imageToImage["aspectRatio"] = aspectRatio
 	}
 	return map[string]any{
-		"temporary": true, "modelName": "imagine-image-edit", "message": prompt,
-		"enableImageGeneration": true, "returnImageBytes": false, "returnRawGrokInXaiRequest": false,
-		"enableImageStreaming": true, "imageGenerationCount": 2, "forceConcise": false,
-		"enableSideBySide": true, "sendFinalMetadata": true, "isReasoning": false,
-		"disableTextFollowUps": true, "disableMemory": false, "forceSideBySide": false,
-		"responseMetadata": map[string]any{"modelConfigOverride": map[string]any{"modelMap": map[string]any{
-			"imageEditModel": "imagine", "imageEditModelConfig": config,
-		}}},
+		"modelName": "imagine-image-edit", "message": prompt,
+		"enableImageStreaming": true, "enableSideBySide": true, "sendFinalMetadata": true,
+		"mediaGenInput": map[string]any{"imageToImage": imageToImage},
 	}
 }
 
@@ -1380,23 +1346,25 @@ func decodeDirectFileUploadResponse(source io.Reader) (uploadedFile, error) {
 	if directFileUploadTerminalError(value.TerminalError) {
 		return uploadedFile{}, errors.New("V2 上传文件被上游拒绝")
 	}
-	if value.FileMetadata.ID == "" {
-		value.FileMetadata.ID = value.FileMetadata.FileID
+	metadataID := strings.TrimSpace(value.FileMetadata.ID)
+	fileID := metadataID
+	if fileID == "" {
+		fileID = strings.TrimSpace(value.FileMetadata.FileID)
 	}
-	if value.FileMetadata.ID == "" {
+	if fileID == "" {
 		// Some successful uploads complete asynchronously and only expose the
 		// upload task ID. Gateway accepts it as the file reference; prefer the
 		// browser's fileMetadataId whenever it is already available.
-		value.FileMetadata.ID = strings.TrimSpace(value.UploadID)
+		fileID = strings.TrimSpace(value.UploadID)
 	}
 	fileURI := ""
 	if value.FileMetadata.FileURI != "" {
 		fileURI = absoluteAssetURL(value.FileMetadata.FileURI)
 	}
-	if value.FileMetadata.ID == "" && fileURI == "" {
+	if fileID == "" && fileURI == "" {
 		return uploadedFile{}, fmt.Errorf("V2 上传文件成功但上游未返回完整文件标识")
 	}
-	return uploadedFile{ID: value.FileMetadata.ID, URI: fileURI}, nil
+	return uploadedFile{ID: fileID, MetadataID: metadataID, URI: fileURI}, nil
 }
 
 func directFileUploadTerminalError(raw json.RawMessage) bool {
@@ -1682,7 +1650,7 @@ func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter
 			}
 			emitted++
 		}
-		if collector.Done(modelConfig.NativeBatchSize) && emitted < count {
+		if collector.Done(modelConfig.ExpectedCount) && emitted < count {
 			incompleteErr := fmt.Errorf("上游仅返回 %d/%d 张可用图片", emitted, count)
 			_ = writer.CloseWithError(incompleteErr)
 			return
