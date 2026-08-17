@@ -373,6 +373,22 @@ func TestRoutingMaxAttemptsSupportsLargeCredentialPools(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidAutoAssignShareConfig(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Routing.AutoAssignMaxNodeShare = 0.03
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("autoAssignMaxNodeShare 0.03 should be rejected")
+	}
+	cfg = defaultConfig()
+	cfg.Routing.AutoAssignMaxMigrationShare = 1.5
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("autoAssignMaxMigrationShare 1.5 should be rejected")
+	}
+	if !validAutoAssignShare(0) || !validAutoAssignShare(0.3) || !validAutoAssignShare(1) {
+		t.Fatal("0, 0.3, and 1 must remain valid shares")
+	}
+}
+
 func TestValidateRejectsInvalidSegmentedSelectorConfig(t *testing.T) {
 	tests := []func(*RoutingConfig){
 		func(value *RoutingConfig) { value.SegmentedMinCandidates = 99 },
