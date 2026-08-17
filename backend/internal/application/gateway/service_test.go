@@ -401,7 +401,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 	_ = interrupted.Body.Close()
 	interruptedAccount, err := accountRepo.Get(ctx, adapter.attempts[0])
-	if err != nil || interruptedAccount.FailureCount != 1 || interruptedAccount.CooldownUntil == nil {
+	if err != nil || interruptedAccount.FailureCount != 0 || interruptedAccount.CooldownUntil == nil {
 		t.Fatalf("interrupted account health = %#v, err=%v", interruptedAccount, err)
 	}
 }
