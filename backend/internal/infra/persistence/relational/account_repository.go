@@ -423,15 +423,16 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 		}
 	}
 	result := make([]account.RoutingCandidate, 0, len(values))
-	staticConsoleModel := provider == account.ProviderConsole && strings.TrimSpace(quotaMode) != ""
+	staticProviderModel := (provider == account.ProviderConsole && strings.TrimSpace(quotaMode) != "") ||
+		(provider == account.ProviderWeb && account.IsWebImagineQuotaMode(quotaMode))
 	for _, value := range values {
 		capabilityKnown, supportsModel := known[value.ID], supported[value.ID]
-		if staticConsoleModel {
-			// Console exposes a provider-wide static catalog. Historical account
-			// snapshots may predate newly shipped catalog entries, but must not
-			// make those built-in routes unroutable until every account is synced
-			// again. A non-empty quota mode proves the adapter recognizes the
-			// upstream model; unknown/manual models keep snapshot-based gating.
+		if staticProviderModel {
+			// Console and Web Imagine expose provider-wide static catalogs.
+			// Historical account snapshots may predate newly shipped catalog
+			// entries, but must not make those routes unroutable. A recognized
+			// quota mode proves the adapter knows the model; unknown/manual models
+			// keep snapshot-based gating.
 			capabilityKnown, supportsModel = true, true
 		} else if len(bound) > 0 {
 			capabilityKnown, supportsModel = true, true

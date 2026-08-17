@@ -1816,14 +1816,15 @@ func assembleRoutingCandidates(provider account.Provider, quotaMode string, base
 		}
 	}
 	result := make([]account.RoutingCandidate, 0, len(bases))
-	staticConsoleModel := provider == account.ProviderConsole && strings.TrimSpace(quotaMode) != ""
+	staticProviderModel := (provider == account.ProviderConsole && strings.TrimSpace(quotaMode) != "") ||
+		(provider == account.ProviderWeb && account.IsWebImagineQuotaMode(quotaMode))
 	for _, base := range bases {
 		overlayValue := byAccount[base.Credential.ID]
 		if overlay.HasBindings && !overlayValue.Bound {
 			continue
 		}
 		known, supports := overlayValue.ModelCapabilityKnown, overlayValue.SupportsModel
-		if staticConsoleModel {
+		if staticProviderModel {
 			known, supports = true, true
 		} else if overlay.HasBindings {
 			known, supports = true, true

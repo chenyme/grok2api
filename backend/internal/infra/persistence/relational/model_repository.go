@@ -23,6 +23,8 @@ type ModelRepository struct {
 	observer repository.InvalidationObserver
 }
 
+const retiredWebImageQualityLitePublicID = "Web/grok-imagine-image-quality-lite"
+
 // Console static support is anchored to the reconciled catalog routes instead
 // of the provider name alone. Manual aliases remain supported while an
 // equivalent catalog route exists, and stale aliases stop advertising support
@@ -54,7 +56,7 @@ const modelConsoleStaticSupportAvailabilityExpression = `(route.provider = 'grok
 // support, so catalog routes (and their aliases) remain discoverable while the
 // runtime selector enforces the adapter's parameter-specific tier order.
 const modelWebBasicMediaStaticSupportExpression = `(model_routes.provider = 'grok_web'
-	AND model_routes.upstream_model IN ('imagine-image-edit', 'grok-imagine-video')
+	AND model_routes.upstream_model IN ('grok-imagine-image-quality', 'grok-imagine-image-2.0', 'imagine-image-edit', 'grok-imagine-video')
 	AND (
 		model_routes.origin = 'catalog'
 		OR EXISTS (
@@ -67,7 +69,7 @@ const modelWebBasicMediaStaticSupportExpression = `(model_routes.provider = 'gro
 	))`
 
 const modelWebBasicMediaStaticSupportAvailabilityExpression = `(route.provider = 'grok_web'
-	AND route.upstream_model IN ('imagine-image-edit', 'grok-imagine-video')
+	AND route.upstream_model IN ('grok-imagine-image-quality', 'grok-imagine-image-2.0', 'imagine-image-edit', 'grok-imagine-video')
 	AND (
 		route.origin = 'catalog'
 		OR EXISTS (
@@ -772,7 +774,9 @@ func discoveredRouteDefaults(provider account.Provider, upstreamModel string) (s
 		case "grok-imagine-image":
 			return "grok-imagine-image-lite", model.CapabilityImage
 		case "grok-imagine-image-quality":
-			return "grok-imagine-image-quality-lite", model.CapabilityImage
+			return "grok-imagine-image", model.CapabilityImage
+		case "grok-imagine-image-2.0":
+			return upstreamModel, model.CapabilityImage
 		case "imagine-image-edit":
 			return "grok-imagine-image-edit", model.CapabilityImageEdit
 		case "grok-imagine-video":
@@ -929,20 +933,21 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 		// A catalog name may have multiple capability rows. When a previous
 		// catalog rename preserved that name as an alias to one member, restoring
 		// it must promote the alias back to the formal group name before every
-		// matched capability row is validated. Aliases owned by another group
-		// remain conflicts and are never reclaimed.
+		// matched capability row is validated. A catalog rename may also move a
+		// historical alias from one reconciled route to another (for example when
+		// an upstream protocol gains distinct public products). This is safe only
+		// when the current owner is itself retained by this same catalog update;
+		// aliases owned by manual or unrelated routes remain conflicts.
 		matchedIDsByPublicID := make(map[string]map[uint64]struct{}, len(values))
 		for index, value := range values {
-			row, ok := matched[index]
-			if !ok {
-				continue
-			}
 			ids := matchedIDsByPublicID[value.PublicID]
 			if ids == nil {
 				ids = make(map[uint64]struct{})
 				matchedIDsByPublicID[value.PublicID] = ids
 			}
-			ids[row.ID] = struct{}{}
+			if row, ok := matched[index]; ok {
+				ids[row.ID] = struct{}{}
+			}
 		}
 		for publicID, routeIDs := range matchedIDsByPublicID {
 			var alias modelRouteAliasModel
@@ -953,7 +958,7 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 			if err != nil {
 				return err
 			}
-			if _, owned := routeIDs[alias.ModelRouteID]; !owned {
+			if _, owned := routeIDs[alias.ModelRouteID]; !owned && !usedIDs[alias.ModelRouteID] {
 				return fmt.Errorf("%w: 模型公开 ID %q 已被路由 %d 保留为兼容名称", repository.ErrConflict, publicID, alias.ModelRouteID)
 			}
 			if err := tx.Delete(&modelRouteAliasModel{}, "alias = ?", publicID).Error; err != nil {
@@ -973,9 +978,16 @@ func (r *ModelRepository) ReplaceProviderRoutes(ctx context.Context, provider ac
 		// stable route IDs and key permissions survive.
 		for index, row := range matched {
 			if row.PublicID != values[index].PublicID {
-				if err := preserveModelRouteAlias(tx, row.PublicID, row.ID); err != nil {
-					return err
+				if row.PublicID != retiredWebImageQualityLitePublicID {
+					if err := preserveModelRouteAlias(tx, row.PublicID, row.ID); err != nil {
+						return err
+					}
 				}
+			}
+		}
+		if provider == account.ProviderWeb {
+			if err := tx.Delete(&modelRouteAliasModel{}, "alias = ?", retiredWebImageQualityLitePublicID).Error; err != nil {
+				return err
 			}
 		}
 		for _, row := range matched {

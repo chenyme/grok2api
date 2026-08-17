@@ -154,13 +154,20 @@ func (s *Service) executeImage(
 		}
 	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
+	pricingResolution, pricingQuality := resolution, quality
+	if route.Provider == accountdomain.ProviderWeb && operation == audit.OperationImage {
+		// Grok Web Imagine selects the product through the catalog model and
+		// only forwards aspect_ratio/n. Do not reserve or record a price tier
+		// derived from Console-only resolution/quality compatibility fields.
+		pricingResolution, pricingQuality = "", ""
+	}
 	var reservation audit.PricingResult
 	var priced bool
 	switch operation {
 	case audit.OperationImage:
-		reservation, priced = audit.EstimateOfficialImageCost(pricingModel, resolution, quality, requestedCount)
+		reservation, priced = audit.EstimateOfficialImageCost(pricingModel, pricingResolution, pricingQuality, requestedCount)
 	case audit.OperationImageEdit:
-		reservation, priced = audit.EstimateOfficialImageEditCost(pricingModel, resolution, quality, requestedCount, inputImageCount)
+		reservation, priced = audit.EstimateOfficialImageEditCost(pricingModel, pricingResolution, pricingQuality, requestedCount, inputImageCount)
 	}
 	reserved := false
 	if priced {
@@ -295,9 +302,9 @@ func (s *Service) executeImage(
 				var priced bool
 				switch operation {
 				case audit.OperationImage:
-					pricing, priced = audit.EstimateOfficialImageCost(pricingModel, resolution, quality, requestedCount)
+					pricing, priced = audit.EstimateOfficialImageCost(pricingModel, pricingResolution, pricingQuality, requestedCount)
 				case audit.OperationImageEdit:
-					pricing, priced = audit.EstimateOfficialImageEditCost(pricingModel, resolution, quality, requestedCount, inputImageCount)
+					pricing, priced = audit.EstimateOfficialImageEditCost(pricingModel, pricingResolution, pricingQuality, requestedCount, inputImageCount)
 				}
 				if priced {
 					record.EstimatedCostInUSDTicks = pricing.CostInUSDTicks

@@ -161,9 +161,13 @@ func (a *Adapter) PricingModel(upstreamModel string) string {
 		if spec.Capability == modeldomain.CapabilityChat {
 			return "grok-4.5"
 		}
-		// Public Web image names use the -2.0 suffix to distinguish them from
-		// Console routes. Billing continues to use the upstream xAI model name.
+		// Lite keeps its historical upstream billing name; Imagine WebSocket
+		// models use their canonical public product name rather than the internal
+		// compatibility identifier used to preserve route IDs.
 		if spec.Capability == modeldomain.CapabilityImage {
+			if spec.ProtocolModel == "imagine" {
+				return spec.PublicID
+			}
 			return spec.UpstreamModel
 		}
 		// Dedicated Web edit upstream keeps a stable billing name.
