@@ -918,6 +918,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		EventID: eventID, RequestID: input.RequestID, ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
 		ModelRouteID: route.ID, ModelPublicID: publicModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone, Streaming: input.Streaming,
+		ReasoningEffort:  audit.ExtractReasoningEffort(input.Body),
 		MediaInputImages: mediaSummary.InputImages,
 	}
 	if errors.Is(routeErr, clientkeyapp.ErrModelNotAllowed) {

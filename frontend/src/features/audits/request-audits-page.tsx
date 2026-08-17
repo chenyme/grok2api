@@ -371,10 +371,14 @@ function splitDuration(value: string): { value: string; unit: string } {
 
 function RequestValue({ audit }: { audit: AuditDTO }) {
   const { t } = useTranslation();
+  const effort = audit.reasoningEffort?.trim();
   return (
     <div className="min-w-0">
       <span className="block truncate text-xs font-medium">{providerLabel(audit.provider)} · {t(`audits.operations.${audit.operation}`)}</span>
-      <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground" title={audit.requestId}>{audit.requestId}</span>
+      <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
+        <span className="block min-w-0 truncate font-mono text-[10px] text-muted-foreground" title={audit.requestId}>{audit.requestId}</span>
+        {effort ? <span className="shrink-0 rounded bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:text-violet-300" title={t("audits.reasoningEffort")}>{effort}</span> : null}
+      </span>
       {audit.numSourcesUsed > 0 ? (
         <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{t("audits.sources", { count: audit.numSourcesUsed })}</span>
       ) : null}

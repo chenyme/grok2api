@@ -202,7 +202,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	clientService := clientkeyapp.NewService(nil, nil, nil, 60, 4, nil)
 	selector := NewSelector(accountRepo, concurrency, sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientService, registry, selector, responseRepo, 3)
-	result, err := service.CreateResponse(ctx, Input{RequestID: "req-1", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "claude-session", GrokTurnIndex: "3"})
+	result, err := service.CreateResponse(ctx, Input{RequestID: "req-1", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test","reasoning":{"effort":"high"}}`), PromptCacheSeed: "claude-session", GrokTurnIndex: "3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("observed account = %#v, err = %v", observedAccount, err)
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 || logs[0].UsageSource != audit.UsageSourceUpstream || logs[0].StatusCode != http.StatusOK || logs[0].AttemptCount != 1 {
+	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].ReasoningEffort != "high" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 || logs[0].UsageSource != audit.UsageSourceUpstream || logs[0].StatusCode != http.StatusOK || logs[0].AttemptCount != 1 {
 		t.Fatalf("audit = %#v, %d, %v", logs, total, err)
 	}
 	detail, err := auditRepo.Get(ctx, logs[0].ID)
