@@ -75,7 +75,7 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 			continue
 		}
 		consideredCandidates++
-		if candidate.ModelCapabilityKnown && !candidate.SupportsModel {
+		if !s.candidateSupportsModel(provider, upstreamModel, candidate) {
 			continue
 		}
 		supportedCandidates++

@@ -482,7 +482,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			continue
 		}
 		consideredCandidates++
-		if candidate.ModelCapabilityKnown && !candidate.SupportsModel {
+		if !s.candidateSupportsModel(provider, upstreamModel, candidate) {
 			continue
 		}
 		supportedCandidates++
@@ -784,7 +784,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
 		}
 		if inference {
-			if candidate.ModelCapabilityKnown && !candidate.SupportsModel {
+			if !s.candidateSupportsModel(provider, upstreamModel, candidate) {
 				return nil, &SelectionUnavailableError{Reason: SelectionUnsupportedModel}
 			}
 			if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
@@ -887,10 +887,33 @@ func annotateSelectionAccountScope(err *error, scope clientkeydomain.AccountScop
 }
 
 func effectiveQuotaMode(candidate account.RoutingCandidate, fallback string) string {
-	if candidate.QuotaWindow != nil && candidate.QuotaWindow.Mode == "weekly" {
-		return "weekly"
+	if candidate.QuotaWindow != nil && candidate.QuotaWindow.Mode != "" {
+		return candidate.QuotaWindow.Mode
+	}
+	if candidate.Credential.Provider == account.ProviderWeb && fallback == account.QuotaModeWebImageEdit {
+		switch candidate.Credential.WebTier {
+		case account.WebTierSuper, account.WebTierHeavy:
+			return account.QuotaModeWebImageEdit
+		default:
+			return account.QuotaModeWebImagePro
+		}
 	}
 	return fallback
+}
+
+// candidateSupportsModel treats a recognized Web catalog entry as an
+// effective capability for tiers that the adapter explicitly allows. This
+// prevents a historical capability snapshot from blocking a newly enabled
+// catalog feature, while unknown/manual Web routes and all other providers
+// retain the persisted snapshot semantics.
+func (s *Selector) candidateSupportsModel(provider account.Provider, upstreamModel string, candidate account.RoutingCandidate) bool {
+	if provider == account.ProviderWeb {
+		order := s.resolveTierOrder(provider, upstreamModel)
+		if len(order) > 0 {
+			return webTierInOrder(order, candidate.Credential.WebTier)
+		}
+	}
+	return !candidate.ModelCapabilityKnown || candidate.SupportsModel
 }
 
 func (s *Selector) MarkSuccess(ctx context.Context, credential account.Credential) {
@@ -1988,10 +2011,28 @@ func (s *Selector) resolveTierOrder(provider account.Provider, upstreamModel str
 }
 
 func tierOrderRank(order []account.WebTier, tier account.WebTier) int {
+	tier = normalizedRoutingWebTier(tier)
 	for index, value := range order {
 		if value == tier {
 			return index
 		}
 	}
 	return len(order)
+}
+
+func normalizedRoutingWebTier(tier account.WebTier) account.WebTier {
+	if tier == "" || tier == account.WebTierAuto {
+		return account.WebTierBasic
+	}
+	return tier
+}
+
+func webTierInOrder(order []account.WebTier, tier account.WebTier) bool {
+	tier = normalizedRoutingWebTier(tier)
+	for _, allowed := range order {
+		if allowed == tier {
+			return true
+		}
+	}
+	return false
 }
