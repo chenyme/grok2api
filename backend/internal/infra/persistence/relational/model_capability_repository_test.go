@@ -835,6 +835,54 @@ func TestWebRediscoveryRestoresCatalogRouteDefaults(t *testing.T) {
 	}
 }
 
+func TestWebImageEditCatalogRemainsAvailableAcrossStaleBasicSnapshots(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	models := NewModelRepository(database)
+	basic, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "basic-web", SourceKey: "basic-web",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: account.AuthStatusActive, WebTier: account.WebTierBasic,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Record a successful historical sync that does not contain image edit.
+	if err := models.ReplaceAccountCapabilities(ctx, basic.ID, []string{"grok-chat-fast"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.UpsertRoutes(ctx, []model.Route{{
+		PublicID: "grok-imagine-image-edit", Provider: account.ProviderWeb, UpstreamModel: "imagine-image-edit",
+		Capability: model.CapabilityImageEdit, Origin: model.OriginCatalog, Enabled: true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	routes, err := models.ListEnabled(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imageEdit *model.Route
+	for index := range routes {
+		if routes[index].Provider == account.ProviderWeb && routes[index].UpstreamModel == "imagine-image-edit" {
+			imageEdit = &routes[index]
+			break
+		}
+	}
+	if imageEdit == nil || imageEdit.SupportedAccounts != 1 || imageEdit.TotalAccounts != 1 {
+		t.Fatalf("Web image-edit catalog route = %#v; routes=%#v", imageEdit, routes)
+	}
+	unknown, err := models.Create(ctx, model.Route{
+		PublicID: "unknown-web-image-edit", Provider: account.ProviderWeb, UpstreamModel: "unknown-image-edit",
+		Capability: model.CapabilityImageEdit, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.SupportedAccounts != 0 {
+		t.Fatalf("unknown Web route inherited catalog support: %#v", unknown)
+	}
+}
+
 func TestWebImageRediscoveryUsesLitePublicNames(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

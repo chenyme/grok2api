@@ -595,6 +595,95 @@ func TestSelectorKeepsWebQuotaModesIsolated(t *testing.T) {
 	}
 }
 
+func TestSelectorUsesTierSpecificWebImageEditQuotaAndPrefersBasic(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-web-image-edit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	models := relational.NewModelRepository(database)
+	create := func(name string, tier account.WebTier, priority int) account.Credential {
+		value, _, createErr := accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: tier,
+			Name: name, SourceKey: name, EncryptedAccessToken: "encrypted",
+			AuthStatus: account.AuthStatusActive, Priority: priority, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return value
+	}
+	basic := create("basic-edit", account.WebTierBasic, 1)
+	super := create("super-edit", account.WebTierSuper, 100)
+	now := time.Now().UTC()
+	resetAt := now.Add(time.Hour)
+	if err := accounts.SaveQuotaWindows(ctx, basic.ID, account.WebTierBasic, now, []account.QuotaWindow{
+		{AccountID: basic.ID, Mode: account.QuotaModeWebImagePro, Remaining: 4, Total: 4, ResetAt: &resetAt, SyncedAt: &now, Source: account.QuotaSourceUpstream},
+		{AccountID: basic.ID, Mode: account.QuotaModeWebImageEdit, Remaining: 0, Total: 0, ResetAt: &resetAt, SyncedAt: &now, Source: account.QuotaSourceUpstream},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.SaveQuotaWindows(ctx, super.ID, account.WebTierSuper, now, []account.QuotaWindow{
+		{AccountID: super.ID, Mode: account.QuotaModeWebImagePro, Remaining: 20, Total: 20, ResetAt: &resetAt, SyncedAt: &now, Source: account.QuotaSourceUpstream},
+		{AccountID: super.ID, Mode: account.QuotaModeWebImageEdit, Remaining: 8, Total: 8, ResetAt: &resetAt, SyncedAt: &now, Source: account.QuotaSourceUpstream},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an old Basic snapshot from before image editing was exposed to
+	// that tier. Super already reports the capability.
+	if err := models.ReplaceAccountCapabilities(ctx, basic.ID, []string{"grok-chat-fast"}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := models.ReplaceAccountCapabilities(ctx, super.ID, []string{"grok-chat-fast", "imagine-image-edit"}, now); err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{
+		account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy,
+	}}, time.Hour, time.Second, time.Minute)
+	lease, err := selector.Acquire(ctx, account.ProviderWeb, 0, "imagine-image-edit", account.QuotaModeWebImageEdit, "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != basic.ID {
+		t.Fatalf("selected account = %d, want stale-snapshot Basic %d", lease.Credential.ID, basic.ID)
+	}
+	if lease.QuotaMode != account.QuotaModeWebImagePro {
+		t.Fatalf("quota mode = %q, want %q", lease.QuotaMode, account.QuotaModeWebImagePro)
+	}
+}
+
+func TestSelectorWebCatalogCapabilityStillEnforcesTier(t *testing.T) {
+	candidate := account.RoutingCandidate{
+		Credential:           account.Credential{Provider: account.ProviderWeb, WebTier: account.WebTierBasic},
+		ModelCapabilityKnown: true,
+	}
+	imageSelector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, staticTierOrder{order: []account.WebTier{
+		account.WebTierBasic, account.WebTierSuper, account.WebTierHeavy,
+	}}, time.Hour, time.Second, time.Minute)
+	if !imageSelector.candidateSupportsModel(account.ProviderWeb, "imagine-image-edit", candidate) {
+		t.Fatal("recognized Basic image-edit capability was blocked by a stale snapshot")
+	}
+	videoSelector := NewSelector(nil, memory.NewConcurrencyLimiter(), nil, staticTierOrder{order: []account.WebTier{
+		account.WebTierSuper, account.WebTierHeavy,
+	}}, time.Hour, time.Second, time.Minute)
+	if videoSelector.candidateSupportsModel(account.ProviderWeb, "grok-imagine-video", candidate) {
+		t.Fatal("Basic account bypassed the video tier requirement")
+	}
+}
+
+func TestImageQuotaFinalizationKeepsEffectiveConsumptionFence(t *testing.T) {
+	refreshMode, decrementMode := imageQuotaFinalizationModes(account.QuotaModeWebImagePro, account.QuotaGroupWebImagine)
+	if refreshMode != account.QuotaGroupWebImagine || decrementMode != account.QuotaModeWebImagePro {
+		t.Fatalf("refresh=%q decrement=%q", refreshMode, decrementMode)
+	}
+}
+
 func TestSelectorHonorsWebTierPoolOrderBeforeAccountPriority(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-web-tier.db"))

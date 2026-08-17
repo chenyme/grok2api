@@ -361,7 +361,7 @@ func (r *AccountRepository) ListRoutingCandidates(ctx context.Context, provider 
 	if err != nil {
 		return nil, err
 	}
-	quotaWindows, err := r.getRoutingQuotaWindows(ctx, provider, quotaMode)
+	quotaWindows, err := r.getRoutingQuotaWindows(ctx, provider, quotaMode, values)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +475,7 @@ func (r *AccountRepository) ListRoutingAccountBases(ctx context.Context, provide
 	if err != nil {
 		return nil, err
 	}
-	quotaWindows, err := r.getRoutingQuotaWindows(ctx, provider, quotaMode)
+	quotaWindows, err := r.getRoutingQuotaWindows(ctx, provider, quotaMode, values)
 	if err != nil {
 		return nil, err
 	}
@@ -636,7 +636,7 @@ var routingQuotaWindowColumns = []string{
 	"account_id", "mode", "remaining", "total", "usage_percent", "window_seconds", "reset_at", "synced_at", "source", "updated_at",
 }
 
-func (r *AccountRepository) getRoutingQuotaWindows(ctx context.Context, provider account.Provider, quotaMode string) (map[uint64]account.QuotaWindow, error) {
+func (r *AccountRepository) getRoutingQuotaWindows(ctx context.Context, provider account.Provider, quotaMode string, credentials []account.Credential) (map[uint64]account.QuotaWindow, error) {
 	result := make(map[uint64]account.QuotaWindow)
 	if provider != account.ProviderWeb && quotaMode == "" {
 		return result, nil
@@ -647,6 +647,12 @@ func (r *AccountRepository) getRoutingQuotaWindows(ctx context.Context, provider
 	// a weekly row merely because the same account also has paid chat access.
 	if provider == account.ProviderWeb && !account.IsWebImagineQuotaMode(quotaMode) {
 		modes = append(modes, "weekly")
+	}
+	if provider == account.ProviderWeb && quotaMode == account.QuotaModeWebImageEdit {
+		// Basic Web accounts use image_pro for editing, while Super/Heavy
+		// accounts have the dedicated image_edit product. Load both once and
+		// select the authoritative window per account below.
+		modes = append(modes, account.QuotaModeWebImagePro)
 	}
 	if quotaMode != "" {
 		modes = append(modes, quotaMode)
@@ -661,12 +667,32 @@ func (r *AccountRepository) getRoutingQuotaWindows(ctx context.Context, provider
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
+	webTiers := make(map[uint64]account.WebTier, len(credentials))
+	for _, credential := range credentials {
+		webTiers[credential.ID] = credential.WebTier
+	}
 	for _, row := range rows {
+		if provider == account.ProviderWeb && quotaMode == account.QuotaModeWebImageEdit {
+			if row.Mode != webImageEditRoutingQuotaMode(webTiers[row.AccountID]) {
+				continue
+			}
+		}
 		if _, exists := result[row.AccountID]; !exists {
 			result[row.AccountID] = toRoutingQuotaWindowDomain(row)
 		}
 	}
 	return result, nil
+}
+
+func webImageEditRoutingQuotaMode(tier account.WebTier) string {
+	switch tier {
+	case account.WebTierSuper, account.WebTierHeavy:
+		return account.QuotaModeWebImageEdit
+	default:
+		// Empty and auto tiers are deliberately treated as Basic, matching the
+		// Web adapter's conservative capability normalization.
+		return account.QuotaModeWebImagePro
+	}
 }
 
 func (r *AccountRepository) ListRoutingAccountOverlays(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel string) (account.RoutingOverlaySnapshot, error) {
