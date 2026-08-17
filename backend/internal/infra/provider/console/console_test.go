@@ -1789,7 +1789,7 @@ func TestConsoleVideoPostsReferenceAudios(t *testing.T) {
 // 8. Maximum allowed is 7." on both grok-imagine-video and grok-imagine-video-1.5.
 func TestConsoleVideoRejectsTooManyReferenceImages(t *testing.T) {
 	adapter, credential := newConsoleTestAdapter(t, "https://console.example")
-	references := make([]string, consoleMaxVideoReferenceImages+1)
+	references := make([]string, provider.ConsoleVideoMaxReferenceImages+1)
 	for i := range references {
 		references[i] = "https://example.com/" + strings.Repeat("x", i+1) + ".png"
 	}
@@ -1803,7 +1803,7 @@ func TestConsoleVideoRejectsTooManyReferenceImages(t *testing.T) {
 
 func TestConsoleVideoRejectsTooManyCombinedImages(t *testing.T) {
 	adapter, credential := newConsoleTestAdapter(t, "https://console.example")
-	references := make([]string, consoleMaxVideoReferenceImages)
+	references := make([]string, provider.ConsoleVideoMaxReferenceImages)
 	for i := range references {
 		references[i] = "https://example.com/" + strings.Repeat("y", i+1) + ".png"
 	}

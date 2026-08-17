@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -216,6 +217,19 @@ func TestGatewayErrorMapsOversizedVideoInputToBadRequest(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"invalid_request"`) || !strings.Contains(recorder.Body.String(), "32 MiB") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestGatewayErrorMapsInvalidVideoParametersToBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) {
+		writeGatewayError(c, fmt.Errorf("%w: Console reference_images 最多 7 张", gateway.ErrVideoParameterInvalid))
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), `"code":"invalid_request"`) || !strings.Contains(recorder.Body.String(), "最多 7 张") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
@@ -922,6 +936,21 @@ func TestAnthropicUsageReconstructsCacheCreationAndSaturates(t *testing.T) {
 	usage = normalizeMetadataUsage(overflow, streamProtocolAnthropic).Usage
 	if usage.InputTokens != math.MaxInt64 || usage.TotalTokens != math.MaxInt64 {
 		t.Fatalf("anthropic saturated usage = %#v", usage)
+	}
+}
+
+func TestExtractMetadataPreservesReportedZeroUsage(t *testing.T) {
+	metadata := extractMetadata([]byte(`{"id":"resp_zero","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}`))
+	if !metadata.Usage.Reported {
+		t.Fatalf("zero usage object was treated as missing: %#v", metadata.Usage)
+	}
+	if metadata.Usage.InputTokens != 0 || metadata.Usage.OutputTokens != 0 || metadata.Usage.TotalTokens != 0 {
+		t.Fatalf("zero usage object changed values: %#v", metadata.Usage)
+	}
+
+	missing := extractMetadata([]byte(`{"id":"resp_missing"}`))
+	if missing.Usage.Reported {
+		t.Fatalf("missing usage object was treated as reported: %#v", missing.Usage)
 	}
 }
 

@@ -1389,7 +1389,7 @@ func (i *responseInspector) Inspect(chunk []byte) {
 			i.observeTerminal(value)
 			if !bytes.Equal(value, []byte("[DONE]")) {
 				metadata := extractMetadata(value)
-				if hasUsageSignal(metadata.Usage) {
+				if hasUsageMetadata(metadata.Usage) {
 					if metadata.Usage.ResponseModel == "" {
 						metadata.Usage.ResponseModel = i.metadata.Model
 					}
@@ -1801,6 +1801,7 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 		reasoning = value.OutputTokensDetails.ThinkingTokens
 	}
 	return gateway.Usage{
+		Reported:    true,
 		InputTokens: input, CachedInputTokens: cached,
 		OutputTokens: output, ReasoningTokens: reasoning,
 		TotalTokens: total, CostInUSDTicks: value.CostInUSDTicks,
@@ -1810,8 +1811,8 @@ func (value responseUsageDTO) toGatewayUsage(responseModel string) gateway.Usage
 	}
 }
 
-func hasUsageSignal(usage gateway.Usage) bool {
-	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0 ||
+func hasUsageMetadata(usage gateway.Usage) bool {
+	return usage.Reported || usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0 ||
 		usage.CachedInputTokens > 0 || usage.ReasoningTokens > 0 || usage.CostInUSDTicks > 0 ||
 		usage.NumSourcesUsed > 0 || usage.NumServerSideToolsUsed > 0 ||
 		usage.ContextInputTokens > 0 || usage.ContextOutputTokens > 0
@@ -1820,6 +1821,7 @@ func hasUsageSignal(usage gateway.Usage) bool {
 // mergeGatewayUsage merges usage from multiple streaming frames; non-zero fields overwrite,
 // preventing a later partial frame from erasing an already parsed cache hit.
 func mergeGatewayUsage(base, next gateway.Usage) gateway.Usage {
+	base.Reported = base.Reported || next.Reported
 	if next.InputTokens > 0 {
 		base.InputTokens = next.InputTokens
 	}
@@ -1927,7 +1929,7 @@ func writeGatewayError(c *gin.Context, err error) {
 	case errors.Is(err, gateway.ErrResponseStateUnsupported), errors.Is(err, gateway.ErrConversationUnsupported):
 		status, code = http.StatusBadRequest, "unsupported_parameter"
 		message = err.Error()
-	case errors.Is(err, gateway.ErrVideoInputTooLarge), errors.Is(err, gateway.ErrVideoInputUnavailable):
+	case errors.Is(err, gateway.ErrVideoInputTooLarge), errors.Is(err, gateway.ErrVideoInputUnavailable), errors.Is(err, gateway.ErrVideoParameterInvalid):
 		status, code = http.StatusBadRequest, "invalid_request"
 		message = err.Error()
 	case errors.Is(err, gateway.ErrVideoOperationUnsupported):

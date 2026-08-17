@@ -239,13 +239,13 @@ func TestBuildResponseHeaderTimeoutIsRuntimeOnly(t *testing.T) {
 
 func TestDefaultGrokBuildClientVersionMatchesLocalBaseline(t *testing.T) {
 	build := defaultConfig().Provider.Build
-	if RecommendedBuildClientVersion != "0.2.119" {
+	if RecommendedBuildClientVersion != "1.0.4" {
 		t.Fatalf("recommended clientVersion = %q", RecommendedBuildClientVersion)
 	}
 	if build.ClientVersion != RecommendedBuildClientVersion {
 		t.Fatalf("clientVersion = %q", build.ClientVersion)
 	}
-	if RecommendedBuildUserAgent != "grok-shell/0.2.119 (linux; x86_64)" {
+	if RecommendedBuildUserAgent != "grok-shell/1.0.4 (linux; x86_64)" {
 		t.Fatalf("recommended userAgent = %q", RecommendedBuildUserAgent)
 	}
 	if build.UserAgent != RecommendedBuildUserAgent {

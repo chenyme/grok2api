@@ -24,6 +24,16 @@ type browserClient struct{ inner tlsclient.HttpClient }
 var chromeMajorPattern = regexp.MustCompile(`(?i)Chrome/(\d+)`)
 
 func (l *Lease) DialWebSocket(ctx context.Context, endpoint string, headers fhttp.Header, handshakeTimeout time.Duration) (*websocket.Conn, *fhttp.Response, error) {
+	return l.dialWebSocket(ctx, endpoint, headers, handshakeTimeout, true)
+}
+
+// DialWebSocketDeferredForbidden leaves a 403 handshake response for the
+// caller to classify before invalidating the browser-session Clearance.
+func (l *Lease) DialWebSocketDeferredForbidden(ctx context.Context, endpoint string, headers fhttp.Header, handshakeTimeout time.Duration) (*websocket.Conn, *fhttp.Response, error) {
+	return l.dialWebSocket(ctx, endpoint, headers, handshakeTimeout, false)
+}
+
+func (l *Lease) dialWebSocket(ctx context.Context, endpoint string, headers fhttp.Header, handshakeTimeout time.Duration, invalidateForbidden bool) (*websocket.Conn, *fhttp.Response, error) {
 	if l == nil || l.browser == nil {
 		return nil, nil, errors.New("当前出口客户端不支持浏览器 WebSocket")
 	}
@@ -38,7 +48,7 @@ func (l *Lease) DialWebSocket(ctx context.Context, endpoint string, headers fhtt
 			if l.proxyPool && safeProxyConnectionFailure(err, fhttpResponseAsHTTP(response)) {
 				l.browser.CloseIdleConnections()
 			}
-			if response != nil && response.StatusCode == http.StatusForbidden && l.clearanceManager != nil && l.clearanceKey != "" {
+			if invalidateForbidden && response != nil && response.StatusCode == http.StatusForbidden && l.clearanceManager != nil && l.clearanceKey != "" {
 				l.clearanceManager.invalidateClearanceKey(l.clearanceKey, l.client)
 			}
 			return connection, response, err
