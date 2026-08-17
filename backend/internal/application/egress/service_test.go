@@ -49,6 +49,16 @@ func TestNormalizeProxyURLValidatesStructure(t *testing.T) {
 	}
 }
 
+func TestNormalizeProxyURLAcceptsLegacyHTTPProxyFormat(t *testing.T) {
+	value, err := NormalizeProxyURL("127.0.0.1:8080:user:password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "http://user:password@127.0.0.1:8080" {
+		t.Fatalf("normalized legacy HTTP proxy = %q", value)
+	}
+}
+
 func TestNormalizeProxyURLStripsTunnelRemarks(t *testing.T) {
 	base := "trojan://password@proxy.example:443?security=tls&sni=edge.example"
 	one, err := NormalizeProxyURL(base + "#one")

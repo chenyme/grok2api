@@ -45,6 +45,7 @@ func TestParseProxySubscriptionAcceptsPlainAndBase64Lists(t *testing.T) {
 	plain, skipped, err := parseProxySubscription(strings.Join([]string{
 		"# proxy list",
 		"http://user:pass@one.example:8080",
+		"127.0.0.1:3128:legacy:password",
 		"socks5h://two.example:1080",
 		"http://user:pass@one.example:8080",
 		"not a proxy",
@@ -52,8 +53,11 @@ func TestParseProxySubscriptionAcceptsPlainAndBase64Lists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plain) != 2 || skipped != 2 {
+	if len(plain) != 3 || skipped != 2 {
 		t.Fatalf("plain entries=%d skipped=%d", len(plain), skipped)
+	}
+	if plain[1].ProxyURL != "http://legacy:password@127.0.0.1:3128" {
+		t.Fatalf("legacy HTTP proxy = %q", plain[1].ProxyURL)
 	}
 	for _, entry := range plain {
 		if entry.ProxyURL == "" || len(entry.Key) != 64 {
