@@ -190,9 +190,9 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 
 // capAutomaticAssignmentShare optionally prevents a cascading node quarantine
 // from concentrating the whole active provider pool on the last healthy node.
-// share <= 0 leaves configured node capacities unchanged.
+// Zero or invalid shares leave configured node capacities unchanged.
 func capAutomaticAssignmentShare(nodes []domain.Node, accounts []accountdomain.Credential, share float64) []domain.Node {
-	if share <= 0 {
+	if !validAutoAssignShare(share) || share == 0 {
 		return nodes
 	}
 	active := activeAccountCount(accounts)
@@ -200,10 +200,21 @@ func capAutomaticAssignmentShare(nodes []domain.Node, accounts []accountdomain.C
 		return nodes
 	}
 	maxPerNode := max(1, int(math.Ceil(float64(active)*share)))
+	activeLoads := make(map[uint64]int, len(nodes))
+	for _, credential := range accounts {
+		if credential.Enabled && credential.AuthStatus == accountdomain.AuthStatusActive && credential.EgressNodeID != 0 {
+			activeLoads[credential.EgressNodeID]++
+		}
+	}
 	for index := range nodes {
 		configured := nodes[index].AccountCapacity
-		if configured <= 0 || configured > maxPerNode {
-			nodes[index].AccountCapacity = maxPerNode
+		// AssignedAccountCount is global across providers and includes inactive
+		// and manual bindings. Preserve those reserved slots while limiting only
+		// this provider's active share on the node.
+		reservedByOthers := max(0, nodes[index].AssignedAccountCount-activeLoads[nodes[index].ID])
+		shareCapacity := reservedByOthers + maxPerNode
+		if configured <= 0 || configured > shareCapacity {
+			nodes[index].AccountCapacity = shareCapacity
 		}
 	}
 	return nodes
@@ -213,7 +224,7 @@ func capAutomaticAssignmentShare(nodes []domain.Node, accounts []accountdomain.C
 // enabled. A negative result means the first-pass evacuation stays unbounded
 // and later capacity/rebalance loops keep the existing 200-move ceiling.
 func autoAssignmentMigrationLimit(accounts []accountdomain.Credential, share float64) int {
-	if share <= 0 {
+	if !validAutoAssignShare(share) || share == 0 {
 		return -1
 	}
 	return max(1, int(math.Ceil(float64(activeAccountCount(accounts))*share)))
@@ -261,17 +272,21 @@ func resolveAutoAssignShare(envName string, configured float64) float64 {
 
 func parseAutoAssignShare(raw string) (float64, bool) {
 	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil || value < 0 || value > 1 || (value > 0 && value < 0.05) {
+	if err != nil || !validAutoAssignShare(value) {
 		return 0, false
 	}
 	return value, true
 }
 
 func normalizeAutoAssignShare(value float64) float64 {
-	if value <= 0 || value > 1 || (value > 0 && value < 0.05) {
+	if !validAutoAssignShare(value) {
 		return 0
 	}
 	return value
+}
+
+func validAutoAssignShare(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && (value == 0 || (value >= 0.05 && value <= 1))
 }
 
 func (s *Service) eligibleNodesForProvider(values []domain.Node, provider accountdomain.Provider, probeInterval time.Duration, now time.Time) []domain.Node {

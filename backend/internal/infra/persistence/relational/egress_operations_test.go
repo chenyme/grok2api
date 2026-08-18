@@ -3,6 +3,7 @@ package relational
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -214,6 +215,52 @@ func TestEgressOperationsSharesWebNodeCapacityAcrossProviders(t *testing.T) {
 	}
 	if storedWeb.EgressNodeID != node.ID || storedConsole.EgressNodeID != 0 {
 		t.Fatalf("shared node capacity web=%d console=%d", storedWeb.EgressNodeID, storedConsole.EgressNodeID)
+	}
+}
+
+func TestEgressOperationsAutoAssignShareUsesProviderLoadOnSharedWebNode(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	accounts := NewAccountRepository(database)
+	nodes := NewEgressRepository(database)
+	cipher := egressOperationsCipher(t)
+	node := createHealthyEgressNodeForScope(t, ctx, nodes, cipher, "shared-web-bounded", egress.ScopeWeb, 0)
+
+	consoleIDs := make([]uint64, 0, 3)
+	for index := 0; index < 3; index++ {
+		credential := createEgressOperationsProviderAccount(t, ctx, accounts, account.ProviderConsole, fmt.Sprintf("console-%d", index))
+		consoleIDs = append(consoleIDs, credential.ID)
+	}
+	if _, err := accounts.UpdateEgressBindings(ctx, account.ProviderConsole, consoleIDs, &node.ID, account.EgressAssignmentManual, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	web := make([]account.Credential, 0, 10)
+	for index := 0; index < 10; index++ {
+		web = append(web, createEgressOperationsProviderAccount(t, ctx, accounts, account.ProviderWeb, fmt.Sprintf("web-%d", index)))
+	}
+
+	service := egressapp.NewService(nodes, cipher, "test-browser", accounts)
+	service.ConfigureAutoAssignBounds(0.30, 0)
+	result, err := service.RebalanceAccounts(ctx, true, false, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Assigned != 3 || result.Unplaced != 7 || result.Rebalanced != 0 {
+		t.Fatalf("rebalance result = %#v", result)
+	}
+	assigned := 0
+	for _, credential := range web {
+		stored, getErr := accounts.Get(ctx, credential.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if stored.EgressNodeID == node.ID {
+			assigned++
+		}
+	}
+	if assigned != 3 {
+		t.Fatalf("shared Web node received %d Web accounts, want 3", assigned)
 	}
 }
 

@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"math"
 	"testing"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -20,6 +21,11 @@ func TestNormalizeAndParseAutoAssignShare(t *testing.T) {
 	if got := normalizeAutoAssignShare(0.3); got != 0.3 {
 		t.Fatalf("valid share = %v", got)
 	}
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got := normalizeAutoAssignShare(value); got != 0 {
+			t.Fatalf("special float %v must stay off: %v", value, got)
+		}
+	}
 	if _, ok := parseAutoAssignShare("0"); !ok {
 		t.Fatal("explicit 0 is a valid env override")
 	}
@@ -28,6 +34,11 @@ func TestNormalizeAndParseAutoAssignShare(t *testing.T) {
 	}
 	if value, ok := parseAutoAssignShare("0.10"); !ok || value != 0.10 {
 		t.Fatalf("0.10 = %v %v", value, ok)
+	}
+	for _, raw := range []string{"NaN", "Inf", "-Inf"} {
+		if _, ok := parseAutoAssignShare(raw); ok {
+			t.Fatalf("%q must be rejected so YAML/default remains", raw)
+		}
 	}
 }
 
@@ -49,6 +60,15 @@ func TestCapAutomaticAssignmentShareAppliesFraction(t *testing.T) {
 	}
 	if got[1].AccountCapacity != 30 {
 		t.Fatalf("configured 40 should be lowered to 30: %#v", got[1])
+	}
+}
+
+func TestCapAutomaticAssignmentSharePreservesOtherProviderLoad(t *testing.T) {
+	nodes := []domain.Node{{ID: 1, AccountCapacity: 0, AssignedAccountCount: 30}}
+	accounts := makeActiveAccounts(100)
+	got := capAutomaticAssignmentShare(nodes, accounts, 0.30)
+	if got[0].AccountCapacity != 60 {
+		t.Fatalf("30 reserved slots plus 30 active provider slots = %#v", got[0])
 	}
 }
 
