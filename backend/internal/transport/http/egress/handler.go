@@ -50,6 +50,12 @@ func (h *Handler) WithQualityGuardProbe(input egressapp.QualityProbeInput) *Hand
 }
 
 func (h *Handler) Register(router *gin.RouterGroup) {
+	router.GET("/egress-proxy-profiles", h.listProxyProfiles)
+	router.GET("/egress-proxy-profiles/:id", h.getProxyProfile)
+	router.POST("/egress-proxy-profiles", h.createProxyProfile)
+	router.PUT("/egress-proxy-profiles/:id", h.updateProxyProfile)
+	router.DELETE("/egress-proxy-profiles/:id", h.deleteProxyProfile)
+	router.POST("/egress-proxy-profiles/:id/proxy-url/reveal", h.proxyProfileURL)
 	router.GET("/egress-nodes", h.list)
 	router.POST("/egress-nodes", h.create)
 	router.PATCH("/egress-nodes/batch", h.updateMany)
@@ -58,6 +64,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/egress-nodes/cleanup", h.cleanup)
 	router.POST("/egress-nodes/test", h.testNodes)
 	router.POST("/egress-nodes/:id/test", h.testNode)
+	router.POST("/egress-nodes/:id/proxy-url/reveal", h.proxyURL)
 	router.POST("/egress-nodes/:id/quality-test", h.testQuality)
 	router.GET("/egress-quality-guard", h.qualityGuardStatus)
 	router.PUT("/egress-quality-guard/config", h.updateQualityGuardConfig)
@@ -445,6 +452,7 @@ type nodeRequest struct {
 	ProxyPool         *bool   `json:"proxyPool"`
 	AccountCapacity   *int    `json:"accountCapacity"`
 	ProxyURL          *string `json:"proxyURL"`
+	ProxyProfileID    *uint64 `json:"proxyProfileId,string"`
 	ClearProxyURL     bool    `json:"clearProxyURL"`
 	UserAgent         string  `json:"userAgent"`
 	CloudflareCookies *string `json:"cloudflareCookies"`
@@ -457,8 +465,12 @@ type nodeResponse struct {
 	Scope                string              `json:"scope"`
 	Enabled              bool                `json:"enabled"`
 	ProxyConfigured      bool                `json:"proxyConfigured"`
+	ProxyDisplay         string              `json:"proxyDisplay,omitempty"`
+	ProxyFingerprint     string              `json:"proxyFingerprint,omitempty"`
 	ProxyPool            bool                `json:"proxyPool"`
 	SourceID             uint64              `json:"sourceId,omitempty,string"`
+	ProxyProfileID       uint64              `json:"proxyProfileId,omitempty,string"`
+	ProxyProfileName     string              `json:"proxyProfileName,omitempty"`
 	AccountCapacity      int                 `json:"accountCapacity"`
 	UserAgent            string              `json:"userAgent"`
 	CookieConfigured     bool                `json:"cookieConfigured"`
@@ -633,7 +645,8 @@ func (value nodeRequest) input() egressapp.Input {
 	return egressapp.Input{
 		Name: value.Name, Scope: egressdomain.Scope(value.Scope), Enabled: value.Enabled, ProxyPool: value.ProxyPool,
 		AccountCapacity: value.AccountCapacity,
-		ProxyURL:        value.ProxyURL, ClearProxyURL: value.ClearProxyURL, UserAgent: value.UserAgent,
+		ProxyURL:        value.ProxyURL, ProxyProfileID: value.ProxyProfileID,
+		ClearProxyURL: value.ClearProxyURL, UserAgent: value.UserAgent,
 		CloudflareCookies: value.CloudflareCookies, ClearCookies: value.ClearCookies,
 	}
 }
@@ -734,12 +747,137 @@ func (h *Handler) update(c *gin.Context) {
 	response.Success(c, http.StatusOK, newNodeResponse(value))
 }
 
+func (h *Handler) proxyURL(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Pragma", "no-cache")
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	value, err := h.service.ProxyURL(c.Request.Context(), id)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"proxyURL": value})
+}
+
+type proxyProfileRequest struct {
+	Name     string  `json:"name"`
+	ProxyURL *string `json:"proxyURL"`
+}
+
+type proxyProfileResponse struct {
+	ID               uint64    `json:"id,string"`
+	Name             string    `json:"name"`
+	ProxyDisplay     string    `json:"proxyDisplay,omitempty"`
+	ProxyFingerprint string    `json:"proxyFingerprint,omitempty"`
+	BoundNodeCount   int       `json:"boundNodeCount"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+func (h *Handler) listProxyProfiles(c *gin.Context) {
+	page, pageSize := nodePagination(c)
+	values, total, err := h.service.ListProxyProfiles(c.Request.Context(), page, pageSize, c.Query("search"))
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	items := make([]proxyProfileResponse, 0, len(values))
+	for _, value := range values {
+		items = append(items, newProxyProfileResponse(value))
+	}
+	response.Success(c, http.StatusOK, gin.H{"items": items, "page": page, "pageSize": pageSize, "total": total})
+}
+
+func (h *Handler) createProxyProfile(c *gin.Context) {
+	var request proxyProfileRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	value, err := h.service.CreateProxyProfile(c.Request.Context(), egressapp.ProxyProfileInput{Name: request.Name, ProxyURL: request.ProxyURL})
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusCreated, newProxyProfileResponse(value))
+}
+
+func (h *Handler) getProxyProfile(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	value, err := h.service.GetProxyProfile(c.Request.Context(), id)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, newProxyProfileResponse(value))
+}
+
+func (h *Handler) updateProxyProfile(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	var request proxyProfileRequest
+	if c.ShouldBindJSON(&request) != nil {
+		response.Error(c, http.StatusBadRequest, "invalidRequest", "请求参数无效")
+		return
+	}
+	value, err := h.service.UpdateProxyProfile(c.Request.Context(), id, egressapp.ProxyProfileInput{Name: request.Name, ProxyURL: request.ProxyURL})
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, newProxyProfileResponse(value))
+}
+
+func (h *Handler) deleteProxyProfile(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteProxyProfile(c.Request.Context(), id); err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"deleted": true})
+}
+
+func (h *Handler) proxyProfileURL(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Pragma", "no-cache")
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	value, err := h.service.ProxyProfileURL(c.Request.Context(), id)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"proxyURL": value})
+}
+
+func newProxyProfileResponse(value egressdomain.PublicProxyProfile) proxyProfileResponse {
+	return proxyProfileResponse{
+		ID: value.ID, Name: value.Name, ProxyDisplay: value.ProxyDisplay, ProxyFingerprint: value.ProxyFingerprint,
+		BoundNodeCount: value.BoundNodeCount, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+	}
+}
+
 func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 	return nodeResponse{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled,
-		ProxyConfigured: value.ProxyConfigured, ProxyPool: value.ProxyPool, UserAgent: value.UserAgent, CookieConfigured: value.CookieConfigured,
+		ProxyConfigured: value.ProxyConfigured, ProxyDisplay: value.ProxyDisplay, ProxyFingerprint: value.ProxyFingerprint,
+		ProxyPool: value.ProxyPool, UserAgent: value.UserAgent, CookieConfigured: value.CookieConfigured,
 		AccountBoundProxy: value.AccountBoundProxy,
 		SourceID:          value.SourceID, AccountCapacity: value.AccountCapacity,
+		ProxyProfileID: value.ProxyProfileID, ProxyProfileName: value.ProxyProfileName,
 		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
 		ProbeStatus: string(value.ProbeStatus), LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
 		ProbeProvider: string(value.ProbeProvider),
@@ -1162,6 +1300,12 @@ func (h *Handler) writeError(c *gin.Context, err error) {
 		response.Error(c, http.StatusBadRequest, "invalidEgressNode", err.Error())
 	case errors.Is(err, egressapp.ErrNotFound):
 		response.Error(c, http.StatusNotFound, "egressNodeNotFound", err.Error())
+	case errors.Is(err, egressapp.ErrProxyProfileNotFound):
+		response.Error(c, http.StatusNotFound, "egressProxyProfileNotFound", err.Error())
+	case errors.Is(err, egressapp.ErrProxyProfileInUse):
+		response.Error(c, http.StatusConflict, "egressProxyProfileInUse", err.Error())
+	case errors.Is(err, egressapp.ErrProxyProfileUnavailable):
+		response.Error(c, http.StatusServiceUnavailable, "egressProxyProfilesUnavailable", err.Error())
 	case errors.Is(err, egressapp.ErrProbeStale):
 		response.Error(c, http.StatusConflict, "egressProbeStale", err.Error())
 	case errors.Is(err, repository.ErrConflict):

@@ -87,6 +87,46 @@ func TestNormalizeProxyURLAllowsAccountPlaceholderOnlyInUsername(t *testing.T) {
 	}
 }
 
+func TestProxyDisplayKeepsEndpointAndRedactsCredentials(t *testing.T) {
+	standard := ProxyDisplay("socks5h://operator:super-secret@proxy.example:1080")
+	if standard != "socks5h://operator:%2A%2A%2A@proxy.example:1080" && standard != "socks5h://operator:***@proxy.example:1080" {
+		t.Fatalf("standard proxy display = %q", standard)
+	}
+	if strings.Contains(standard, "super-secret") {
+		t.Fatalf("standard proxy display leaked password: %q", standard)
+	}
+	vless := "vless://123e4567-e89b-12d3-a456-426614174000@proxy.example:443?encryption=none&security=tls&sni=edge.example"
+	tunnel := ProxyDisplay(vless)
+	if tunnel != "vless://***@proxy.example:443" || strings.Contains(tunnel, "123e4567") {
+		t.Fatalf("tunnel proxy display = %q", tunnel)
+	}
+}
+
+func TestPublicNodeProxyMetadataIsStableAcrossEncryptionNonces(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(nil, cipher, "")
+	proxyURL := "http://user:secret@proxy.example:8080"
+	firstEncrypted, err := cipher.Encrypt(proxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEncrypted, err := cipher.Encrypt(proxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := service.publicNode(domain.Node{EncryptedProxyURL: firstEncrypted})
+	second := service.publicNode(domain.Node{EncryptedProxyURL: secondEncrypted})
+	if first.ProxyDisplay == "" || first.ProxyFingerprint == "" || first.ProxyFingerprint != second.ProxyFingerprint {
+		t.Fatalf("proxy metadata first=%#v second=%#v", first, second)
+	}
+	if strings.Contains(first.ProxyDisplay, "secret") {
+		t.Fatalf("proxy display leaked password: %q", first.ProxyDisplay)
+	}
+}
+
 func TestServiceRejectsRemovedAllScope(t *testing.T) {
 	service := &Service{}
 	_, err := service.applyInput(domain.Node{}, Input{Name: "legacy", Scope: domain.Scope("all"), Enabled: true}, true)

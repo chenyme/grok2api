@@ -26,6 +26,9 @@ var (
 	ErrQualityProbeUnavailable = errors.New("出口质量探测不可用")
 	ErrQualityProbeNoAccount   = errors.New("质量检测暂无可调度账号")
 	ErrClearanceUnavailable    = errors.New("Clearance 刷新不可用")
+	ErrProxyProfileUnavailable = errors.New("共享代理配置功能不可用")
+	ErrProxyProfileInUse       = errors.New("共享代理配置仍被节点使用")
+	ErrProxyProfileNotFound    = errors.New("共享代理配置不存在")
 )
 
 const (
@@ -84,10 +87,16 @@ type Input struct {
 	ProxyPool         *bool
 	AccountCapacity   *int
 	ProxyURL          *string
+	ProxyProfileID    *uint64
 	ClearProxyURL     bool
 	UserAgent         string
 	CloudflareCookies *string
 	ClearCookies      bool
+}
+
+type ProxyProfileInput struct {
+	Name     string
+	ProxyURL *string
 }
 
 type ListFilter struct {
@@ -105,6 +114,7 @@ type ServiceRepository interface {
 
 type Service struct {
 	repository                  ServiceRepository
+	proxyProfiles               repository.EgressProxyProfileRepository
 	accounts                    AccountBindingRepository
 	operations                  OperationsRepository
 	cipher                      *security.Cipher
@@ -221,9 +231,12 @@ type BatchClearanceManager interface {
 	ForgetClearances([]uint64)
 }
 
-func NewService(repository ServiceRepository, cipher *security.Cipher, browserUA string, accounts ...AccountBindingRepository) *Service {
-	service := &Service{repository: repository, cipher: cipher, browserUA: strings.TrimSpace(browserUA)}
-	if operations, ok := repository.(OperationsRepository); ok {
+func NewService(storage ServiceRepository, cipher *security.Cipher, browserUA string, accounts ...AccountBindingRepository) *Service {
+	service := &Service{repository: storage, cipher: cipher, browserUA: strings.TrimSpace(browserUA)}
+	if profiles, ok := storage.(repository.EgressProxyProfileRepository); ok {
+		service.proxyProfiles = profiles
+	}
+	if operations, ok := storage.(OperationsRepository); ok {
 		service.operations = operations
 	}
 	if len(accounts) > 0 {
@@ -323,11 +336,19 @@ func validListValue(value string, allowed ...string) bool {
 }
 
 func (s *Service) Create(ctx context.Context, input Input) (domain.PublicNode, error) {
+	var err error
+	input, err = s.resolveProxyProfile(ctx, 0, input)
+	if err != nil {
+		return domain.PublicNode{}, err
+	}
 	value, err := s.applyInput(domain.Node{}, input, true)
 	if err != nil {
 		return domain.PublicNode{}, err
 	}
 	created, err := s.repository.CreateEgressNode(ctx, value)
+	if errors.Is(err, repository.ErrEgressProxyProfileNotFound) {
+		return domain.PublicNode{}, ErrProxyProfileNotFound
+	}
 	if err == nil {
 		s.forgetClearance(created.ID)
 	}
@@ -339,6 +360,10 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 	if errors.Is(err, repository.ErrNotFound) {
 		return domain.PublicNode{}, ErrNotFound
 	}
+	if err != nil {
+		return domain.PublicNode{}, err
+	}
+	input, err = s.resolveProxyProfile(ctx, value.ProxyProfileID, input)
 	if err != nil {
 		return domain.PublicNode{}, err
 	}
@@ -356,10 +381,240 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 		}
 	}
 	updated, err := s.repository.UpdateEgressNode(ctx, value)
+	if errors.Is(err, repository.ErrEgressProxyProfileNotFound) {
+		return domain.PublicNode{}, ErrProxyProfileNotFound
+	}
 	if err == nil {
 		s.forgetClearance(updated.ID)
 	}
 	return s.publicNode(updated), err
+}
+
+// ProxyURL returns one administrator-selected secret without placing it in
+// ordinary list/detail payloads. HTTP handlers must mark the response no-store.
+func (s *Service) ProxyURL(ctx context.Context, id uint64) (string, error) {
+	value, err := s.repository.GetEgressNode(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(value.EncryptedProxyURL) == "" {
+		return "", fmt.Errorf("%w: 节点未配置代理地址", ErrInvalidInput)
+	}
+	proxyURL, err := s.cipher.Decrypt(value.EncryptedProxyURL)
+	if err != nil {
+		return "", err
+	}
+	return NormalizeProxyURL(proxyURL)
+}
+
+func (s *Service) ListProxyProfiles(ctx context.Context, page, pageSize int, search string) ([]domain.PublicProxyProfile, int64, error) {
+	if s.proxyProfiles == nil {
+		return nil, 0, ErrProxyProfileUnavailable
+	}
+	page, pageSize = repository.NormalizePage(page, pageSize, repository.DefaultPageSize)
+	values, total, err := s.proxyProfiles.ListEgressProxyProfiles(ctx, repository.PageQuery{
+		Offset: (page - 1) * pageSize,
+		Limit:  pageSize,
+		Search: strings.TrimSpace(search),
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	result := make([]domain.PublicProxyProfile, 0, len(values))
+	for _, value := range values {
+		result = append(result, s.publicProxyProfile(value))
+	}
+	return result, total, nil
+}
+
+func (s *Service) CreateProxyProfile(ctx context.Context, input ProxyProfileInput) (domain.PublicProxyProfile, error) {
+	if s.proxyProfiles == nil {
+		return domain.PublicProxyProfile{}, ErrProxyProfileUnavailable
+	}
+	name, proxyURL, err := validateProxyProfileInput(input, true)
+	if err != nil {
+		return domain.PublicProxyProfile{}, err
+	}
+	encrypted, err := s.cipher.Encrypt(proxyURL)
+	if err != nil {
+		return domain.PublicProxyProfile{}, err
+	}
+	created, err := s.proxyProfiles.CreateEgressProxyProfile(ctx, domain.ProxyProfile{Name: name, EncryptedProxyURL: encrypted})
+	return s.publicProxyProfile(created), err
+}
+
+func (s *Service) GetProxyProfile(ctx context.Context, id uint64) (domain.PublicProxyProfile, error) {
+	if s.proxyProfiles == nil {
+		return domain.PublicProxyProfile{}, ErrProxyProfileUnavailable
+	}
+	value, err := s.proxyProfiles.GetEgressProxyProfile(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
+		return domain.PublicProxyProfile{}, ErrProxyProfileNotFound
+	}
+	if err != nil {
+		return domain.PublicProxyProfile{}, err
+	}
+	return s.publicProxyProfile(value), nil
+}
+
+func (s *Service) UpdateProxyProfile(ctx context.Context, id uint64, input ProxyProfileInput) (domain.PublicProxyProfile, error) {
+	if s.proxyProfiles == nil {
+		return domain.PublicProxyProfile{}, ErrProxyProfileUnavailable
+	}
+	current, err := s.proxyProfiles.GetEgressProxyProfile(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
+		return domain.PublicProxyProfile{}, ErrProxyProfileNotFound
+	}
+	if err != nil {
+		return domain.PublicProxyProfile{}, err
+	}
+	name, proxyURL, err := validateProxyProfileInput(input, false)
+	if err != nil {
+		return domain.PublicProxyProfile{}, err
+	}
+	current.Name = name
+	proxyChanged := false
+	if input.ProxyURL != nil {
+		previous, decryptErr := s.cipher.Decrypt(current.EncryptedProxyURL)
+		if decryptErr != nil {
+			return domain.PublicProxyProfile{}, decryptErr
+		}
+		previous, decryptErr = NormalizeProxyURL(previous)
+		if decryptErr != nil {
+			return domain.PublicProxyProfile{}, decryptErr
+		}
+		proxyChanged = previous != proxyURL
+		if proxyChanged {
+			current.EncryptedProxyURL, err = s.cipher.Encrypt(proxyURL)
+			if err != nil {
+				return domain.PublicProxyProfile{}, err
+			}
+		}
+	}
+	updated, nodeIDs, err := s.proxyProfiles.UpdateEgressProxyProfile(ctx, current, proxyChanged)
+	if errors.Is(err, repository.ErrNotFound) {
+		return domain.PublicProxyProfile{}, ErrProxyProfileNotFound
+	}
+	if err != nil {
+		return domain.PublicProxyProfile{}, err
+	}
+	if proxyChanged {
+		s.forgetClearances(nodeIDs)
+	}
+	return s.publicProxyProfile(updated), nil
+}
+
+func (s *Service) DeleteProxyProfile(ctx context.Context, id uint64) error {
+	if s.proxyProfiles == nil {
+		return ErrProxyProfileUnavailable
+	}
+	err := s.proxyProfiles.DeleteEgressProxyProfile(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
+		return ErrProxyProfileNotFound
+	}
+	if errors.Is(err, repository.ErrEgressProxyProfileInUse) || errors.Is(err, repository.ErrConflict) {
+		return ErrProxyProfileInUse
+	}
+	return err
+}
+
+func (s *Service) ProxyProfileURL(ctx context.Context, id uint64) (string, error) {
+	if s.proxyProfiles == nil {
+		return "", ErrProxyProfileUnavailable
+	}
+	value, err := s.proxyProfiles.GetEgressProxyProfile(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
+		return "", ErrProxyProfileNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	proxyURL, err := s.cipher.Decrypt(value.EncryptedProxyURL)
+	if err != nil {
+		return "", err
+	}
+	return NormalizeProxyURL(proxyURL)
+}
+
+func validateProxyProfileInput(input ProxyProfileInput, create bool) (string, string, error) {
+	name := strings.TrimSpace(input.Name)
+	if name == "" || len(name) > 160 {
+		return "", "", fmt.Errorf("%w: 共享代理配置名称必须在 1 到 160 个字符之间", ErrInvalidInput)
+	}
+	if input.ProxyURL == nil {
+		if create {
+			return "", "", fmt.Errorf("%w: 代理地址必填", ErrInvalidInput)
+		}
+		return name, "", nil
+	}
+	proxyURL, err := NormalizeProxyURL(*input.ProxyURL)
+	if err != nil || proxyURL == "" {
+		if err == nil {
+			err = errors.New("代理地址不能为空")
+		}
+		return "", "", fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	return name, proxyURL, nil
+}
+
+func (s *Service) publicProxyProfile(value domain.ProxyProfile) domain.PublicProxyProfile {
+	result := domain.PublicProxyProfile{
+		ID: value.ID, Name: value.Name, BoundNodeCount: value.BoundNodeCount,
+		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
+	}
+	proxyURL, err := s.cipher.Decrypt(value.EncryptedProxyURL)
+	if err != nil {
+		return result
+	}
+	proxyURL, err = NormalizeProxyURL(proxyURL)
+	if err != nil || proxyURL == "" {
+		return result
+	}
+	result.ProxyDisplay = ProxyDisplay(proxyURL)
+	result.ProxyFingerprint = security.HashToken(proxyURL)[:12]
+	return result
+}
+
+func (s *Service) resolveProxyProfile(ctx context.Context, currentProfileID uint64, input Input) (Input, error) {
+	if input.ProxyProfileID == nil {
+		return input, nil
+	}
+	profileID := *input.ProxyProfileID
+	if profileID == 0 {
+		if input.ClearProxyURL {
+			return Input{}, fmt.Errorf("%w: 取消共享代理配置与清除代理不能同时操作", ErrInvalidInput)
+		}
+		return input, nil
+	}
+	if input.ProxyURL != nil || input.ClearProxyURL {
+		return Input{}, fmt.Errorf("%w: 使用共享代理配置时不能同时修改或清除代理地址", ErrInvalidInput)
+	}
+	if profileID == currentProfileID {
+		return input, nil
+	}
+	if s.proxyProfiles == nil {
+		return Input{}, ErrProxyProfileUnavailable
+	}
+	profile, err := s.proxyProfiles.GetEgressProxyProfile(ctx, profileID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return Input{}, fmt.Errorf("%w: 共享代理配置不存在", ErrInvalidInput)
+	}
+	if err != nil {
+		return Input{}, err
+	}
+	proxyURL, err := s.cipher.Decrypt(profile.EncryptedProxyURL)
+	if err != nil {
+		return Input{}, err
+	}
+	proxyURL, err = NormalizeProxyURL(proxyURL)
+	if err != nil || proxyURL == "" {
+		return Input{}, fmt.Errorf("%w: 共享代理配置的代理地址无效", ErrInvalidInput)
+	}
+	input.ProxyURL = &proxyURL
+	return input, nil
 }
 
 func (s *Service) validateFallbackNodeUpdate(ctx context.Context, node domain.Node) error {
@@ -731,7 +986,8 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	if input.ProxyPool != nil {
 		proxyPool = *input.ProxyPool
 	}
-	configurationChanged := create || value.Scope != input.Scope || value.ProxyPool != proxyPool || (!value.Enabled && input.Enabled) || input.ClearProxyURL || input.ProxyURL != nil
+	profileChanged := input.ProxyProfileID != nil && value.ProxyProfileID != *input.ProxyProfileID
+	configurationChanged := create || value.Scope != input.Scope || value.ProxyPool != proxyPool || (!value.Enabled && input.Enabled) || input.ClearProxyURL || input.ProxyURL != nil || profileChanged
 	name := strings.TrimSpace(input.Name)
 	if name == "" || len(name) > 160 {
 		return domain.Node{}, fmt.Errorf("%w: 名称必须在 1 到 160 个字符之间", ErrInvalidInput)
@@ -759,6 +1015,14 @@ func (s *Service) applyInput(value domain.Node, input Input, create bool) (domai
 	}
 	if len(value.UserAgent) > 512 {
 		return domain.Node{}, fmt.Errorf("%w: User-Agent 过长", ErrInvalidInput)
+	}
+	if input.ProxyProfileID != nil {
+		if value.SourceID != 0 && *input.ProxyProfileID != 0 {
+			return domain.Node{}, fmt.Errorf("%w: 订阅管理的节点不能绑定共享代理配置", ErrInvalidInput)
+		}
+		value.ProxyProfileID = *input.ProxyProfileID
+	} else if input.ClearProxyURL || input.ProxyURL != nil {
+		value.ProxyProfileID = 0
 	}
 	if input.ClearProxyURL {
 		value.EncryptedProxyURL = ""
@@ -822,7 +1086,7 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 	if value.Scope == domain.ScopeBuild {
 		userAgent = ""
 	}
-	accountBoundProxy := s.accountBoundProxy(value)
+	proxyDisplay, proxyFingerprint, accountBoundProxy := s.proxyMetadata(value.EncryptedProxyURL)
 	proxyPool := value.ProxyPool || accountBoundProxy
 	health, failureCount, cooldownUntil, lastError := value.Health, value.FailureCount, value.CooldownUntil, value.LastError
 	if proxyPool {
@@ -830,10 +1094,13 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 	}
 	return domain.PublicNode{
 		ID: value.ID, Name: value.Name, Scope: value.Scope, Enabled: value.Enabled,
-		ProxyConfigured: value.EncryptedProxyURL != "", UserAgent: userAgent, CookieConfigured: value.EncryptedCloudflareCookie != "",
+		ProxyConfigured: value.EncryptedProxyURL != "", ProxyDisplay: proxyDisplay, ProxyFingerprint: proxyFingerprint,
+		UserAgent: userAgent, CookieConfigured: value.EncryptedCloudflareCookie != "",
 		ProxyPool:         proxyPool,
 		SourceID:          value.SourceID,
 		AccountCapacity:   value.AccountCapacity,
+		ProxyProfileID:    value.ProxyProfileID,
+		ProxyProfileName:  value.ProxyProfileName,
 		AccountBoundProxy: accountBoundProxy,
 		Health:            health, FailureCount: failureCount, CooldownUntil: cooldownUntil, LastError: lastError,
 		ProbeStatus: value.ProbeStatus, LastProbedAt: value.LastProbedAt, ProbeLatencyMS: value.ProbeLatencyMS, ExitIP: value.ExitIP, ProbeError: value.ProbeError,
@@ -842,6 +1109,52 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 		AssignedAccountCount: value.AssignedAccountCount,
 		CreatedAt:            value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
+}
+
+func (s *Service) proxyMetadata(encrypted string) (string, string, bool) {
+	if s == nil || s.cipher == nil || strings.TrimSpace(encrypted) == "" {
+		return "", "", false
+	}
+	proxyURL, err := s.cipher.Decrypt(encrypted)
+	if err != nil {
+		return "", "", false
+	}
+	proxyURL, err = NormalizeProxyURL(proxyURL)
+	if err != nil || proxyURL == "" {
+		return "", "", false
+	}
+	return ProxyDisplay(proxyURL), security.HashToken(proxyURL)[:12], strings.Contains(proxyURL, ProxyAccountPlaceholder)
+}
+
+// ProxyDisplay preserves the routable endpoint and, for standard proxies, the
+// username, while ensuring passwords and tunnel credentials never enter list
+// responses. The short fingerprint lets operators identify duplicate physical
+// proxies without revealing the secret.
+func ProxyDisplay(proxyURL string) string {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return ""
+	}
+	if tunnelproxy.IsSupportedScheme(parsed.Scheme) {
+		config, parseErr := tunnelproxy.Parse(proxyURL)
+		if parseErr != nil {
+			return ""
+		}
+		return strings.ToLower(config.Scheme) + "://***@" + config.Server
+	}
+	if parsed.Host == "" {
+		return ""
+	}
+	if parsed.User != nil {
+		username := parsed.User.Username()
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			parsed.User = url.UserPassword(username, "***")
+		} else {
+			parsed.User = url.User(username)
+		}
+	}
+	parsed.Path, parsed.RawPath, parsed.RawQuery, parsed.Fragment = "", "", "", ""
+	return parsed.String()
 }
 
 func (s *Service) accountBoundProxy(value domain.Node) bool {

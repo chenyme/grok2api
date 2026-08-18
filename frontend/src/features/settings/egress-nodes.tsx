@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, CircleAlert, CircleHelp, Eye, EyeOff, MoreHorizontal, Network, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -19,7 +20,8 @@ import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHea
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressAutomation, EgressSources } from "@/features/settings/egress-operations";
-import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type ClearanceMode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { EgressProxyProfiles } from "@/features/settings/egress-proxy-profiles";
+import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, getEgressNodeProxyURL, getEgressProxyProfile, importEgressText, listEgressProxyProfiles, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type ClearanceMode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -38,6 +40,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<EgressNodeDTO | null | undefined>(undefined);
+  const [proxyVisible, setProxyVisible] = useState(false);
+  const [revealedProxyURL, setRevealedProxyURL] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [importForm, setImportForm] = useState<ImportForm>(emptyImport);
   const [form, setForm] = useState<EgressNodeInput>(emptyInput);
@@ -52,6 +56,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   const [selected, setSelected] = useState<Map<string, EgressNodeDTO>>(() => new Map());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [profileLibraryOpen, setProfileLibraryOpen] = useState(false);
+  const [profileLibraryCreate, setProfileLibraryCreate] = useState(false);
   const debouncedSearch = useDebouncedValue(search);
   const query = useQuery({
     queryKey: ["egress-nodes", "page", page, pageSize, debouncedSearch, scopeFilter, enabledFilter, probeFilter, assignmentFilter, sort.field, sort.order],
@@ -59,20 +65,33 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       page, pageSize, search: debouncedSearch, scope: scopeFilter as EgressScope | "", enabled: enabledFilter,
       probe: probeFilter, assignment: assignmentFilter, sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined,
     }),
-    refetchInterval: 2_000,
-    refetchIntervalInBackground: false,
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
   });
   const save = useMutation({
     mutationFn: () => {
+      const normalizedProxyURL = form.proxyURL?.trim() || "";
       const input = {
         ...form,
-        proxyURL: form.proxyURL?.trim() || undefined,
+        proxyURL: normalizedProxyURL && (!editing || normalizedProxyURL !== revealedProxyURL) ? normalizedProxyURL : undefined,
         userAgent: form.scope === "grok_build" ? "" : form.userAgent,
         cloudflareCookies: form.scope === "grok_build" ? undefined : form.cloudflareCookies?.trim() || undefined,
       };
       return editing ? updateEgressNode(editing.id, input) : createEgressNode(input);
     },
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); setEditing(undefined); toast.success(t("settings.egress.saved")); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); void queryClient.invalidateQueries({ queryKey: ["egress-proxy-profiles"] }); setEditing(undefined); toast.success(t("settings.egress.saved")); },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
+  const revealProxy = useMutation({
+    mutationFn: () => {
+      if (!editing) throw new Error(t("egressProxyProfiles.revealUnavailable"));
+      return getEgressNodeProxyURL(editing.id);
+    },
+    onSuccess: ({ proxyURL }) => {
+      setRevealedProxyURL(proxyURL);
+      setProxyVisible(true);
+      setForm((current) => ({ ...current, proxyURL }));
+    },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
   const importText = useMutation({
@@ -90,6 +109,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
         return next;
       });
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      void queryClient.invalidateQueries({ queryKey: ["egress-proxy-profiles"] });
       toast.success(t("settings.egress.deleted"));
     },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
@@ -102,6 +122,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       setSelected(new Map());
       setBatchDeleteOpen(false);
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      void queryClient.invalidateQueries({ queryKey: ["egress-proxy-profiles"] });
       toast.success(t("settings.egress.batchDeleted", value));
     },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
@@ -126,6 +147,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       setCleanupOpen(false);
       cleanupPreview.reset();
       void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] });
+      void queryClient.invalidateQueries({ queryKey: ["egress-proxy-profiles"] });
       toast.success(t("settings.egress.cleanupUnavailableComplete", value));
     },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
@@ -147,6 +169,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
 
   function openCreate() {
     setForm(emptyInput);
+    setProxyVisible(false);
+    setRevealedProxyURL("");
     setEditing(null);
   }
 
@@ -157,7 +181,9 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   }
 
   function openEdit(node: EgressNodeDTO) {
-    setForm({ name: node.name, scope: node.scope, enabled: node.enabled, proxyPool: node.proxyPool, accountCapacity: node.accountCapacity, userAgent: node.scope === "grok_build" ? "" : node.userAgent, proxyURL: "", cloudflareCookies: "" });
+    setForm({ name: node.name, scope: node.scope, enabled: node.enabled, proxyPool: node.proxyPool, accountCapacity: node.accountCapacity, proxyProfileId: node.proxyProfileId, userAgent: node.scope === "grok_build" ? "" : node.userAgent, proxyURL: "", cloudflareCookies: "" });
+    setProxyVisible(false);
+    setRevealedProxyURL("");
     setEditing(node);
   }
 
@@ -262,6 +288,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                     <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={batchPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
                   </>
                 ) : null}
+                <Button type="button" size="sm" variant="secondary" onClick={() => { setProfileLibraryCreate(false); setProfileLibraryOpen(true); }}><Network />{t("egressProxyProfiles.libraryTitle")}</Button>
+                <Button type="button" size="icon" variant="secondary" className="size-8" disabled={query.isFetching} onClick={() => void query.refetch()} aria-label={t("egressProxyProfiles.refreshNodes")} title={t("egressProxyProfiles.refreshNodes")}><RefreshCw className={cn(query.isFetching && "animate-spin")} /></Button>
                 <Button type="button" size="sm" variant="secondary" disabled={cleanupUnhealthy.isPending} onClick={openCleanup}><Trash2 />{t("settings.egress.cleanupUnavailable")}</Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild><Button type="button" size="sm" variant="secondary"><Plus />{t("settings.egress.add")}</Button></DropdownMenuTrigger>
@@ -276,8 +304,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
           footer={query.data && query.data.total > 0 ? <Pagination page={query.data.page} pageSize={query.data.pageSize} total={query.data.total} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} /> : undefined}
         >
           {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : null}
-          {!query.isError ? <Table viewportRows={10} rowHeight={48} className="min-w-[800px] table-fixed">
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-10 px-2"><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} disabled={nodes.length === 0} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead><SortableTableHead className="w-18" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-24" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-16" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="w-28" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-14 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-24" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="w-52"><div className="flex items-center justify-center gap-1"><span>{t("settings.egress.probe")}</span><Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.probeHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80">{t("settings.egress.probeHelp")}</TooltipContent></Tooltip></div></TableHead><TableActionHead /></TableRow></TableHeader>
+          {!query.isError ? <Table viewportRows={10} rowHeight={48} className="min-w-[920px] table-fixed">
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-10 px-2"><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} disabled={nodes.length === 0} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead><SortableTableHead className="w-18" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-24" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-44" field="proxy" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="w-28" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-14 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-24" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="w-52"><div className="flex items-center justify-center gap-1"><span>{t("settings.egress.probe")}</span><Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.probeHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80">{t("settings.egress.probeHelp")}</TooltipContent></Tooltip></div></TableHead><TableActionHead /></TableRow></TableHeader>
           {query.isPending ? <TableBody><TableLoadingRow colSpan={9} /></TableBody> : null}
           {!query.isPending && nodes.length === 0 ? <TableBody><TableRow><TableCell colSpan={9} className="h-24 text-center text-xs text-muted-foreground">{hasActiveFilters ? t("settings.egress.noMatches") : t("settings.egress.directFallback")}</TableCell></TableRow></TableBody> : null}
           {!query.isPending && nodes.length > 0 ? <VirtualTableBody items={nodes} colSpan={9} rowHeight={48} renderRow={(node) => (
@@ -291,7 +319,9 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                   </div>
                 </TableCell>
                 <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(node.scope)}</Badge></TableCell>
-                <TableCell className="text-center"><Badge variant={node.proxyConfigured ? "secondary" : "outline"} className={cn("text-[10px]", node.proxyConfigured ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground")}>{node.proxyConfigured ? t("settings.egress.configured") : t("settings.egress.direct")}</Badge></TableCell>
+                <TableCell>
+                  {node.proxyConfigured ? <div className="min-w-0" title={`${node.proxyDisplay || t("settings.egress.configured")} · ${node.proxyProfileName || node.proxyFingerprint || ""}`}><p className="truncate text-xs font-medium">{node.proxyDisplay || t("settings.egress.configured")}</p>{node.proxyProfileId ? <p className="truncate text-[10px] text-muted-foreground">{node.proxyProfileName || `#${node.proxyFingerprint}`}</p> : node.proxyFingerprint ? <p className="font-mono text-[10px] text-muted-foreground">#{node.proxyFingerprint}</p> : null}</div> : <Badge variant="outline" className="text-[10px] text-muted-foreground">{t("settings.egress.direct")}</Badge>}
+                </TableCell>
                 <TableCell className="text-center"><ClearanceBadge node={node} clearanceMode={clearanceMode} /></TableCell>
                 <TableCell className="text-center text-xs tabular-nums"><span className="font-medium">{node.assignedAccountCount}</span>{node.accountCapacity > 0 ? <span className="text-muted-foreground"> / {node.accountCapacity}</span> : null}</TableCell>
                 <TableCell><HealthMeter value={node.health} /></TableCell>
@@ -405,18 +435,31 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                 </Badge>
               </div>
             ) : null}
+            {!editing?.sourceId ? <Field label={t("egressProxyProfiles.assignment")} controlId="egress-proxy-profile" help={t("egressProxyProfiles.assignmentHelp")}>
+              <ProxyProfilePicker value={form.proxyProfileId && form.proxyProfileId !== "0" ? form.proxyProfileId : "manual"} onChange={(value) => {
+                setProxyVisible(false);
+                setRevealedProxyURL("");
+                setForm({ ...form, proxyProfileId: value === "manual" ? (editing?.proxyProfileId ? "0" : undefined) : value, proxyURL: "" });
+              }} onCreate={() => { setProfileLibraryCreate(true); setProfileLibraryOpen(true); }} />
+            </Field> : null}
             <Field label={t("settings.egress.proxyURL")} controlId="egress-proxy" help={t("settings.egress.proxyProtocols")}>
-              <Input id="egress-proxy" type="password" autoComplete="new-password" placeholder={editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => {
+              <div className="flex gap-2">
+              <Input id="egress-proxy" type={proxyVisible ? "text" : "password"} autoComplete="new-password" disabled={Boolean(form.proxyProfileId && form.proxyProfileId !== "0")} placeholder={form.proxyProfileId && form.proxyProfileId !== "0" ? t("egressProxyProfiles.managedByProfile") : editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => {
                 const proxyURL = event.target.value;
-                setForm({ ...form, proxyURL, proxyPool: editing?.proxyConfigured || proxyURL.trim() ? form.proxyPool : false });
+                setForm({ ...form, proxyURL, proxyProfileId: editing?.proxyProfileId ? "0" : undefined, proxyPool: editing?.proxyConfigured || proxyURL.trim() ? form.proxyPool : false });
               }} />
+              {editing?.proxyConfigured ? <Button type="button" variant="outline" size="icon" className="shrink-0" disabled={revealProxy.isPending || Boolean(form.proxyProfileId && form.proxyProfileId !== "0")} aria-label={t(proxyVisible ? "egressProxyProfiles.hide" : "egressProxyProfiles.reveal")} onClick={() => {
+                if (revealedProxyURL) setProxyVisible((visible) => !visible);
+                else revealProxy.mutate();
+              }}>{revealProxy.isPending ? <Spinner /> : proxyVisible ? <EyeOff /> : <Eye />}</Button> : null}
+              </div>
             </Field>
             <div className="flex items-start justify-between gap-4 rounded-md bg-muted/45 px-3 py-2.5">
               <div className="space-y-1">
                 <Label htmlFor="egress-proxy-pool">{t("settings.egress.proxyPool")}</Label>
                 <p className="max-w-[390px] text-xs leading-5 text-muted-foreground">{t("settings.egress.proxyPoolHelp")}</p>
               </div>
-              <Switch id="egress-proxy-pool" className="mt-0.5" checked={form.proxyPool} disabled={!editing?.proxyConfigured && !form.proxyURL?.trim()} onCheckedChange={(proxyPool) => setForm({ ...form, proxyPool })} />
+              <Switch id="egress-proxy-pool" className="mt-0.5" checked={form.proxyPool} disabled={!editing?.proxyConfigured && !form.proxyURL?.trim() && !form.proxyProfileId} onCheckedChange={(proxyPool) => setForm({ ...form, proxyPool })} />
             </div>
             {form.scope !== "grok_build" && (clearanceMode === "manual" || form.scope === "grok_console_asset") ? (
               <Field label={t("settings.egress.userAgent")} controlId="egress-user-agent">
@@ -461,7 +504,90 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
           </form>
         </DialogContent>
       </Dialog>
+
+      {profileLibraryOpen ? <EgressProxyProfiles
+        key={profileLibraryCreate ? "create" : "manage"}
+        open={profileLibraryOpen}
+        startCreating={profileLibraryCreate}
+        onOpenChange={(open) => { setProfileLibraryOpen(open); if (!open) setProfileLibraryCreate(false); }}
+        onCreated={(profile) => {
+          if (!profileLibraryCreate || editing === undefined) return;
+          setProxyVisible(false);
+          setRevealedProxyURL("");
+          setForm((current) => ({ ...current, proxyProfileId: profile.id, proxyURL: "" }));
+          setProfileLibraryOpen(false);
+          setProfileLibraryCreate(false);
+        }}
+      /> : null}
     </div>
+  );
+}
+
+function ProxyProfilePicker({ value, onChange, onCreate }: { value: string; onChange: (value: string) => void; onCreate: () => void }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const debouncedSearch = useDebouncedValue(search);
+  const pageSize = 20;
+  const profiles = useQuery({
+    queryKey: ["egress-proxy-profiles", "picker", page, debouncedSearch],
+    queryFn: () => listEgressProxyProfiles({ page, pageSize, search: debouncedSearch }),
+    enabled: open,
+    staleTime: 30_000,
+  });
+  const selected = useQuery({
+    queryKey: ["egress-proxy-profiles", "selected", value],
+    queryFn: () => getEgressProxyProfile(value),
+    enabled: value !== "manual",
+    staleTime: 30_000,
+  });
+  const selectedLabel = value === "manual"
+    ? t("egressProxyProfiles.independent")
+    : selected.data
+      ? `${selected.data.name} · ${selected.data.proxyDisplay || "—"}`
+      : selected.isError
+        ? t("egressProxyProfiles.selectionUnavailable", { id: value })
+        : t("egressProxyProfiles.loadingSelection");
+  const pages = Math.max(1, Math.ceil((profiles.data?.total ?? 0) / pageSize));
+
+  function choose(next: string) {
+    onChange(next);
+    setOpen(false);
+  }
+
+  return (
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) setPage(1); }}>
+      <PopoverTrigger asChild>
+        <Button id="egress-proxy-profile" type="button" variant="outline" role="combobox" aria-expanded={open} className="w-full justify-between px-3 font-normal">
+          <span className="truncate text-left">{selectedLabel}</span>
+          <ChevronsUpDown className="ml-2 size-4 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input type="search" autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" className="h-8 pl-8 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={t("egressProxyProfiles.search")} aria-label={t("egressProxyProfiles.search")} />
+        </div>
+        <div className="mt-2 max-h-56 space-y-0.5 overflow-y-auto overscroll-contain" role="listbox" aria-label={t("egressProxyProfiles.assignment")}>
+          <button type="button" role="option" aria-selected={value === "manual"} className={cn("flex min-h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-accent", value === "manual" && "bg-accent/60")} onClick={() => choose("manual")}>
+            <Check className={cn("size-3.5 shrink-0", value !== "manual" && "invisible")} />
+            <span className="truncate">{t("egressProxyProfiles.independent")}</span>
+          </button>
+          {profiles.isPending ? <div className="flex min-h-16 items-center justify-center"><Spinner /></div> : null}
+          {profiles.isError ? <p className="p-3 text-center text-xs text-destructive">{profiles.error.message}</p> : null}
+          {!profiles.isPending && !profiles.isError && profiles.data?.items.length === 0 ? <p className="p-3 text-center text-xs text-muted-foreground">{t("egressProxyProfiles.noMatches")}</p> : null}
+          {profiles.data?.items.map((profile) => <button key={profile.id} type="button" role="option" aria-selected={value === profile.id} className={cn("flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left hover:bg-accent", value === profile.id && "bg-accent/60")} onClick={() => choose(profile.id)}>
+            <Check className={cn("size-3.5 shrink-0", value !== profile.id && "invisible")} />
+            <span className="min-w-0 flex-1"><span className="block truncate text-xs font-medium">{profile.name}</span><span className="block truncate text-[11px] text-muted-foreground">{profile.proxyDisplay || "—"} · {t("egressProxyProfiles.nodeCount", { count: profile.boundNodeCount })}</span></span>
+          </button>)}
+        </div>
+        {profiles.data && profiles.data.total > pageSize ? <div className="mt-2 flex h-8 items-center justify-between border-t px-1 pt-2"><span className="text-[11px] text-muted-foreground">{t("common.pageOf", { page, pages })}</span><div className="flex gap-0.5"><Button type="button" variant="ghost" size="icon" className="size-7" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label={t("common.previousPage")}><ChevronLeft /></Button><Button type="button" variant="ghost" size="icon" className="size-7" disabled={page >= pages} onClick={() => setPage(page + 1)} aria-label={t("common.nextPage")}><ChevronRight /></Button></div></div> : null}
+        <div className="mt-2 border-t pt-2">
+          <Button type="button" variant="ghost" size="sm" className="w-full justify-start text-muted-foreground" onClick={() => { setOpen(false); onCreate(); }}><Plus />{t("egressProxyProfiles.createFromPicker")}</Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

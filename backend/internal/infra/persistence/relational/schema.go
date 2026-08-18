@@ -19,10 +19,13 @@ const mediaJobInputMetadataPendingIndex = "CREATE INDEX IF NOT EXISTS idx_media_
 
 const postgresSchemaMigrationLockID int64 = 0x47524f4b32415049
 
+const standaloneProxyProfileMigrationBatchSize = 100
+
 var schemaModels = []any{
 	&adminModel{},
 	&adminSessionModel{},
 	&egressSubscriptionSourceModel{},
+	&egressProxyProfileModel{},
 	&egressNodeModel{},
 	&egressOperationsConfigModel{},
 	&accountModel{},
@@ -84,6 +87,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_billing_reservations_expiry ON billing_reservations(expires_at, client_key_id)",
 	"CREATE INDEX IF NOT EXISTS idx_egress_nodes_scope_health ON egress_nodes(scope, enabled, health DESC, id ASC)",
 	"CREATE INDEX IF NOT EXISTS idx_egress_nodes_probe_due ON egress_nodes(enabled, last_probed_at, id)",
+	"CREATE INDEX IF NOT EXISTS idx_egress_nodes_proxy_profile ON egress_nodes(proxy_profile_id, id)",
 	"CREATE INDEX IF NOT EXISTS idx_egress_sources_scope_name ON egress_subscription_sources(scope, LOWER(name), id)",
 	"CREATE INDEX IF NOT EXISTS idx_audits_created_id ON request_audits(created_at DESC, id DESC)",
 	"CREATE UNIQUE INDEX IF NOT EXISTS idx_audits_event_id ON request_audits(event_id) WHERE event_id <> ''",
@@ -157,6 +161,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 			return fmt.Errorf("迁移代理订阅拉取代理: %w", err)
 		}
 	}
+	if err := d.migrateStandaloneEgressProxyProfiles(ctx); err != nil {
+		return fmt.Errorf("迁移独立出口代理配置: %w", err)
+	}
 	if err := d.migrateClientKeyAccountScopes(ctx, hadLegacyAccountPool, !hadProviderScope, !hadTierScope); err != nil {
 		return fmt.Errorf("迁移客户端 Key 调用范围: %w", err)
 	}
@@ -228,6 +235,84 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 		return fmt.Errorf("迁移模型 Provider 命名空间: %w", err)
 	}
 	return nil
+}
+
+// migrateStandaloneEgressProxyProfiles promotes existing manually managed
+// node proxies to reusable configurations exactly once. Subscription-managed
+// nodes keep their source-owned proxy lifecycle.
+func (d *Database) migrateStandaloneEgressProxyProfiles(ctx context.Context) error {
+	for {
+		completed, err := d.migrateStandaloneEgressProxyProfileBatch(ctx)
+		if err != nil {
+			return err
+		}
+		if completed {
+			return nil
+		}
+	}
+}
+
+// migrateStandaloneEgressProxyProfileBatch keeps each resumable unit bounded.
+// Already-bound rows are excluded by the predicate, so a process restart can
+// safely continue without duplicating completed work.
+func (d *Database) migrateStandaloneEgressProxyProfileBatch(ctx context.Context) (bool, error) {
+	completed := false
+	err := d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		config, err := lockEgressOperationsConfig(tx)
+		if err != nil {
+			return err
+		}
+		if config.ProxyProfileMigrationCompleted {
+			completed = true
+			return nil
+		}
+		var nodes []egressNodeModel
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("source_id IS NULL AND proxy_profile_id IS NULL AND encrypted_proxy_url <> ''").
+			Order("id ASC").Limit(standaloneProxyProfileMigrationBatchSize).Find(&nodes).Error; err != nil {
+			return err
+		}
+		if len(nodes) == 0 {
+			completed = true
+			return tx.Model(&egressOperationsConfigModel{}).Where("id = ?", config.ID).
+				Update("proxy_profile_migration_completed", true).Error
+		}
+		for _, node := range nodes {
+			suffix := fmt.Sprintf(" · %s #%d", migratedProxyProfileScopeName(node.Scope), node.ID)
+			name := truncate(strings.TrimSpace(node.Name), max(1, 160-len([]rune(suffix)))) + suffix
+			profile := egressProxyProfileModel{Name: name, EncryptedProxyURL: node.EncryptedProxyURL}
+			if err := tx.Create(&profile).Error; err != nil {
+				return err
+			}
+			result := tx.Model(&egressNodeModel{}).Where("id = ? AND proxy_profile_id IS NULL", node.ID).
+				Update("proxy_profile_id", profile.ID)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return fmt.Errorf("bind migrated proxy profile for egress node %d: row changed concurrently", node.ID)
+			}
+		}
+		return nil
+	})
+	return completed, err
+}
+
+func migratedProxyProfileScopeName(scope string) string {
+	switch scope {
+	case "grok_build":
+		return "Grok Build"
+	case "grok_web":
+		return "Grok Web"
+	case "grok_console":
+		return "Grok Console"
+	case "grok_web_asset":
+		return "Grok Web Assets"
+	case "grok_console_asset":
+		return "Grok Console Assets"
+	default:
+		return scope
+	}
 }
 
 func (d *Database) migratePerSourceSubscriptionProxy(ctx context.Context) error {
