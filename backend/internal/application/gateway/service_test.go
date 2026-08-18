@@ -4273,6 +4273,7 @@ func TestAuditRequestSucceeded(t *testing.T) {
 		{name: "2xx without error succeeds", statusCode: 200, errorCode: "", want: true},
 		{name: "2xx stream interruption fails", statusCode: 200, errorCode: "upstream_stream_interrupted", want: false},
 		{name: "2xx stream incomplete fails", statusCode: 200, errorCode: "upstream_stream_incomplete", want: false},
+		{name: "2xx stream idle timeout fails", statusCode: 200, errorCode: "upstream_stream_idle_timeout", want: false},
 		{name: "any 2xx error fails", statusCode: 201, errorCode: "stream_interrupted", want: false},
 		{name: "4xx fails", statusCode: 404, errorCode: "upstream_error", want: false},
 		{name: "5xx fails", statusCode: 502, errorCode: "upstream_server_error", want: false},
@@ -4283,5 +4284,17 @@ func TestAuditRequestSucceeded(t *testing.T) {
 				t.Fatalf("auditRequestSucceeded(%d, %q) = %t, want %t", tc.statusCode, tc.errorCode, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsUpstreamStreamFailureIncludesIdleTimeout(t *testing.T) {
+	if !isUpstreamStreamFailure("upstream_stream_idle_timeout") {
+		t.Fatal("idle timeout must cool the hanging account")
+	}
+	if !isUpstreamStreamFailure("upstream_stream_interrupted") || !isUpstreamStreamFailure("upstream_stream_incomplete") {
+		t.Fatal("existing stream-failure codes must stay classified")
+	}
+	if isUpstreamStreamFailure("") || isUpstreamStreamFailure("quality_degraded") {
+		t.Fatal("non-stream codes must not look like mid-stream failures")
 	}
 }

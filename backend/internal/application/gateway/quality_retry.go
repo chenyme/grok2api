@@ -13,6 +13,7 @@ import (
 	inferencedomain "github.com/chenyme/grok2api/backend/internal/domain/inference"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
+	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
 const (
@@ -99,6 +100,8 @@ func (s *Service) qualityRetryConfig() QualityRetryRuntime {
 // Thinking (or reasoning tokens) always delivers. A finished or expired
 // sample with enough visible output and no reasoning is 降智 and withheld.
 // Short replies below minOutput are delivered so "ok"/"yes" is not retried.
+// A hold timeout with no visible output is not fail-open: keep waiting for
+// more bytes or a stream abort so an empty hang is not flushed as HTTP 200.
 func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdict {
 	if minOutput <= 0 {
 		minOutput = defaultQualityMinOutput
@@ -121,9 +124,48 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 		return QualityWithhold
 	}
 	if sig.HoldExpired {
+		if output <= 0 {
+			return QualityWait
+		}
 		return QualityDeliver
 	}
 	return QualityWait
+}
+
+// qualityPeekAbortError prefers the idle-timeout cause over a plain
+// context.Canceled so the attempt loop can retry instead of treating the
+// abort as a client 499.
+func qualityPeekAbortError(ctx context.Context, err error) error {
+	if ctx != nil {
+		if cause := context.Cause(ctx); neterrorpkg.IsUpstreamStreamIdleTimeout(cause) {
+			return cause
+		}
+	}
+	if neterrorpkg.IsUpstreamStreamIdleTimeout(err) {
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if ctx != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// isClientRequestCancel reports a real client disconnect. Upstream idle
+// timeouts cancel the same context and must not be classified as 499.
+func isClientRequestCancel(ctx context.Context, err error) bool {
+	if neterrorpkg.IsUpstreamStreamIdleTimeout(err) {
+		return false
+	}
+	if ctx != nil && neterrorpkg.IsUpstreamStreamIdleTimeout(context.Cause(ctx)) {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled)
 }
 
 // DecideQualityRetry caps withhold recovery at maxAttempts (default 6:

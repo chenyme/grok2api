@@ -1333,8 +1333,62 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 			if inspector.terminalSuccess {
 				return inspector.Metadata(), nil
 			}
+			if trailer := streamAbortTrailer(protocol, readErr); len(trailer) > 0 {
+				if transferred+len(trailer) <= maxStreamResponseTransferBytes {
+					if err := setResponseWriteDeadline(writer); err == nil {
+						if _, err := writer.Write(trailer); err == nil {
+							writer.Flush()
+						}
+					}
+				}
+			}
 			return inspector.Metadata(), fmt.Errorf("%w: %w", errUpstreamStreamRead, readErr)
 		}
+	}
+}
+
+func streamAbortTrailer(protocol streamProtocol, cause error) []byte {
+	code, message := "upstream_stream_interrupted", "上游流式响应中断"
+	if errors.Is(cause, neterror.ErrUpstreamStreamIdleTimeout) {
+		code, message = "upstream_stream_idle_timeout", "上游流式响应长时间无数据"
+	}
+	switch protocol {
+	case streamProtocolChat:
+		payload, err := json.Marshal(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"code":    code,
+				"message": message,
+				"type":    "server_error",
+			},
+		})
+		if err != nil {
+			return []byte("data: [DONE]\n\n")
+		}
+		return []byte("data: " + string(payload) + "\n\ndata: [DONE]\n\n")
+	case streamProtocolResponses:
+		payload, err := json.Marshal(map[string]any{
+			"type": "response.incomplete",
+			"response": map[string]any{
+				"status": "incomplete",
+				"error":  map[string]any{"code": code, "message": message},
+			},
+		})
+		if err != nil {
+			return nil
+		}
+		return []byte("data: " + string(payload) + "\n\n")
+	case streamProtocolAnthropic:
+		payload, err := json.Marshal(map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": "api_error", "message": message},
+		})
+		if err != nil {
+			return nil
+		}
+		return []byte("event: error\ndata: " + string(payload) + "\n\n")
+	default:
+		return nil
 	}
 }
 

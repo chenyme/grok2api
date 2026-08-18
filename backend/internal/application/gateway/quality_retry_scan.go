@@ -380,10 +380,12 @@ func peekQualityStream(ctx context.Context, body io.ReadCloser, protocol string,
 		select {
 		case <-ctx.Done():
 			_ = pump.Close()
-			return io.NopCloser(bytes.NewReader(held.Bytes())), QualityDeliver, state.usage, state.responseID, ctx.Err()
+			return io.NopCloser(bytes.NewReader(held.Bytes())), QualityWait, state.usage, state.responseID, qualityPeekAbortError(ctx, ctx.Err())
 		case <-holdTimer.C:
 			sig.HoldExpired = true
-			return newPrefixReplay(&held, pump), ClassifyQualityHold(sig, cfg.MinOutputTokens), state.usage, state.responseID, nil
+			if verdict := ClassifyQualityHold(sig, cfg.MinOutputTokens); verdict != QualityWait {
+				return newPrefixReplay(&held, pump), verdict, state.usage, state.responseID, nil
+			}
 		case result, ok := <-pump.results:
 			if !ok {
 				state.terminal = true
@@ -403,7 +405,7 @@ func peekQualityStream(ctx context.Context, body io.ReadCloser, protocol string,
 			}
 			if result.err != nil {
 				_ = pump.Close()
-				return io.NopCloser(bytes.NewReader(held.Bytes())), QualityDeliver, state.usage, state.responseID, result.err
+				return io.NopCloser(bytes.NewReader(held.Bytes())), QualityWait, state.usage, state.responseID, qualityPeekAbortError(ctx, result.err)
 			}
 		}
 	}

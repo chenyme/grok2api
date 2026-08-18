@@ -20,6 +20,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
+	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
 func TestClassifyQualityHold(t *testing.T) {
@@ -37,6 +38,8 @@ func TestClassifyQualityHold(t *testing.T) {
 		{name: "midstream enough content withhold", sig: QualityStreamSignals{VisibleTokens: 64}, want: QualityWithhold},
 		{name: "wait for more", sig: QualityStreamSignals{VisibleTokens: 8}, want: QualityWait},
 		{name: "hold expired short delivers", sig: QualityStreamSignals{VisibleTokens: 8, HoldExpired: true}, want: QualityDeliver},
+		{name: "hold expired empty waits", sig: QualityStreamSignals{HoldExpired: true}, want: QualityWait},
+		{name: "hold expired zero tokens waits", sig: QualityStreamSignals{VisibleTokens: 0, OutputTokens: 0, HoldExpired: true}, want: QualityWait},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -422,51 +425,55 @@ func TestPeekQualityStreamHoldTimeoutInterruptsBlockedReadAndPreservesRemainder(
 	}
 }
 
-func TestPeekQualityStreamHoldTimeoutCoversBlockedFirstByte(t *testing.T) {
+func TestPeekQualityStreamHoldTimeoutEmptyDoesNotFailOpen(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
 	reader, writer := io.Pipe()
-	continueWrite := make(chan struct{})
-	writeErr := make(chan error, 1)
+	defer writer.Close()
+	done := make(chan struct{})
+	var verdict QualityVerdict
+	var peekErr error
 	go func() {
-		select {
-		case <-continueWrite:
-		case <-time.After(500 * time.Millisecond):
-		}
-		_, err := io.WriteString(writer, sse(
-			`data: {"choices":[{"delta":{"content":"late first byte"}}]}`,
-			"data: [DONE]",
-		))
-		if closeErr := writer.Close(); err == nil {
-			err = closeErr
-		}
-		writeErr <- err
+		defer close(done)
+		_, verdict, _, _, peekErr = peekQualityStream(ctx, reader, qualityProtocolChat, QualityRetryRuntime{
+			MinOutputTokens: 32,
+			HoldTimeout:     20 * time.Millisecond,
+		})
 	}()
+	select {
+	case <-done:
+		t.Fatal("empty hold timeout must keep reading, not fail-open")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel(neterrorpkg.ErrUpstreamStreamIdleTimeout)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("peekQualityStream did not return after idle cancel")
+	}
+	if !neterrorpkg.IsUpstreamStreamIdleTimeout(peekErr) {
+		t.Fatalf("peekErr = %v, want idle timeout", peekErr)
+	}
+	if verdict != QualityWait {
+		t.Fatalf("verdict=%s, want wait so the loop does not fail-open", verdict)
+	}
+}
 
-	started := time.Now()
-	replay, verdict, _, _, err := peekQualityStream(context.Background(), reader, qualityProtocolChat, QualityRetryRuntime{
-		MinOutputTokens: 32,
-		HoldTimeout:     30 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestQualityPeekAbortErrorPrefersIdleCause(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(neterrorpkg.ErrUpstreamStreamIdleTimeout)
+	got := qualityPeekAbortError(ctx, context.Canceled)
+	if !neterrorpkg.IsUpstreamStreamIdleTimeout(got) {
+		t.Fatalf("abort error = %v, want idle timeout", got)
 	}
-	defer replay.Close()
-	close(continueWrite)
-	if elapsed := time.Since(started); elapsed < 20*time.Millisecond || elapsed > 200*time.Millisecond {
-		t.Fatalf("first-byte hold returned after %s, want the 30ms timeout", elapsed)
+	if isClientRequestCancel(ctx, got) {
+		t.Fatal("idle timeout must not look like a client cancel")
 	}
-	if verdict != QualityDeliver {
-		t.Fatalf("empty timed-out prefix verdict = %s", verdict)
-	}
-	body, err := io.ReadAll(replay)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := <-writeErr; err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(body), "late first byte") {
-		t.Fatalf("replay lost post-timeout first byte: %q", body)
+	plain, plainCancel := context.WithCancel(context.Background())
+	plainCancel()
+	if !isClientRequestCancel(plain, context.Canceled) {
+		t.Fatal("plain cancel must still be a client cancel")
 	}
 }
 

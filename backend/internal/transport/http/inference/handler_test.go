@@ -18,8 +18,15 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	mediadomain "github.com/chenyme/grok2api/backend/internal/domain/media"
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/gin-gonic/gin"
 )
+
+type idleErrorReader struct{}
+
+func (idleErrorReader) Read([]byte) (int, error) {
+	return 0, neterror.ErrUpstreamStreamIdleTimeout
+}
 
 type chunkErrorReader struct {
 	data []byte
@@ -967,8 +974,41 @@ func TestCopyStreamPreservesBufferedTailOnReadError(t *testing.T) {
 	if !errors.Is(err, errUpstreamStreamRead) {
 		t.Fatalf("copy error = %v", err)
 	}
-	if !bytes.Equal(recorder.Body.Bytes(), body) {
-		t.Fatalf("interrupted body = %q, want %q", recorder.Body.Bytes(), body)
+	got := recorder.Body.Bytes()
+	if !bytes.HasPrefix(got, body) {
+		t.Fatalf("interrupted body prefix = %q, want %q", got, body)
+	}
+	if !bytes.Contains(got, []byte(`"code":"upstream_stream_interrupted"`)) || !bytes.Contains(got, []byte("data: [DONE]")) {
+		t.Fatalf("interrupted body missing terminal SSE: %q", got)
+	}
+}
+
+func TestCopyStreamWritesTerminalOnIdleTimeout(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name     string
+		protocol streamProtocol
+		want     []string
+	}{
+		{name: "chat", protocol: streamProtocolChat, want: []string{`"code":"upstream_stream_idle_timeout"`, "data: [DONE]"}},
+		{name: "responses", protocol: streamProtocolResponses, want: []string{`"type":"response.incomplete"`, `"code":"upstream_stream_idle_timeout"`}},
+		{name: "anthropic", protocol: streamProtocolAnthropic, want: []string{`"type":"error"`, "上游流式响应长时间无数据"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			_, err := copyStream(context.Writer, &idleErrorReader{}, test.protocol, nil)
+			if !errors.Is(err, errUpstreamStreamRead) || !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) {
+				t.Fatalf("copy error = %v", err)
+			}
+			got := recorder.Body.String()
+			for _, fragment := range test.want {
+				if !strings.Contains(got, fragment) {
+					t.Fatalf("body %q missing %q", got, fragment)
+				}
+			}
+		})
 	}
 }
 
