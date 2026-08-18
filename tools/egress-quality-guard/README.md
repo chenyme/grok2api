@@ -185,6 +185,11 @@ After changing the base `qualityGuard` settings in `config.yaml`, run
 so the main service regenerates the bootstrap. Policy changes saved in the
 admin page still hot-reload without a restart.
 
+The sidecar talks to grok2api at `GROK2API_BASE_URL`, which defaults to
+`http://grok2api:8000` on the Compose network. Set it when the main service is
+renamed or published on host networking, for example
+`GROK2API_BASE_URL=http://127.0.0.1:8000`.
+
 Verify the managed nodes, model, and minimum healthy-node count before leaving
 the sidecar running. Never commit the state volume or
 production logs.

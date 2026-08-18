@@ -1,6 +1,7 @@
 const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 const compactDateTimeFormatters = new Map<string, Intl.DateTimeFormat>();
 const numberFormatters = new Map<string, Intl.NumberFormat>();
+const tokenMillionFormatters = new Map<string, Intl.NumberFormat>();
 
 export function formatDateTime(value: string | null | undefined, locale: string): string {
   if (!value) {
@@ -50,6 +51,18 @@ export function formatNumber(value: number, locale: string, maximumFractionDigit
     numberFormatters.set(key, formatter);
   }
   return formatter.format(value);
+}
+
+/** Uses M for large token counts while keeping small values readable. */
+export function formatTokenMillions(value: number, locale: string): string {
+  const normalized = Number.isFinite(value) ? Math.max(0, value) : 0;
+  if (normalized < 1_000) return formatNumber(normalized, locale, 0);
+  let formatter = tokenMillionFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(locale, { maximumSignificantDigits: 3 });
+    tokenMillionFormatters.set(locale, formatter);
+  }
+  return `${formatter.format(normalized / 1_000_000)}M`;
 }
 
 export function formatDuration(milliseconds: number): string {

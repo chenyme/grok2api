@@ -227,6 +227,18 @@ type RoutingConfig struct {
 	ReasoningReplayEnabled      bool     `yaml:"reasoningReplayEnabled"`
 	ReasoningReplayTTL          Duration `yaml:"reasoningReplayTTL"`
 	ReasoningReplayMaxEntries   int      `yaml:"reasoningReplayMaxEntries"`
+	// AutoAssignMaxNodeShare optionally caps how many active accounts one
+	// healthy node may absorb during auto assignment. 0 keeps the historical
+	// unbounded first-pass evacuation. Values in [0.05, 1] are a fraction of
+	// the active provider pool. GROK2API_AUTO_ASSIGN_MAX_NODE_SHARE overrides
+	// this field when set to a valid value.
+	AutoAssignMaxNodeShare float64 `yaml:"autoAssignMaxNodeShare"`
+	// AutoAssignMaxMigrationShare optionally caps how many already-bound
+	// accounts may move in one maintenance cycle. 0 keeps the historical
+	// unbounded first-pass evacuation and the existing 200-move ceiling for
+	// capacity/rebalance repair. GROK2API_AUTO_ASSIGN_MAX_MIGRATION_SHARE
+	// overrides this field when set to a valid value.
+	AutoAssignMaxMigrationShare float64 `yaml:"autoAssignMaxMigrationShare"`
 }
 
 type AuditConfig struct {
@@ -642,6 +654,9 @@ func (c Config) Validate() error {
 	if c.Routing.ReasoningReplayMaxEntries < 100 || c.Routing.ReasoningReplayMaxEntries > 1000000 {
 		return errors.New("routing.reasoningReplayMaxEntries 必须在 100 到 1000000 之间")
 	}
+	if !validAutoAssignShare(c.Routing.AutoAssignMaxNodeShare) || !validAutoAssignShare(c.Routing.AutoAssignMaxMigrationShare) {
+		return errors.New("routing.autoAssignMaxNodeShare 与 autoAssignMaxMigrationShare 必须为 0 或 0.05 到 1 之间")
+	}
 	if c.Audit.BufferSize < 1 || c.Audit.BufferSize > maxAuditBufferSize || c.Audit.BatchSize < 1 || c.Audit.BatchSize > maxAuditBatchSize || c.Audit.BatchSize > c.Audit.BufferSize || c.Audit.FlushInterval.Value() < minAuditFlushInterval || c.Audit.FlushInterval.Value() > maxAuditFlushInterval {
 		return errors.New("audit 队列和批量写入配置无效")
 	}
@@ -760,6 +775,10 @@ func validateQualityGuardRequestRetry(value QualityGuardRequestRetryConfig) erro
 		return errors.New("qualityGuard.requestRetry.onExhausted 必须是 fail_open 或 fail_closed")
 	}
 	return nil
+}
+
+func validAutoAssignShare(value float64) bool {
+	return value == 0 || (value >= 0.05 && value <= 1)
 }
 
 func validUniquePositiveIDs(values []uint64) bool {

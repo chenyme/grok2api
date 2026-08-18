@@ -3,7 +3,11 @@ package egress
 import (
 	"context"
 	"errors"
+	"math"
+	"os"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -67,6 +71,10 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 	if len(nodes) == 0 {
 		return RebalanceResult{Unplaced: countAutoAssignable(accounts, autoAssign, autoBalance)}, nil
 	}
+	nodeShare, migrationShare := s.autoAssignBounds()
+	nodes = capAutomaticAssignmentShare(nodes, accounts, nodeShare)
+	migrationLimit := autoAssignmentMigrationLimit(accounts, migrationShare)
+	migrations := 0
 	loads := make(map[uint64]int, len(nodes))
 	byID := make(map[uint64]domain.Node, len(nodes))
 	for _, node := range nodes {
@@ -95,6 +103,11 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 		if credential.EgressNodeID == 0 && !autoAssign {
 			continue
 		}
+		if credential.EgressNodeID != 0 && migrationLimit >= 0 && migrations >= migrationLimit {
+			// Keep the remaining accounts bound until the next cycle instead of
+			// evacuating an entire unhealthy node in one burst.
+			continue
+		}
 		target, found := leastLoadedNode(nodes, loads)
 		if !found {
 			result.Unplaced++
@@ -106,6 +119,7 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 		if credential.EgressNodeID == 0 {
 			result.Assigned++
 		} else {
+			migrations++
 			result.Rebalanced++
 		}
 	}
@@ -114,8 +128,12 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 	// Repair automatic assignments that became over capacity even when ordinary
 	// load balancing is disabled. Manual assignments remain immovable.
 	moves := 0
+	capacityMoveLimit := maxAutomaticReassignments
+	if migrationLimit >= 0 {
+		capacityMoveLimit = min(maxAutomaticReassignments, max(0, migrationLimit-migrations))
+	}
 	blockedCapacitySources := make(map[uint64]bool)
-	for moves < maxAutomaticReassignments {
+	for moves < capacityMoveLimit {
 		source, destination, found := overCapacityPair(nodes, loads, blockedCapacitySources)
 		if !found {
 			break
@@ -135,7 +153,7 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 
 	if autoBalance {
 		blocked := make(map[uint64]bool)
-		for moves < maxAutomaticReassignments {
+		for moves < capacityMoveLimit {
 			source, destination, found := rebalancePair(nodes, loads, blocked)
 			if !found {
 				break
@@ -168,6 +186,107 @@ func (s *Service) rebalanceProvider(ctx context.Context, provider accountdomain.
 		}
 	}
 	return result, nil
+}
+
+// capAutomaticAssignmentShare optionally prevents a cascading node quarantine
+// from concentrating the whole active provider pool on the last healthy node.
+// Zero or invalid shares leave configured node capacities unchanged.
+func capAutomaticAssignmentShare(nodes []domain.Node, accounts []accountdomain.Credential, share float64) []domain.Node {
+	if !validAutoAssignShare(share) || share == 0 {
+		return nodes
+	}
+	active := activeAccountCount(accounts)
+	if active == 0 {
+		return nodes
+	}
+	maxPerNode := max(1, int(math.Ceil(float64(active)*share)))
+	activeLoads := make(map[uint64]int, len(nodes))
+	for _, credential := range accounts {
+		if credential.Enabled && credential.AuthStatus == accountdomain.AuthStatusActive && credential.EgressNodeID != 0 {
+			activeLoads[credential.EgressNodeID]++
+		}
+	}
+	for index := range nodes {
+		configured := nodes[index].AccountCapacity
+		// AssignedAccountCount is global across providers and includes inactive
+		// and manual bindings. Preserve those reserved slots while limiting only
+		// this provider's active share on the node.
+		reservedByOthers := max(0, nodes[index].AssignedAccountCount-activeLoads[nodes[index].ID])
+		shareCapacity := reservedByOthers + maxPerNode
+		if configured <= 0 || configured > shareCapacity {
+			nodes[index].AccountCapacity = shareCapacity
+		}
+	}
+	return nodes
+}
+
+// autoAssignmentMigrationLimit returns the per-cycle move budget when share is
+// enabled. A negative result means the first-pass evacuation stays unbounded
+// and later capacity/rebalance loops keep the existing 200-move ceiling.
+func autoAssignmentMigrationLimit(accounts []accountdomain.Credential, share float64) int {
+	if !validAutoAssignShare(share) || share == 0 {
+		return -1
+	}
+	return max(1, int(math.Ceil(float64(activeAccountCount(accounts))*share)))
+}
+
+func activeAccountCount(accounts []accountdomain.Credential) int {
+	active := 0
+	for _, credential := range accounts {
+		if credential.Enabled && credential.AuthStatus == accountdomain.AuthStatusActive {
+			active++
+		}
+	}
+	return active
+}
+
+func (s *Service) ConfigureAutoAssignBounds(maxNodeShare, maxMigrationShare float64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoAssignMaxNodeShare = normalizeAutoAssignShare(maxNodeShare)
+	s.autoAssignMaxMigrationShare = normalizeAutoAssignShare(maxMigrationShare)
+}
+
+func (s *Service) autoAssignBounds() (nodeShare, migrationShare float64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.RLock()
+	configuredNode, configuredMigration := s.autoAssignMaxNodeShare, s.autoAssignMaxMigrationShare
+	s.mu.RUnlock()
+	return resolveAutoAssignShare("GROK2API_AUTO_ASSIGN_MAX_NODE_SHARE", configuredNode),
+		resolveAutoAssignShare("GROK2API_AUTO_ASSIGN_MAX_MIGRATION_SHARE", configuredMigration)
+}
+
+func resolveAutoAssignShare(envName string, configured float64) float64 {
+	if raw, ok := os.LookupEnv(envName); ok {
+		if parsed, valid := parseAutoAssignShare(raw); valid {
+			return parsed
+		}
+	}
+	return normalizeAutoAssignShare(configured)
+}
+
+func parseAutoAssignShare(raw string) (float64, bool) {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || !validAutoAssignShare(value) {
+		return 0, false
+	}
+	return value, true
+}
+
+func normalizeAutoAssignShare(value float64) float64 {
+	if !validAutoAssignShare(value) {
+		return 0
+	}
+	return value
+}
+
+func validAutoAssignShare(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && (value == 0 || (value >= 0.05 && value <= 1))
 }
 
 func (s *Service) eligibleNodesForProvider(values []domain.Node, provider accountdomain.Provider, probeInterval time.Duration, now time.Time) []domain.Node {

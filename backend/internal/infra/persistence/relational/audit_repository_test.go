@@ -61,7 +61,7 @@ func TestAuditRepositoryBatchAndCursor(t *testing.T) {
 		{RequestID: "cursor-old", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: now.Add(-48 * time.Hour)},
 		{RequestID: "cursor-1", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: now.Add(-3 * time.Minute)},
 		{RequestID: "cursor-2", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, CreatedAt: now.Add(-2 * time.Minute)},
-		{RequestID: "cursor-3", ClientKeyID: 1, ClientKeyName: "production", ModelRouteID: 1, ModelPublicID: "grok-test", ModelUpstreamModel: "grok-test-upstream", AccountName: "primary", EgressNodeID: uint64Pointer(42), EgressNodeName: "proxy-shanghai", EgressScope: "grok_web", EgressMode: audit.EgressModeProxy, StatusCode: 200, CreatedAt: now.Add(-time.Minute)},
+		{RequestID: "cursor-3", ClientKeyID: 1, ClientKeyName: "production", ModelRouteID: 1, ModelPublicID: "grok-test", ModelUpstreamModel: "grok-test-upstream", ReasoningEffort: "xhigh", AccountName: "primary", EgressNodeID: uint64Pointer(42), EgressNodeName: "proxy-shanghai", EgressScope: "grok_web", EgressMode: audit.EgressModeProxy, StatusCode: 200, CreatedAt: now.Add(-time.Minute)},
 	}
 	if err := repository.CreateBatch(ctx, values); err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestAuditRepositoryBatchAndCursor(t *testing.T) {
 	if len(first) != 2 || !hasMore || first[0].ID <= first[1].ID {
 		t.Fatalf("first page = %#v, hasMore = %v", first, hasMore)
 	}
-	if first[0].ClientKeyName != "production" || first[0].ModelPublicID != "grok-test" || first[0].ModelUpstreamModel != "grok-test-upstream" || first[0].AccountName != "primary" || first[0].EgressNodeID == nil || *first[0].EgressNodeID != 42 || first[0].EgressNodeName != "proxy-shanghai" || first[0].EgressMode != audit.EgressModeProxy {
+	if first[0].ClientKeyName != "production" || first[0].ModelPublicID != "grok-test" || first[0].ModelUpstreamModel != "grok-test-upstream" || first[0].ReasoningEffort != "xhigh" || first[0].AccountName != "primary" || first[0].EgressNodeID == nil || *first[0].EgressNodeID != 42 || first[0].EgressNodeName != "proxy-shanghai" || first[0].EgressMode != audit.EgressModeProxy {
 		t.Fatalf("audit snapshots = %#v", first[0])
 	}
 	matched, _, err := repository.ListCursor(ctx, repositorypkg.AuditCursorQuery{Limit: 10, Search: "proxy-shanghai", Sort: sort})
@@ -445,14 +445,14 @@ func TestAuditRepositoryNormalizesUntrustedUsage(t *testing.T) {
 	}
 	repository := NewAuditRepository(database)
 	negativeFirstToken := int64(-4)
-	if err := repository.Create(ctx, audit.Record{RequestID: "normalize", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, Streaming: true, MediaInputImages: -1, MediaOutputImages: -2, MediaOutputSeconds: -3, InputTokens: -1, TotalTokens: -2, FirstTokenMS: &negativeFirstToken, DurationMS: -3, CreatedAt: time.Now().UTC()}); err != nil {
+	if err := repository.Create(ctx, audit.Record{RequestID: "normalize", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200, Streaming: true, ReasoningEffort: "customer@example.com", MediaInputImages: -1, MediaOutputImages: -2, MediaOutputSeconds: -3, InputTokens: -1, TotalTokens: -2, FirstTokenMS: &negativeFirstToken, DurationMS: -3, CreatedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
 	values, _, err := repository.List(ctx, 0, 1)
 	if err != nil || len(values) != 1 {
 		t.Fatalf("values = %#v, err = %v", values, err)
 	}
-	if values[0].MediaInputImages != 0 || values[0].MediaOutputImages != 0 || values[0].MediaOutputSeconds != 0 || values[0].InputTokens != 0 || values[0].TotalTokens != 0 || values[0].FirstTokenMS == nil || *values[0].FirstTokenMS != 0 || values[0].DurationMS != 0 {
+	if values[0].ReasoningEffort != "" || values[0].MediaInputImages != 0 || values[0].MediaOutputImages != 0 || values[0].MediaOutputSeconds != 0 || values[0].InputTokens != 0 || values[0].TotalTokens != 0 || values[0].FirstTokenMS == nil || *values[0].FirstTokenMS != 0 || values[0].DurationMS != 0 {
 		t.Fatalf("normalized audit = %#v", values[0])
 	}
 }
