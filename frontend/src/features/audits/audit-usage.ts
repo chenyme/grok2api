@@ -14,6 +14,7 @@ export type AuditUsageOperation =
   | "voice";
 
 const DURATION_OPERATIONS = new Set<AuditUsageOperation>(["tts", "stt", "realtime", "voice"]);
+const MEDIA_OPERATIONS = new Set<AuditUsageOperation>(["image", "image_edit", "video"]);
 
 export type AuditUsageLabels = {
   input: string;
@@ -104,6 +105,11 @@ export function buildAuditUsageView(
   return {
     mode: "metrics",
     mediaItems: mediaItems(audit, labels),
-    tokenItems: tokenItems(audit, formatNumber, labels),
+    // Dedicated media endpoints commonly report image/second usage without token
+    // usage. Avoid filling the audit row with four meaningless dashes, while
+    // retaining token details whenever the upstream actually provides them.
+    tokenItems: MEDIA_OPERATIONS.has(audit.operation) && !auditTokenUsageAvailable(audit)
+      ? undefined
+      : tokenItems(audit, formatNumber, labels),
   };
 }

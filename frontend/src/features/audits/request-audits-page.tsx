@@ -278,9 +278,8 @@ export function RequestAuditsPage() {
         {auditsQuery.isError ? <ErrorState message={auditsQuery.error.message} onRetry={() => void auditsQuery.refetch()} /> : null}
         {result && result.items.length === 0 ? <EmptyState /> : null}
         {auditsQuery.isPending || (result && result.items.length > 0) ? (
-          <Table viewportRows={20} rowHeight={96} aria-busy={auditsQuery.isFetching} className={cn("min-w-[1184px] table-fixed text-xs transition-opacity", auditsQuery.isPlaceholderData && "pointer-events-none opacity-60")}>
+          <Table viewportRows={20} rowHeight={96} aria-busy={auditsQuery.isFetching} className={cn("min-w-[1008px] table-fixed text-xs transition-opacity", auditsQuery.isPlaceholderData && "pointer-events-none opacity-60")}>
             <colgroup>
-              <col className="w-44" />
               <col className="w-36" />
               <col className="w-24" />
               <col className="w-24" />
@@ -291,7 +290,6 @@ export function RequestAuditsPage() {
             </colgroup>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <SortableTableHead field="request" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("audits.request")}</SortableTableHead>
                 <SortableTableHead field="model" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("audits.model")}</SortableTableHead>
                 <TableHead className="text-center">{t("audits.egress")}</TableHead>
                 <SortableTableHead field="billing" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" onSort={changeSort}>{t("audits.billing")}</SortableTableHead>
@@ -302,9 +300,9 @@ export function RequestAuditsPage() {
               </TableRow>
             </TableHeader>
             {auditsQuery.isPending ? (
-              <TableBody><TableLoadingRow colSpan={8} /></TableBody>
+              <TableBody><TableLoadingRow colSpan={7} /></TableBody>
             ) : (
-              <VirtualTableBody items={result?.items ?? []} colSpan={8} rowHeight={96} overscan={6} renderRow={renderAuditRow} />
+              <VirtualTableBody items={result?.items ?? []} colSpan={7} rowHeight={96} overscan={6} renderRow={renderAuditRow} />
             )}
           </Table>
         ) : null}
@@ -319,13 +317,16 @@ const AuditRow = memo(function AuditRow({ audit, locale, onOpen }: { audit: Audi
   const createdAtLabel = formatDateTime(audit.createdAt, locale);
   return (
     <TableRow className="h-[96px]">
-      <TableCell><RequestValue audit={audit} /></TableCell>
       <TableCell>
         <ModelRouteValue
           model={audit.modelPublicId || `#${audit.modelRouteId}`}
           upstreamModel={audit.modelUpstreamModel || "-"}
           account={audit.accountName || (audit.accountId ? `#${audit.accountId}` : "-")}
           clientKey={audit.clientKeyName || `#${audit.clientKeyId}`}
+          requestId={audit.requestId}
+          provider={audit.provider}
+          operation={audit.operation}
+          sources={audit.numSourcesUsed}
         />
       </TableCell>
       <TableCell className="text-center"><EgressValue audit={audit} /></TableCell>
@@ -367,19 +368,6 @@ function splitDuration(value: string): { value: string; unit: string } {
     return { value, unit: "" };
   }
   return { value: value.slice(0, separator), unit: value.slice(separator + 1) };
-}
-
-function RequestValue({ audit }: { audit: AuditDTO }) {
-  const { t } = useTranslation();
-  return (
-    <div className="min-w-0">
-      <span className="block truncate text-xs font-medium">{providerLabel(audit.provider)} · {t(`audits.operations.${audit.operation}`)}</span>
-      <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground" title={audit.requestId}>{audit.requestId}</span>
-      {audit.numSourcesUsed > 0 ? (
-        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">{t("audits.sources", { count: audit.numSourcesUsed })}</span>
-      ) : null}
-    </div>
-  );
 }
 
 function EgressValue({ audit }: { audit: AuditDTO }) {
@@ -541,7 +529,16 @@ function AuditTokenMetric({ icon: Icon, label, value, loading }: { icon: LucideI
   );
 }
 
-function ModelRouteValue({ model, upstreamModel, account, clientKey }: { model: string; upstreamModel: string; account: string; clientKey: string }) {
+function ModelRouteValue({ model, upstreamModel, account, clientKey, requestId, provider, operation, sources }: {
+  model: string;
+  upstreamModel: string;
+  account: string;
+  clientKey: string;
+  requestId: string;
+  provider: AuditDTO["provider"];
+  operation: AuditDTO["operation"];
+  sources: number;
+}) {
   const { t } = useTranslation();
   return (
     <Tooltip>
@@ -555,20 +552,25 @@ function ModelRouteValue({ model, upstreamModel, account, clientKey }: { model: 
         </button>
       </TooltipTrigger>
       <TooltipContent className="w-72 max-w-[calc(100vw-2rem)] space-y-1.5 py-2" side="top" align="start">
-        <div className="grid grid-cols-[auto_1fr] items-start gap-x-3">
-          <span className="text-primary-foreground/65">{t("audits.actualModel")}</span>
-          <span className="break-all text-right">{upstreamModel}</span>
-        </div>
-        <div className="grid grid-cols-[auto_1fr] gap-x-3">
-          <span className="text-primary-foreground/65">{t("audits.owningAccount")}</span>
-          <span className="truncate text-right" title={account}>{account}</span>
-        </div>
-        <div className="grid grid-cols-[auto_1fr] gap-x-3">
-          <span className="text-primary-foreground/65">{t("audits.owningKey")}</span>
-          <span className="truncate text-right" title={clientKey}>{clientKey}</span>
-        </div>
+        <RouteDetailRow label={t("audits.channelProtocol")} value={`${providerLabel(provider)} · ${auditProtocolLabel(operation)}`} />
+        <RouteDetailRow label={t("audits.requestId")} value={requestId} breakAll />
+        <RouteDetailRow label={t("audits.actualModel")} value={upstreamModel} breakAll />
+        <RouteDetailRow label={t("audits.owningAccount")} value={account} />
+        <RouteDetailRow label={t("audits.owningKey")} value={clientKey} />
+        {sources > 0 ? (
+          <RouteDetailRow label={t("audits.sourcesLabel")} value={String(sources)} />
+        ) : null}
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+function RouteDetailRow({ label, value, breakAll = false }: { label: string; value: string; breakAll?: boolean }) {
+  return (
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 text-xs font-normal leading-4">
+      <span className="text-primary-foreground/65">{label}</span>
+      <span className={cn("text-right", breakAll ? "break-all" : "truncate")} title={value}>{value}</span>
+    </div>
   );
 }
 
@@ -617,7 +619,12 @@ function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
       {view.tokenItems?.length ? (
         <div className="grid grid-cols-2 gap-1">
           {view.tokenItems.map((item) => (
-            <UsageMetric key={item.key} label={item.label} value={item.value} />
+            <UsageMetric
+              key={item.key}
+              label={item.label}
+              value={item.value}
+              reasoningEffort={item.key === "reasoning" ? audit.reasoningEffort : undefined}
+            />
           ))}
         </div>
       ) : null}
@@ -625,19 +632,44 @@ function UsageDetails({ audit, locale }: { audit: AuditDTO; locale: string }) {
   );
 }
 
-function UsageMetric({ label, value }: { label: string; value: string }) {
+function UsageMetric({ label, value, reasoningEffort }: {
+  label: string;
+  value: string;
+  reasoningEffort?: AuditDTO["reasoningEffort"];
+}) {
+  const { t } = useTranslation();
+  const fullLabel = reasoningEffort ? `${label} · ${t(`audits.reasoningEfforts.${reasoningEffort}`)}` : label;
   return (
     <div className="flex h-6 min-w-0 items-center justify-between gap-2 rounded-md bg-muted/45 px-2 text-[11px]">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium tabular-nums">{value}</span>
+      <span className="flex min-w-0 items-center gap-1" title={fullLabel}>
+        <span className="truncate text-muted-foreground">{label}</span>
+        {reasoningEffort ? (
+          <span className={cn("shrink-0 font-medium", reasoningEffortTone(reasoningEffort))}>
+            · {t(`audits.reasoningEfforts.${reasoningEffort}`)}
+          </span>
+        ) : null}
+      </span>
+      <span className="truncate font-medium tabular-nums" title={value}>{value}</span>
     </div>
   );
+}
+
+function reasoningEffortTone(effort: NonNullable<AuditDTO["reasoningEffort"]>): string {
+  switch (effort) {
+    case "none": return "text-muted-foreground";
+    case "low": return "text-sky-600 dark:text-sky-400";
+    case "medium": return "text-amber-600 dark:text-amber-400";
+    case "high": return "text-orange-600 dark:text-orange-400";
+    case "xhigh": return "text-rose-600 dark:text-rose-400";
+    case "auto": return "text-violet-600 dark:text-violet-400";
+    case "fixed": return "text-indigo-600 dark:text-indigo-400";
+  }
 }
 
 function StatusCode({ statusCode, hasError = false }: { statusCode: number; hasError?: boolean }) {
   const tone = statusTone(statusCode, hasError);
   return (
-    <span className={cn("inline-flex items-center gap-1.5 text-xs tabular-nums", tone.text)}>
+    <span className={cn("inline-flex items-center gap-1 text-[10px] leading-4 tabular-nums", tone.text)}>
       <span className={cn("size-1.5 rounded-full", tone.dot)} />
       {statusCode || "-"}
     </span>
@@ -654,7 +686,7 @@ function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void })
   const content = (
     <>
       {showErrorLabel ? (
-        <span className="inline-flex items-center gap-1.5 text-xs tabular-nums text-amber-700 dark:text-amber-300">
+        <span className="inline-flex items-center gap-1 text-[10px] leading-4 tabular-nums text-amber-700 dark:text-amber-300">
           <span className="size-1.5 rounded-full bg-amber-500" />
           {audit.statusCode > 0 ? `${audit.statusCode} · ` : ""}{t("audits.errorLabel")}
         </span>
@@ -693,6 +725,22 @@ function providerLabel(provider: AuditDTO["provider"]): string {
       return "Grok Web";
     case "grok_console":
       return "Grok Console";
+  }
+}
+
+function auditProtocolLabel(operation: AuditDTO["operation"]): string {
+  switch (operation) {
+    case "responses": return "Responses";
+    case "compaction": return "Responses Compact";
+    case "chat": return "Chat Completions";
+    case "messages": return "Anthropic Messages";
+    case "image":
+    case "image_edit": return "Images";
+    case "video": return "Videos";
+    case "tts": return "Audio Speech";
+    case "stt": return "Audio Transcriptions";
+    case "realtime": return "Realtime";
+    case "voice": return "Voice";
   }
 }
 
