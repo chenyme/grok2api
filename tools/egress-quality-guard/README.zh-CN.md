@@ -130,6 +130,8 @@ docker compose --profile quality-guard up -d --build
 以后修改 `config.yaml` 中的 `qualityGuard` 基础配置时，执行
 `docker compose --profile quality-guard restart grok2api egress-quality-guard` 让主程序重新生成 bootstrap。管理页面保存的运行策略仍会热加载，无需重启。
 
+sidecar 通过 `GROK2API_BASE_URL` 访问主程序，Compose 网络默认是 `http://grok2api:8000`。主服务改名或使用 host 网络时需要覆盖，例如 `GROK2API_BASE_URL=http://127.0.0.1:8000`。
+
 先确认受管节点、模型和最低健康节点数正确，再允许 sidecar 长期运行。不要提交状态卷或生产日志。只停止守护程序可执行
 `docker compose --profile quality-guard stop egress-quality-guard`，不会影响主 API。
 

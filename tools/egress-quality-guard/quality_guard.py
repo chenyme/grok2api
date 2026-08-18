@@ -42,6 +42,7 @@ RUNTIME_CONFIG_FIELDS = {
 
 BOOTSTRAP_VERSION = 1
 BOOTSTRAP_FILE = Path("/var/lib/grok2api-quality-guard/bootstrap.json")
+DEFAULT_GROK2API_BASE_URL = "http://grok2api:8000"
 INTERNAL_API_PREFIX = "/api/internal/v1/quality-guard"
 QUALITY_MARKER_PROFILE_ID = "quality-marker"
 THROUGHPUT_PROFILE_ID = "throughput"
@@ -105,8 +106,9 @@ class Config:
         token = str(payload.get("internal_token") or "").strip()
         node_ids = tuple(dict.fromkeys(str(value).strip() for value in values.get("node_ids", []) if str(value).strip()))
         rotatable_node_ids = tuple(dict.fromkeys(str(value).strip() for value in values.get("rotatable_node_ids", []) if str(value).strip()))
+        base_url = os.environ.get("GROK2API_BASE_URL", "").strip() or DEFAULT_GROK2API_BASE_URL
         config = cls(
-            base_url="http://grok2api:8000",
+            base_url=base_url.rstrip("/"),
             internal_token=token,
             model=str(values.get("model") or "").strip(),
             node_ids=node_ids,
@@ -143,8 +145,20 @@ class Config:
 
     def validate(self) -> None:
         parsed = urllib.parse.urlparse(self.base_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("GROK2API_BASE_URL must be an absolute HTTP(S) URL")
+        try:
+            hostname = parsed.hostname
+            parsed.port
+        except ValueError:
+            hostname = None
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or "?" in self.base_url
+            or "#" in self.base_url
+        ):
+            raise ValueError("GROK2API_BASE_URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
         if not self.internal_token:
             raise ValueError("quality guard bootstrap internal token is missing")
         if not self.model or not self.prompt or not self.expected:
