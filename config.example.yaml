@@ -135,3 +135,12 @@ qualityGuard:
   rotationTimeout: 45s
   nodeIDs: []
   rotatableNodeIDs: []
+  # Optional request-path withhold/retry for thinking models. Disabled by default.
+  # Missing thinking with enough visible output is not delivered; another account
+  # is tried (up to maxAttempts). fail_closed returns 503 instead of the last body.
+  requestRetry:
+    enabled: false
+    maxAttempts: 6
+    holdTimeout: 3s
+    minOutputTokens: 32
+    onExhausted: fail_closed # fail_open | fail_closed

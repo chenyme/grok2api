@@ -205,6 +205,7 @@ type Service struct {
 	modelSyncMu                 sync.Mutex
 	modelSyncing                map[uint64]struct{}
 	markBuildChatDeniedAsReauth atomic.Bool
+	qualityRetry                atomic.Pointer[QualityRetryRuntime]
 }
 
 type teamModelRateLimit struct {
@@ -994,6 +995,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	excluded := make(map[uint64]bool)
 	failureFingerprints := make(map[string]int)
 	authRecoveryAttempted := make(map[uint64]bool)
+	// Per-request withhold counter (stack local, not a Service field).
+	// Last withhold is attemptIndex == maxAttempts-1.
+	qualityAttemptIndex := 0
 	quotaMode := s.providers.QuotaMode(route.Provider, route.UpstreamModel)
 	quotaProbeAttempted := false
 	selection := preselectedSession
@@ -1337,6 +1341,63 @@ attemptLoop:
 		}
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
 			s.selector.markSuccess(ctx, credential, lease.QuotaProbe)
+			holdCfg := s.qualityRetryConfig()
+			if shouldHoldQualityStream(input, ownership, route, operation, holdCfg) {
+				replay, verdict, peekUsage, _, peekErr := peekQualityStream(ctx, response.Body, qualityProtocolForOperation(operation), holdCfg)
+				if peekErr != nil {
+					if replay != nil {
+						_ = replay.Close()
+					} else {
+						_ = response.Body.Close()
+					}
+					lease.Release()
+					lastErr = peekErr
+					if ctx.Err() != nil || errors.Is(peekErr, context.Canceled) {
+						lastFailure = &UpstreamFailure{HTTPStatus: 499, Code: "request_canceled", PublicMessage: "请求已取消", AccountID: credential.ID, AccountName: credential.Name, Cause: firstError(ctx.Err(), peekErr)}
+						break
+					}
+					lastFailure = newTransportUpstreamFailure(peekErr, credential.ID, credential.Name)
+					continue
+				}
+				response.Body = replay
+				commit := CommitQualityHold(verdict, qualityAttemptIndex, holdCfg.MaxAttempts, attemptPolicy.hasNext(attempt), holdCfg.OnExhausted)
+				if commit.Audit {
+					s.recordQualityDegraded(ctx, auditBase, credential, peekUsage, startedAt, egressTrace, route.Provider)
+					failureAttempts.captureQualityDegraded(credential, responseStartedAt)
+				}
+				switch commit.Action {
+				case QualityActionRetry:
+					_ = response.Body.Close()
+					lease.Release()
+					lastErr = errQualityDegraded
+					lastFailure = &UpstreamFailure{
+						HTTPStatus: http.StatusServiceUnavailable, Code: ErrorQualityDegraded,
+						PublicMessage: "上游响应缺少推理", AccountID: credential.ID, AccountName: credential.Name,
+						Cause: errQualityDegraded,
+					}
+					qualityAttemptIndex++
+					s.logger.Info("quality_degraded_retry", "request_id", input.RequestID, "account_id", credential.ID, "quality_attempt", qualityAttemptIndex, "output_tokens", peekUsage.OutputTokens)
+					continue
+				case QualityActionReject:
+					_ = response.Body.Close()
+					lease.Release()
+					lastErr = errQualityDegraded
+					lastFailure = &UpstreamFailure{
+						HTTPStatus: http.StatusServiceUnavailable, Code: ErrorQualityDegraded,
+						PublicMessage: "上游响应缺少推理", AccountID: credential.ID, AccountName: credential.Name,
+						Cause: errQualityDegraded,
+					}
+					s.logger.Info("quality_degraded_rejected", "request_id", input.RequestID, "account_id", credential.ID)
+					break attemptLoop
+				case QualityActionDeliverLast:
+					s.logger.Info("quality_degraded_deliver_last", "request_id", input.RequestID, "account_id", credential.ID, "quality_attempt", qualityAttemptIndex, "output_tokens", peekUsage.OutputTokens)
+				}
+				if !commit.KeepBody {
+					_ = response.Body.Close()
+					lease.Release()
+					break attemptLoop
+				}
+			}
 			if diagnostic := response.RecoveredPrimaryFailure; diagnostic != nil {
 				recoveredFailure := newHTTPUpstreamFailure(diagnostic.StatusCode, diagnostic.Body, credential.ID, credential.Name)
 				if recoveredFailure.AccountBlocked || (credential.Provider == accountdomain.ProviderBuild && s.shouldInvalidateBuildForbidden(recoveredFailure)) {
