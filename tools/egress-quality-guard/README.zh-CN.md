@@ -132,6 +132,8 @@ docker compose --profile quality-guard up -d --build
 
 sidecar 通过 `GROK2API_BASE_URL` 访问主程序，Compose 网络默认是 `http://grok2api:8000`。主服务改名或使用 host 网络时需要覆盖，例如 `GROK2API_BASE_URL=http://127.0.0.1:8000`。
 
+缺 thinking 的**请求路径扣住/换号**（`qualityGuard.requestRetry`）在 grok2api 网关内完成，不经过 sidecar。配置见根目录 `config.example.yaml` 与主 README。
+
 先确认受管节点、模型和最低健康节点数正确，再允许 sidecar 长期运行。不要提交状态卷或生产日志。只停止守护程序可执行
 `docker compose --profile quality-guard stop egress-quality-guard`，不会影响主 API。
 
