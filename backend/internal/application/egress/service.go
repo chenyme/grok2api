@@ -104,19 +104,21 @@ type ServiceRepository interface {
 }
 
 type Service struct {
-	repository        ServiceRepository
-	accounts          AccountBindingRepository
-	operations        OperationsRepository
-	cipher            *security.Cipher
-	mu                sync.RWMutex
-	browserUA         string
-	clearance         ClearanceManager
-	prober            NodeProber
-	operationsCache   OperationsConfigInvalidator
-	qualityProber     QualityProber
-	assignmentMu      sync.Mutex
-	lastAssignmentRun time.Time
-	assignmentRunning bool
+	repository                  ServiceRepository
+	accounts                    AccountBindingRepository
+	operations                  OperationsRepository
+	cipher                      *security.Cipher
+	mu                          sync.RWMutex
+	browserUA                   string
+	clearance                   ClearanceManager
+	prober                      NodeProber
+	operationsCache             OperationsConfigInvalidator
+	qualityProber               QualityProber
+	assignmentMu                sync.Mutex
+	lastAssignmentRun           time.Time
+	assignmentRunning           bool
+	autoAssignMaxNodeShare      float64
+	autoAssignMaxMigrationShare float64
 }
 
 func (s *Service) SetQualityProber(value QualityProber) {
