@@ -26,6 +26,7 @@ func toAccountDomain(value accountModel) account.Credential {
 	var expiresAt time.Time
 	var refreshDueAt, lastRefreshAt *time.Time
 	var refreshFailures int
+	var refreshUnclassifiedAuthFailures int
 	var lastRefreshErrorStatus int
 	var lastRefreshError string
 	var lastRefreshErrorMessage string
@@ -47,6 +48,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		refreshDueAt = value.Credential.RefreshDueAt
 		lastRefreshAt = value.Credential.LastRefreshAt
 		refreshFailures = value.Credential.RefreshFailures
+		refreshUnclassifiedAuthFailures = value.Credential.RefreshUnclassifiedAuthFailures
 		lastRefreshErrorStatus = value.Credential.LastRefreshErrorStatus
 		lastRefreshError = value.Credential.LastRefreshError
 		lastRefreshErrorMessage = value.Credential.LastRefreshErrorMessage
@@ -80,7 +82,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey, OIDCClientID: clientID,
 		EncryptedAccessToken: encryptedPrimary, EncryptedRefreshToken: encryptedRefresh, EncryptedCloudflareCookie: encryptedCloudflareCookie,
 		ExpiresAt: expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: lastRefreshAt,
-		RefreshFailureCount: refreshFailures, LastRefreshErrorStatus: lastRefreshErrorStatus, LastRefreshErrorCode: lastRefreshError, LastRefreshErrorMessage: lastRefreshErrorMessage, LastRefreshErrorResponse: lastRefreshErrorResponse, RefreshPermanent: refreshPermanent,
+		RefreshFailureCount: refreshFailures, RefreshUnclassifiedAuthCount: refreshUnclassifiedAuthFailures, LastRefreshErrorStatus: lastRefreshErrorStatus, LastRefreshErrorCode: lastRefreshError, LastRefreshErrorMessage: lastRefreshErrorMessage, LastRefreshErrorResponse: lastRefreshErrorResponse, RefreshPermanent: refreshPermanent,
 		Enabled: value.Enabled, AuthStatus: account.AuthStatus(value.AuthStatus), ReauthMarkedAt: value.ReauthMarkedAt, Priority: value.Priority,
 		MaxConcurrent: value.MaxConcurrent, MinimumRemaining: value.MinimumRemaining, FailureCount: value.FailureCount,
 		CooldownUntil: value.CooldownUntil, LastError: value.LastError, LastUsedAt: value.LastUsedAt,
@@ -104,7 +106,7 @@ func toCredentialMaterialDomain(value accountCredentialModel, provider account.P
 		EncryptedAccessToken: value.EncryptedPrimary, EncryptedRefreshToken: value.EncryptedRefresh,
 		EncryptedCloudflareCookie: value.EncryptedCloudflareCookie, ExpiresAt: expiresAt,
 		RefreshDueAt: value.RefreshDueAt, LastRefreshAt: value.LastRefreshAt,
-		RefreshFailureCount: value.RefreshFailures, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshErrorCode: value.LastRefreshError, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse,
+		RefreshFailureCount: value.RefreshFailures, RefreshUnclassifiedAuthCount: value.RefreshUnclassifiedAuthFailures, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshErrorCode: value.LastRefreshError, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse,
 		RefreshPermanent: value.RefreshPermanent, UpdatedAt: value.UpdatedAt,
 	}
 }
@@ -169,7 +171,7 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 		EncryptedPrimary: value.EncryptedAccessToken, EncryptedRefresh: value.EncryptedRefreshToken,
 		EncryptedCloudflareCookie: value.EncryptedCloudflareCookie,
 		ExpiresAt:                 expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
-		RefreshFailures: value.RefreshFailureCount, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshError: value.LastRefreshErrorCode, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse, RefreshPermanent: value.RefreshPermanent,
+		RefreshFailures: value.RefreshFailureCount, RefreshUnclassifiedAuthFailures: value.RefreshUnclassifiedAuthCount, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshError: value.LastRefreshErrorCode, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse, RefreshPermanent: value.RefreshPermanent,
 		BuildBotFlagSource: normalizeBuildBotFlagSource(value.Provider, value.BuildBotFlagSource),
 		UpdatedAt:          time.Now().UTC(),
 	}

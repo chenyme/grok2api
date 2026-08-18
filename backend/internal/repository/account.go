@@ -38,13 +38,14 @@ type BuildBotFlagSourceUpdate struct {
 // latest failed OAuth refresh. Response must already be redacted by the
 // provider adapter before it reaches persistence.
 type CredentialRefreshFailure struct {
-	Count     int
-	RetryAt   time.Time
-	Status    int
-	Code      string
-	Message   string
-	Response  string
-	Permanent bool
+	Count                        int
+	UnclassifiedAuthFailureCount int
+	RetryAt                      time.Time
+	Status                       int
+	Code                         string
+	Message                      string
+	Response                     string
+	Permanent                    bool
 }
 
 // LinkedDeleteResolution is the server-side expansion of root deletes with optional linked peers.

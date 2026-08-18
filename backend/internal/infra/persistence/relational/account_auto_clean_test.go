@@ -8,6 +8,7 @@ import (
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 func TestDeleteAutoCleanReauthBatchSkipsActiveMediaJobs(t *testing.T) {
@@ -39,6 +40,20 @@ func TestDeleteAutoCleanReauthBatchSkipsActiveMediaJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ambiguous, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "ambiguous", SourceKey: "ambiguous",
+		EncryptedAccessToken: testEncryptedToken, Enabled: true, AuthStatus: accountdomain.AuthStatusReauthRequired,
+		ReauthMarkedAt: ptrTime(now.Add(-2 * time.Hour)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateCredentialRefreshFailure(ctx, ambiguous.ID, repository.CredentialRefreshFailure{
+		Count: 5, UnclassifiedAuthFailureCount: 5, RetryAt: now,
+		Status: 401, Code: "oauth_http_401", Message: "Unauthorized",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	key := clientKeyModel{Name: "auto-clean-key", Prefix: "auto-clean-key", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
 	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
@@ -61,7 +76,7 @@ func TestDeleteAutoCleanReauthBatchSkipsActiveMediaJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := repo.DeleteAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, []uint64{blocked.ID, free.ID})
+	deleted, err := repo.DeleteAutoCleanReauthCandidates(ctx, now.Add(-time.Hour), false, []uint64{blocked.ID, free.ID, ambiguous.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +88,9 @@ func TestDeleteAutoCleanReauthBatchSkipsActiveMediaJobs(t *testing.T) {
 	}
 	if _, err := repo.Get(ctx, blocked.ID); err != nil {
 		t.Fatalf("blocked account should remain: %v", err)
+	}
+	if _, err := repo.Get(ctx, ambiguous.ID); err != nil {
+		t.Fatalf("unclassified refresh reauth account should remain: %v", err)
 	}
 	if _, err := repo.Get(ctx, free.ID); err == nil {
 		t.Fatal("free account should be deleted")

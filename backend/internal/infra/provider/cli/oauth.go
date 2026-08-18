@@ -81,16 +81,17 @@ func (c *oauthClient) refreshWithClientID(ctx context.Context, refreshToken, cli
 	form := url.Values{"grant_type": {"refresh_token"}, "client_id": {firstNonEmpty(clientID, c.clientID)}, "refresh_token": {refreshToken}}
 	value, err := c.exchange(ctx, form, refreshToken, false)
 	if errors.Is(err, provider.ErrAuthorizationDenied) {
-		return tokenPayload{}, &provider.CredentialRefreshError{Code: "refresh_denied", Message: "OAuth authorization was denied", Permanent: true, Cause: err}
+		return tokenPayload{}, &provider.CredentialRefreshError{Code: "refresh_denied", Message: "OAuth authorization was denied", Cause: err}
 	}
 	return value, err
 }
 
 type tokenPayload struct {
-	AccessToken  string
-	RefreshToken string
-	ExpiresAt    time.Time
-	IDToken      string
+	AccessToken         string
+	RefreshToken        string
+	ExpiresAt           time.Time
+	IDToken             string
+	RefreshTokenRotated bool
 }
 
 func (c *oauthClient) exchange(ctx context.Context, form url.Values, fallbackRefresh string, deviceFlow bool) (tokenPayload, error) {
@@ -130,7 +131,7 @@ func (c *oauthClient) exchange(ctx context.Context, form url.Values, fallbackRef
 		}
 		return tokenPayload{}, &provider.CredentialRefreshError{
 			Status: resp.StatusCode, Code: oauthError.Code, Message: oauthError.Message, Response: oauthError.Response,
-			Permanent:  resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized,
+			Permanent:  provider.IsPermanentCredentialRefreshErrorCode(oauthError.Code),
 			RetryAfter: parseOAuthRetryAfter(resp.Header.Get("Retry-After")),
 		}
 	}
@@ -144,12 +145,13 @@ func (c *oauthClient) exchange(ctx context.Context, form url.Values, fallbackRef
 		return tokenPayload{}, fmt.Errorf("解析 xAI OAuth 响应: %w", err)
 	}
 	if value.AccessToken == "" {
-		return tokenPayload{}, &provider.CredentialRefreshError{Status: resp.StatusCode, Code: "missing_access_token", Message: "OAuth response did not contain access_token", Permanent: true}
+		return tokenPayload{}, &provider.CredentialRefreshError{Status: resp.StatusCode, Code: "missing_access_token", Message: "OAuth response did not contain access_token"}
 	}
 	if value.ExpiresIn <= 0 {
 		value.ExpiresIn = 3600
 	}
-	return tokenPayload{AccessToken: value.AccessToken, RefreshToken: firstNonEmpty(value.RefreshToken, fallbackRefresh), ExpiresAt: time.Now().UTC().Add(time.Duration(value.ExpiresIn) * time.Second), IDToken: value.IDToken}, nil
+	rotated := strings.TrimSpace(value.RefreshToken) != "" && strings.TrimSpace(value.RefreshToken) != strings.TrimSpace(fallbackRefresh)
+	return tokenPayload{AccessToken: value.AccessToken, RefreshToken: firstNonEmpty(value.RefreshToken, fallbackRefresh), ExpiresAt: time.Now().UTC().Add(time.Duration(value.ExpiresIn) * time.Second), IDToken: value.IDToken, RefreshTokenRotated: rotated}, nil
 }
 
 type oauthErrorDetails struct {

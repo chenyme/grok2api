@@ -141,13 +141,16 @@ type Credential struct {
 	RefreshDueAt              *time.Time
 	LastRefreshAt             *time.Time
 	RefreshFailureCount       int
-	LastRefreshErrorStatus    int
-	LastRefreshErrorCode      string
-	LastRefreshErrorMessage   string
-	LastRefreshErrorResponse  string
-	RefreshPermanent          bool
-	Enabled                   bool
-	AuthStatus                AuthStatus
+	// RefreshUnclassifiedAuthCount counts consecutive OAuth 400/401 rejections
+	// that cannot be classified from a machine-readable error code.
+	RefreshUnclassifiedAuthCount int
+	LastRefreshErrorStatus       int
+	LastRefreshErrorCode         string
+	LastRefreshErrorMessage      string
+	LastRefreshErrorResponse     string
+	RefreshPermanent             bool
+	Enabled                      bool
+	AuthStatus                   AuthStatus
 	// ReauthMarkedAt 仅在切入 reauthRequired 时写入；恢复 active 时清空。自动清理以该时刻为 minAge 锚点。
 	ReauthMarkedAt   *time.Time
 	Priority         int
@@ -206,23 +209,24 @@ type Credential struct {
 // CredentialMaterial contains the encrypted provider secrets and refresh
 // metadata loaded only after routing selects an account.
 type CredentialMaterial struct {
-	AccountID                 uint64
-	Provider                  Provider
-	AuthType                  AuthType
-	OIDCClientID              string
-	EncryptedAccessToken      string
-	EncryptedRefreshToken     string
-	EncryptedCloudflareCookie string
-	ExpiresAt                 time.Time
-	RefreshDueAt              *time.Time
-	LastRefreshAt             *time.Time
-	RefreshFailureCount       int
-	LastRefreshErrorStatus    int
-	LastRefreshErrorCode      string
-	LastRefreshErrorMessage   string
-	LastRefreshErrorResponse  string
-	RefreshPermanent          bool
-	UpdatedAt                 time.Time
+	AccountID                    uint64
+	Provider                     Provider
+	AuthType                     AuthType
+	OIDCClientID                 string
+	EncryptedAccessToken         string
+	EncryptedRefreshToken        string
+	EncryptedCloudflareCookie    string
+	ExpiresAt                    time.Time
+	RefreshDueAt                 *time.Time
+	LastRefreshAt                *time.Time
+	RefreshFailureCount          int
+	RefreshUnclassifiedAuthCount int
+	LastRefreshErrorStatus       int
+	LastRefreshErrorCode         string
+	LastRefreshErrorMessage      string
+	LastRefreshErrorResponse     string
+	RefreshPermanent             bool
+	UpdatedAt                    time.Time
 }
 
 // ApplyTo merges credential material into the matching routing account.
@@ -241,6 +245,7 @@ func (m CredentialMaterial) ApplyTo(value Credential) (Credential, bool) {
 	value.RefreshDueAt = m.RefreshDueAt
 	value.LastRefreshAt = m.LastRefreshAt
 	value.RefreshFailureCount = m.RefreshFailureCount
+	value.RefreshUnclassifiedAuthCount = m.RefreshUnclassifiedAuthCount
 	value.LastRefreshErrorStatus = m.LastRefreshErrorStatus
 	value.LastRefreshErrorCode = m.LastRefreshErrorCode
 	value.LastRefreshErrorMessage = m.LastRefreshErrorMessage

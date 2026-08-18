@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
-	"github.com/chenyme/grok2api/backend/internal/infra/provider"
-	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
 
 func TestPrepareImportedCredentialRefreshesRTOnlySeed(t *testing.T) {
@@ -61,6 +64,75 @@ func TestPrepareImportedCredentialRefreshesRTOnlySeed(t *testing.T) {
 	}
 	if renewedRefresh != "rotated-again" || requests != 2 {
 		t.Fatalf("renewed refresh = %q, requests = %d", renewedRefresh, requests)
+	}
+}
+
+func TestCredentialRefreshCallsOAuthAndPersistsRotationEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		if err := request.ParseForm(); err != nil {
+			t.Errorf("parse form: %v", err)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if request.Form.Get("grant_type") != "refresh_token" || request.Form.Get("refresh_token") != "original-rt" || request.Form.Get("client_id") != "custom-client" {
+			t.Errorf("form = %#v", request.Form)
+			writer.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"access_token":"fresh-access","refresh_token":"rotated-rt","expires_in":3600}`)
+	}))
+	t.Cleanup(server.Close)
+
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "oauth-refresh-e2e.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessEncrypted, err := cipher.Encrypt("old-access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshEncrypted, err := cipher.Encrypt("original-rt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{}, cipher)
+	adapter.oauth.http = server.Client()
+	adapter.oauth.tokenURL = server.URL
+	repository := relational.NewAccountRepository(database)
+	credential, _, err := repository.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, AuthType: accountdomain.AuthTypeOAuth, Name: "oauth-e2e", SourceKey: "oauth-e2e", OIDCClientID: "custom-client",
+		EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, ExpiresAt: time.Now().UTC().Add(time.Hour), Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := accountapp.NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), cipher, nil)
+	refreshed, err := service.EnsureCredential(ctx, credential, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedAccess, err := cipher.Decrypt(refreshed.EncryptedAccessToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedRefresh, err := cipher.Decrypt(refreshed.EncryptedRefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 || storedAccess != "fresh-access" || storedRefresh != "rotated-rt" || refreshed.LastRefreshAt == nil {
+		t.Fatalf("requests=%d access=%q refresh=%q credential=%#v", requests, storedAccess, storedRefresh, refreshed)
 	}
 }
 
@@ -141,8 +213,11 @@ func TestOAuthRefreshClassifiesPermanentAndTransientFailures(t *testing.T) {
 		response   string
 	}{
 		{name: "transient upstream", status: http.StatusServiceUnavailable, body: `{"error":"temporarily_unavailable"}`, retryAfter: "7", code: "temporarily_unavailable"},
+		{name: "bad request is not inherently permanent", status: http.StatusBadRequest, body: `{"error":"temporarily_unavailable","error_description":"Try another egress"}`, code: "temporarily_unavailable", message: "Try another egress"},
+		{name: "unauthorized client is configuration scoped", status: http.StatusUnauthorized, body: `{"error":"invalid_client","error_description":"Client authentication failed"}`, code: "invalid_client", message: "Client authentication failed"},
 		{name: "invalid grant", status: http.StatusBadRequest, body: `{"error":"invalid_grant","error_description":"Refresh token has expired","message":"Access denied","request_id":"req-123","refresh_token":"must-not-leak"}`, permanent: true, code: "invalid_grant", message: "Refresh token has expired · Access denied", response: `"refresh_token":"[REDACTED]"`},
-		{name: "nested error", status: http.StatusBadRequest, body: `{"error":{"code":"invalid_client","message":"Client rejected","detail":"Application disabled"}}`, permanent: true, code: "invalid_client", message: "Client rejected · Application disabled", response: `"detail":"Application disabled"`},
+		{name: "nested error", status: http.StatusBadRequest, body: `{"error":{"code":"invalid_client","message":"Client rejected","detail":"Application disabled"}}`, code: "invalid_client", message: "Client rejected · Application disabled", response: `"detail":"Application disabled"`},
+		{name: "explicit revoked refresh token", status: http.StatusUnauthorized, body: `{"error":"refresh_token_revoked"}`, permanent: true, code: "refresh_token_revoked"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -176,6 +251,18 @@ func TestOAuthRefreshClassifiesPermanentAndTransientFailures(t *testing.T) {
 				t.Fatalf("retry after = %s", refreshErr.RetryAfter)
 			}
 		})
+	}
+}
+
+func TestOAuthRefreshTreatsMalformedSuccessAsRetryable(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return oauthResponse(http.StatusOK, `{"expires_in":3600}`), nil
+	})}
+	client := newOAuthClient(httpClient, nil)
+	_, err := client.refresh(context.Background(), "refresh")
+	var refreshErr *provider.CredentialRefreshError
+	if !errors.As(err, &refreshErr) || refreshErr.Code != "missing_access_token" || refreshErr.Permanent {
+		t.Fatalf("error = %#v", err)
 	}
 }
 
