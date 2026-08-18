@@ -1282,6 +1282,7 @@ type responseMetadata struct {
 	cacheCreationInputTokens int64
 	ResponseID               string
 	Model                    string
+	SequenceNumber           int64
 	StreamFailure            *gateway.StreamFailureDiagnostic
 }
 
@@ -1333,7 +1334,7 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 			if inspector.terminalSuccess {
 				return inspector.Metadata(), nil
 			}
-			if trailer := streamAbortTrailer(protocol, readErr); len(trailer) > 0 {
+			if trailer := streamAbortTrailer(protocol, readErr, inspector.Metadata()); len(trailer) > 0 {
 				if transferred+len(trailer) <= maxStreamResponseTransferBytes {
 					if err := setResponseWriteDeadline(writer); err == nil {
 						if _, err := writer.Write(trailer); err == nil {
@@ -1347,7 +1348,7 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 	}
 }
 
-func streamAbortTrailer(protocol streamProtocol, cause error) []byte {
+func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetadata) []byte {
 	code, message := "upstream_stream_interrupted", "上游流式响应中断"
 	if errors.Is(cause, neterror.ErrUpstreamStreamIdleTimeout) {
 		code, message = "upstream_stream_idle_timeout", "上游流式响应长时间无数据"
@@ -1367,17 +1368,30 @@ func streamAbortTrailer(protocol streamProtocol, cause error) []byte {
 		}
 		return []byte("data: " + string(payload) + "\n\ndata: [DONE]\n\n")
 	case streamProtocolResponses:
+		id := strings.TrimSpace(meta.ResponseID)
+		if id == "" {
+			id = "resp_abort"
+		}
+		response := map[string]any{
+			"id":         id,
+			"object":     "response",
+			"created_at": time.Now().Unix(),
+			"status":     "incomplete",
+			"output":     []any{},
+			"error":      map[string]any{"code": code, "message": message},
+		}
+		if model := strings.TrimSpace(meta.Model); model != "" {
+			response["model"] = model
+		}
 		payload, err := json.Marshal(map[string]any{
-			"type": "response.incomplete",
-			"response": map[string]any{
-				"status": "incomplete",
-				"error":  map[string]any{"code": code, "message": message},
-			},
+			"type":            "response.incomplete",
+			"sequence_number": meta.SequenceNumber + 1,
+			"response":        response,
 		})
 		if err != nil {
 			return nil
 		}
-		return []byte("data: " + string(payload) + "\n\n")
+		return []byte("event: response.incomplete\ndata: " + string(payload) + "\n\n")
 	case streamProtocolAnthropic:
 		payload, err := json.Marshal(map[string]any{
 			"type":  "error",
@@ -1512,6 +1526,9 @@ func (i *responseInspector) Inspect(chunk []byte) {
 				}
 				if metadata.ResponseID != "" {
 					i.metadata.ResponseID = metadata.ResponseID
+				}
+				if metadata.SequenceNumber > i.metadata.SequenceNumber {
+					i.metadata.SequenceNumber = metadata.SequenceNumber
 				}
 				if metadata.Model != "" {
 					i.metadata.Model = metadata.Model
@@ -1838,7 +1855,7 @@ func extractMetadata(data []byte) responseMetadata {
 	if json.Unmarshal(data, &root) != nil {
 		return responseMetadata{}
 	}
-	metadata := responseMetadata{ResponseID: root.ID, Model: root.Model}
+	metadata := responseMetadata{ResponseID: root.ID, Model: root.Model, SequenceNumber: root.SequenceNumber}
 	usage := root.Usage
 	if root.Response != nil {
 		if metadata.ResponseID == "" {
@@ -1846,6 +1863,9 @@ func extractMetadata(data []byte) responseMetadata {
 		}
 		if metadata.Model == "" {
 			metadata.Model = root.Response.Model
+		}
+		if metadata.SequenceNumber == 0 {
+			metadata.SequenceNumber = root.Response.SequenceNumber
 		}
 		if usage == nil {
 			usage = root.Response.Usage
@@ -1860,10 +1880,11 @@ func extractMetadata(data []byte) responseMetadata {
 }
 
 type responsePayloadDTO struct {
-	ID       string              `json:"id"`
-	Model    string              `json:"model"`
-	Usage    *responseUsageDTO   `json:"usage"`
-	Response *responsePayloadDTO `json:"response"`
+	ID             string              `json:"id"`
+	Model          string              `json:"model"`
+	SequenceNumber int64               `json:"sequence_number"`
+	Usage          *responseUsageDTO   `json:"usage"`
+	Response       *responsePayloadDTO `json:"response"`
 }
 
 type responseUsageDTO struct {

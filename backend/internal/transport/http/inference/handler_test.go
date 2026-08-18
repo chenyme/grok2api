@@ -991,7 +991,7 @@ func TestCopyStreamWritesTerminalOnIdleTimeout(t *testing.T) {
 		want     []string
 	}{
 		{name: "chat", protocol: streamProtocolChat, want: []string{`"code":"upstream_stream_idle_timeout"`, "data: [DONE]"}},
-		{name: "responses", protocol: streamProtocolResponses, want: []string{`"type":"response.incomplete"`, `"code":"upstream_stream_idle_timeout"`}},
+		{name: "responses", protocol: streamProtocolResponses, want: []string{`"type":"response.incomplete"`, `"code":"upstream_stream_idle_timeout"`, `"id":"resp_abort"`, `"created_at":`, `"sequence_number":`}},
 		{name: "anthropic", protocol: streamProtocolAnthropic, want: []string{`"type":"error"`, "上游流式响应长时间无数据"}},
 	}
 	for _, test := range tests {
