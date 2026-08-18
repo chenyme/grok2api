@@ -240,8 +240,8 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				request.NormalizedMetadata.ReasoningEffort = conversationOptions.ReasoningEffort
 			}
 		} else {
-			var foreignCompactions int
-			body, foreignCompactions, err = expandGatewayCompactionHistory(body, a.compaction, request.PromptCacheKey)
+			var foreignCompactions, driftedCompactions int
+			body, foreignCompactions, driftedCompactions, err = expandGatewayCompactionHistory(body, a.compaction, request.PromptCacheKey)
 			if err != nil {
 				return invalidResponsesResponse(err), nil
 			}
@@ -250,6 +250,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				compactionRequested = toolCompatibility.compactionRequested
 				if foreignCompactions > 0 {
 					toolCompatibility.addWarning("foreign_compaction_omitted")
+				}
+				if driftedCompactions > 0 {
+					toolCompatibility.addWarning("compaction_session_drifted")
 				}
 			}
 		}
