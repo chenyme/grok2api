@@ -1162,6 +1162,9 @@ export function AccountsPage() {
 
   const summary = summaryQuery.data;
   const recoveringAccounts = summary?.recovering ?? 0;
+  const cooldownAccounts = summary?.recovery.cooldown ?? 0;
+  const waitingResetAccounts = summary?.recovery.waitingReset ?? 0;
+  const probingAccounts = summary?.recovery.probing ?? 0;
   const disabledAccounts = summary?.issues.disabled ?? 0;
   const invalidAccounts = summary?.issues.reauthRequired ?? 0;
   const riskAccounts = summary?.risk ?? 0;
@@ -1171,6 +1174,23 @@ export function AccountsPage() {
   const consoleSummary = summary?.providers.grok_console ?? { total: 0, available: 0 };
   const summaryLoading = summaryQuery.isPending;
   const summaryUnavailable = summaryQuery.isError;
+  const abnormalBreakdown = [
+    { label: t("accounts.statusCooldown"), count: cooldownAccounts, tone: "bg-amber-500/10 text-amber-700 dark:text-amber-300" },
+    { label: t("accounts.waitingReset"), count: waitingResetAccounts, tone: "bg-amber-500/10 text-amber-700 dark:text-amber-300" },
+    { label: t("accounts.probing"), count: probingAccounts, tone: "bg-sky-500/10 text-sky-700 dark:text-sky-300" },
+    { label: t("accounts.riskFilter"), count: riskAccounts, tone: "bg-orange-500/10 text-orange-700 dark:text-orange-300" },
+    { label: t("accounts.statusDisabled"), count: disabledAccounts, tone: "bg-muted text-muted-foreground" },
+    { label: t("accounts.statusReauthRequired"), count: invalidAccounts, tone: "bg-red-500/10 text-red-700 dark:text-red-300" },
+  ];
+  const abnormalDetail = abnormalBreakdown.map((item) => `${item.label} ${formatNumber(item.count, i18n.language, 0)}`).join(" · ");
+  const abnormalDetailItems = summaryUnavailable
+    ? [{ label: "-", value: "", tone: "bg-muted text-muted-foreground" }]
+    : abnormalBreakdown
+      .filter((item) => item.count > 0)
+      .map((item) => ({ ...item, value: formatNumber(item.count, i18n.language, 0) }));
+  if (!summaryUnavailable && abnormalDetailItems.length === 0) {
+    abnormalDetailItems.push({ label: t("accounts.statusActive"), value: "", tone: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", count: 0 });
+  }
   const providerAccountTotal = provider === "grok_build" ? buildSummary.total : provider === "grok_web" ? webSummary.total : consoleSummary.total;
   const hasProviderAccounts = providerAccountTotal > 0 || (result?.total ?? 0) > 0;
   const bindableEgressNodes = (egressNodesQuery.data?.items ?? []).filter((node) => node.enabled && node.proxyConfigured && scopeSupportsAccountProvider(node.scope, provider));
@@ -1262,12 +1282,8 @@ export function AccountsPage() {
           loading={summaryLoading}
           label={t("accounts.abnormalAccountCount")}
           value={summaryUnavailable ? "-" : formatNumber(abnormalAccounts, i18n.language, 0)}
-          detail={[
-            `${t("accounts.statusCooldown")} ${formatNumber(recoveringAccounts, i18n.language, 0)}`,
-            `${t("accounts.riskAccountCount", { count: formatNumber(riskAccounts, i18n.language, 0) })}`,
-            `${t("accounts.statusDisabled")} ${formatNumber(disabledAccounts, i18n.language, 0)}`,
-            `${t("accounts.statusReauthRequired")} ${formatNumber(invalidAccounts, i18n.language, 0)}`,
-          ].join(" · ")}
+          detail={abnormalDetail}
+          detailItems={abnormalDetailItems}
         />
       </section>
       <div className="space-y-5">
@@ -2255,7 +2271,15 @@ function accountProviderPrimaryEgressScope(provider: AccountProvider): EgressSco
   return provider;
 }
 
-function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { icon: ReactNode; label: string; value: string; detail: string; loading: boolean; tone: string }) {
+function AccountMetricPanel({ icon, label, value, detail, detailItems, loading, tone }: {
+  icon: ReactNode;
+  label: string;
+  value: string;
+  detail: string;
+  detailItems?: Array<{ label: string; value: string; tone?: string }>;
+  loading: boolean;
+  tone: string;
+}) {
   return (
     <div className="min-h-28 rounded-lg bg-card p-4" aria-busy={loading}>
       <div className="flex min-h-5 items-center justify-between gap-3">
@@ -2263,7 +2287,18 @@ function AccountMetricPanel({ icon, label, value, detail, loading, tone }: { ico
         <span className={cn("flex size-5 items-center justify-center [&_svg]:size-4", tone)}>{icon}</span>
       </div>
       <div className="mt-3 flex min-h-8 items-center text-2xl font-medium tracking-tight tabular-nums">{loading ? <Spinner /> : value}</div>
-      <p className={cn("mt-1.5 min-h-4 truncate text-[11px] text-muted-foreground", loading && "invisible")} title={detail}>{detail}</p>
+      {detailItems ? (
+        <div className={cn("-ml-1.5 mt-1.5 flex min-h-5 flex-wrap gap-1 text-[11px] leading-4", loading && "invisible")} title={detail}>
+          {detailItems.map((item) => (
+            <span key={item.label} className={cn("inline-flex shrink-0 items-baseline gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5", item.tone ?? "bg-muted text-muted-foreground")}>
+              <span>{item.label}</span>
+              {item.value ? <span className="font-medium tabular-nums">{item.value}</span> : null}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className={cn("mt-1.5 min-h-4 truncate text-[11px] text-muted-foreground", loading && "invisible")} title={detail}>{detail}</p>
+      )}
     </div>
   );
 }

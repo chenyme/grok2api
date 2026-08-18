@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-const maxDeferredSearchTextBytes = 8 << 20
+const (
+	maxDeferredSearchTextBytes       = 8 << 20
+	maxDeferredReasoningSummaryBytes = 8 << 20
+)
 
 // ConvertResponseStream 将 Responses SSE 转换为 Chat Completions 或 Anthropic Messages SSE。
 func ConvertResponseStream(source io.ReadCloser, operation string) io.ReadCloser {
@@ -50,6 +53,9 @@ type streamConverter struct {
 	thinkingIndex     int
 	thinkingItemID    string
 	chatReasoningMark bool
+	reasoningItems    map[string]*reasoningStreamState
+	reasoningOrder    []string
+	activeReasoningID string
 	nextIndex         int
 	tools             map[string]streamTool
 	webSearch         []webSearchCall
@@ -72,10 +78,18 @@ type streamTool struct {
 	Closed    bool
 }
 
+type reasoningStreamState struct {
+	summary   strings.Builder
+	rawSeen   bool
+	done      bool
+	anonymous bool
+}
+
 func newStreamConverter(writer io.Writer, operation string, options ResponseOptions) *streamConverter {
 	return &streamConverter{
 		writer: writer, operation: operation, created: time.Now().Unix(), tools: make(map[string]streamTool),
 		webSearchEmitted: make(map[string]bool),
+		reasoningItems:   make(map[string]*reasoningStreamState),
 		deferSearchText:  operation == OperationMessages && options.AnthropicWebSearch,
 		options:          options, stopFilter: newAnthropicStreamStopFilter(options.StopSequences),
 	}
@@ -245,25 +259,21 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		}
 		return c.chatDelta(map[string]any{"annotations": []any{annotation}})
 	case "response.reasoning_summary_text.delta":
-		var delta string
+		var itemID, delta string
+		_ = json.Unmarshal(root["item_id"], &itemID)
 		_ = json.Unmarshal(root["delta"], &delta)
-		if c.operation == OperationChat {
-			return c.chatDelta(map[string]any{"reasoning_content": delta})
-		}
-		return c.thinkingDelta(delta)
+		return c.reasoningSummaryDelta(itemID, delta)
 	case "response.reasoning_text.delta":
-		var delta string
+		var itemID, delta string
+		_ = json.Unmarshal(root["item_id"], &itemID)
 		_ = json.Unmarshal(root["delta"], &delta)
-		if c.operation == OperationChat {
-			return c.chatDelta(map[string]any{"reasoning_content": delta})
-		}
-		if c.operation == OperationMessages {
-			return c.thinkingDelta(delta)
-		}
-		return nil
+		return c.reasoningTextDelta(itemID, delta)
 	case "response.output_item.added":
 		var item responseItem
 		_ = json.Unmarshal(root["item"], &item)
+		if item.Type == "reasoning" && c.reasoningOutputEnabled() {
+			c.ensureReasoningState(item.ID)
+		}
 		if item.Type == "reasoning" && c.operation == OperationMessages && c.options.AnthropicThinking {
 			return c.thinkingStart(item.ID)
 		}
@@ -299,6 +309,11 @@ func (c *streamConverter) handle(event string, data []byte) error {
 			return c.toolArgumentsDone(item.ID, item.Arguments)
 		}
 		if item.Type == "reasoning" {
+			if c.reasoningOutputEnabled() {
+				if err := c.reasoningDone(item); err != nil {
+					return err
+				}
+			}
 			return c.thinkingDone(item)
 		}
 		if item.Type == "web_search_call" && c.operation == OperationMessages && c.options.AnthropicWebSearch {
@@ -326,6 +341,137 @@ func (c *streamConverter) handle(event string, data []byte) error {
 	case "error", "response.failed":
 		return c.streamError(data)
 	}
+	return nil
+}
+
+func (c *streamConverter) reasoningOutputEnabled() bool {
+	return c.operation == OperationChat || (c.operation == OperationMessages && c.options.AnthropicThinking)
+}
+
+func (c *streamConverter) ensureReasoningState(itemID string) (string, *reasoningStreamState) {
+	key := itemID
+	if key != "" {
+		if state, exists := c.reasoningItems[key]; exists {
+			c.activeReasoningID = key
+			return key, state
+		}
+		// Some compatible upstreams omit item_id on the first delta. Once the
+		// real item arrives, attach that anonymous state instead of creating a
+		// second source that could later replay the buffered summary.
+		if anonymous := c.activeReasoningID; anonymous != "" {
+			if state := c.reasoningItems[anonymous]; state != nil && state.anonymous && !state.done {
+				delete(c.reasoningItems, anonymous)
+				state.anonymous = false
+				c.reasoningItems[key] = state
+				for index, existing := range c.reasoningOrder {
+					if existing == anonymous {
+						c.reasoningOrder[index] = key
+						break
+					}
+				}
+				c.activeReasoningID = key
+				return key, state
+			}
+		}
+	}
+	if key == "" {
+		key = c.activeReasoningID
+	}
+	anonymous := false
+	if key == "" {
+		key = fmt.Sprintf("#reasoning-%d", len(c.reasoningOrder)+1)
+		anonymous = true
+	}
+	state, exists := c.reasoningItems[key]
+	if !exists {
+		state = &reasoningStreamState{anonymous: anonymous}
+		c.reasoningItems[key] = state
+		c.reasoningOrder = append(c.reasoningOrder, key)
+	}
+	c.activeReasoningID = key
+	return key, state
+}
+
+func (c *streamConverter) reasoningSummaryDelta(itemID, delta string) error {
+	if delta == "" || !c.reasoningOutputEnabled() {
+		return nil
+	}
+	_, state := c.ensureReasoningState(itemID)
+	if state.done || state.rawSeen {
+		return nil
+	}
+	// Console can publish the same client-facing thought through summary and
+	// raw reasoning events. Defer summary until item completion so raw can take
+	// precedence without relying on chunk boundaries or text equality.
+	pending := state.summary.Len()
+	if pending >= maxDeferredReasoningSummaryBytes || len(delta) > maxDeferredReasoningSummaryBytes-pending {
+		return fmt.Errorf("reasoning summary 延迟缓冲超过 %d MiB", maxDeferredReasoningSummaryBytes>>20)
+	}
+	state.summary.WriteString(delta)
+	return nil
+}
+
+func (c *streamConverter) reasoningTextDelta(itemID, delta string) error {
+	if delta == "" || !c.reasoningOutputEnabled() {
+		return nil
+	}
+	_, state := c.ensureReasoningState(itemID)
+	if state.done {
+		return nil
+	}
+	if !state.rawSeen {
+		state.rawSeen = true
+		state.summary.Reset()
+	}
+	return c.emitReasoningDelta(delta)
+}
+
+func (c *streamConverter) emitReasoningDelta(delta string) error {
+	if c.operation == OperationChat {
+		return c.chatDelta(map[string]any{"reasoning_content": delta})
+	}
+	if c.operation == OperationMessages {
+		return c.thinkingDelta(delta)
+	}
+	return nil
+}
+
+func (c *streamConverter) reasoningDone(item responseItem) error {
+	key, state := c.ensureReasoningState(item.ID)
+	if state.done {
+		return nil
+	}
+	if err := c.flushReasoningSummary(state); err != nil {
+		return err
+	}
+	state.done = true
+	if c.activeReasoningID == key {
+		c.activeReasoningID = ""
+	}
+	return nil
+}
+
+func (c *streamConverter) flushReasoningSummary(state *reasoningStreamState) error {
+	if state == nil || state.rawSeen || state.summary.Len() == 0 {
+		return nil
+	}
+	value := state.summary.String()
+	state.summary.Reset()
+	return c.emitReasoningDelta(value)
+}
+
+func (c *streamConverter) flushPendingReasoning() error {
+	for _, key := range c.reasoningOrder {
+		state := c.reasoningItems[key]
+		if state.done {
+			continue
+		}
+		if err := c.flushReasoningSummary(state); err != nil {
+			return err
+		}
+		state.done = true
+	}
+	c.activeReasoningID = ""
 	return nil
 }
 
@@ -434,6 +580,9 @@ func (c *streamConverter) done(status string) error {
 	if err := c.start(); err != nil {
 		return err
 	}
+	if err := c.flushPendingReasoning(); err != nil {
+		return err
+	}
 	if c.operation == OperationChat {
 		return c.doneChat(status)
 	}
@@ -441,6 +590,9 @@ func (c *streamConverter) done(status string) error {
 }
 
 func (c *streamConverter) streamError(data []byte) error {
+	if err := c.flushPendingReasoning(); err != nil {
+		return err
+	}
 	c.finished = true
 	if c.operation == OperationMessages {
 		return c.streamErrorMessages(data)

@@ -34,6 +34,7 @@ export type AuditDTO = {
   provider: "grok_build" | "grok_web" | "grok_console";
   operation: "responses" | "compaction" | "chat" | "messages" | "image" | "image_edit" | "video" | "tts" | "stt" | "realtime" | "voice";
   usageSource: "upstream" | "estimated" | "none";
+  reasoningEffort?: "auto" | "none" | "low" | "medium" | "high" | "xhigh" | "fixed";
   accountId?: string;
   accountName?: string;
   egressNodeId?: string;
@@ -142,6 +143,7 @@ const auditValidator = hasShape({
   id: isString, requestId: isString, clientKeyId: isString, clientKeyName: isOptional(isString), modelRouteId: isString,
   modelPublicId: isOptional(isString), modelUpstreamModel: isOptional(isString), provider: isOneOf("grok_build", "grok_web", "grok_console"),
   operation: isOneOf("responses", "compaction", "chat", "messages", "image", "image_edit", "video", "tts", "stt", "realtime", "voice"), usageSource: isOneOf("upstream", "estimated", "none"),
+  reasoningEffort: isOptional(isOneOf("auto", "none", "low", "medium", "high", "xhigh", "fixed")),
   accountId: isOptional(isString), accountName: isOptional(isString),
   egressNodeId: isOptional(isString), egressNodeName: isOptional(isString),
   egressScope: isOptional(isOneOf("grok_build", "grok_web", "grok_console", "grok_web_asset", "grok_console_asset")), egressMode: isOptional(isOneOf("direct", "proxy")),

@@ -62,6 +62,10 @@ services:
     build:
       context: .
       dockerfile: tools/egress-quality-guard/Dockerfile
+    environment:
+      # Default matches the Compose service name. Override for host networking
+      # or a renamed grok2api service, e.g. http://127.0.0.1:8000
+      GROK2API_BASE_URL: ${GROK2API_BASE_URL:-http://grok2api:8000}
     depends_on:
       grok2api:
         condition: service_healthy

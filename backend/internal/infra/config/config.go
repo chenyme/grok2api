@@ -227,6 +227,18 @@ type RoutingConfig struct {
 	ReasoningReplayEnabled      bool     `yaml:"reasoningReplayEnabled"`
 	ReasoningReplayTTL          Duration `yaml:"reasoningReplayTTL"`
 	ReasoningReplayMaxEntries   int      `yaml:"reasoningReplayMaxEntries"`
+	// AutoAssignMaxNodeShare optionally caps how many active accounts one
+	// healthy node may absorb during auto assignment. 0 keeps the historical
+	// unbounded first-pass evacuation. Values in [0.05, 1] are a fraction of
+	// the active provider pool. GROK2API_AUTO_ASSIGN_MAX_NODE_SHARE overrides
+	// this field when set to a valid value.
+	AutoAssignMaxNodeShare float64 `yaml:"autoAssignMaxNodeShare"`
+	// AutoAssignMaxMigrationShare optionally caps how many already-bound
+	// accounts may move in one maintenance cycle. 0 keeps the historical
+	// unbounded first-pass evacuation and the existing 200-move ceiling for
+	// capacity/rebalance repair. GROK2API_AUTO_ASSIGN_MAX_MIGRATION_SHARE
+	// overrides this field when set to a valid value.
+	AutoAssignMaxMigrationShare float64 `yaml:"autoAssignMaxMigrationShare"`
 }
 
 type AuditConfig struct {
@@ -267,6 +279,18 @@ type QualityGuardConfig struct {
 	RotationToken           string   `yaml:"rotationToken"`
 	RotationTimeout         Duration `yaml:"rotationTimeout"`
 	RotatableNodeIDs        []uint64 `yaml:"rotatableNodeIDs"`
+	// RequestRetry withholds a thinking-model stream that already has enough
+	// visible output and no reasoning, then retries on another account.
+	RequestRetry QualityGuardRequestRetryConfig `yaml:"requestRetry"`
+}
+
+// QualityGuardRequestRetryConfig holds the in-process missing-thinking withhold policy.
+type QualityGuardRequestRetryConfig struct {
+	Enabled         bool     `yaml:"enabled"`
+	MaxAttempts     int      `yaml:"maxAttempts"`
+	HoldTimeout     Duration `yaml:"holdTimeout"`
+	MinOutputTokens int      `yaml:"minOutputTokens"`
+	OnExhausted     string   `yaml:"onExhausted"`
 }
 
 type ClientKeyDefaultsConfig struct {
@@ -630,6 +654,9 @@ func (c Config) Validate() error {
 	if c.Routing.ReasoningReplayMaxEntries < 100 || c.Routing.ReasoningReplayMaxEntries > 1000000 {
 		return errors.New("routing.reasoningReplayMaxEntries 必须在 100 到 1000000 之间")
 	}
+	if !validAutoAssignShare(c.Routing.AutoAssignMaxNodeShare) || !validAutoAssignShare(c.Routing.AutoAssignMaxMigrationShare) {
+		return errors.New("routing.autoAssignMaxNodeShare 与 autoAssignMaxMigrationShare 必须为 0 或 0.05 到 1 之间")
+	}
 	if c.Audit.BufferSize < 1 || c.Audit.BufferSize > maxAuditBufferSize || c.Audit.BatchSize < 1 || c.Audit.BatchSize > maxAuditBatchSize || c.Audit.BatchSize > c.Audit.BufferSize || c.Audit.FlushInterval.Value() < minAuditFlushInterval || c.Audit.FlushInterval.Value() > maxAuditFlushInterval {
 		return errors.New("audit 队列和批量写入配置无效")
 	}
@@ -675,6 +702,9 @@ func (c Config) Validate() error {
 }
 
 func validateQualityGuardConfig(value QualityGuardConfig) error {
+	if err := validateQualityGuardRequestRetry(value.RequestRetry); err != nil {
+		return err
+	}
 	if !value.Enabled {
 		return nil
 	}
@@ -724,6 +754,31 @@ func validateQualityGuardConfig(value QualityGuardConfig) error {
 		}
 	}
 	return nil
+}
+
+func validateQualityGuardRequestRetry(value QualityGuardRequestRetryConfig) error {
+	if !value.Enabled {
+		return nil
+	}
+	if value.MaxAttempts != 0 && (value.MaxAttempts < 1 || value.MaxAttempts > 6) {
+		return errors.New("qualityGuard.requestRetry.maxAttempts 必须在 1 到 6 之间")
+	}
+	if d := value.HoldTimeout.Value(); d != 0 && (d < 200*time.Millisecond || d > 30*time.Second) {
+		return errors.New("qualityGuard.requestRetry.holdTimeout 必须在 200ms 到 30s 之间")
+	}
+	if value.MinOutputTokens != 0 && (value.MinOutputTokens < 8 || value.MinOutputTokens > 256) {
+		return errors.New("qualityGuard.requestRetry.minOutputTokens 必须在 8 到 256 之间")
+	}
+	switch strings.TrimSpace(value.OnExhausted) {
+	case "", "fail_open", "fail_closed":
+	default:
+		return errors.New("qualityGuard.requestRetry.onExhausted 必须是 fail_open 或 fail_closed")
+	}
+	return nil
+}
+
+func validAutoAssignShare(value float64) bool {
+	return value == 0 || (value >= 0.05 && value <= 1)
 }
 
 func validUniquePositiveIDs(values []uint64) bool {
@@ -850,6 +905,9 @@ func defaultConfig() Config {
 			QuarantineDuration: Duration(5 * time.Minute), NoAccountBackoff: Duration(5 * time.Minute),
 			MinimumHealthyNodes: 3, MaxOutputTokens: 384,
 			MinimumGenerationWindow: Duration(time.Second), RotationTimeout: Duration(45 * time.Second),
+			RequestRetry: QualityGuardRequestRetryConfig{
+				MaxAttempts: 6, HoldTimeout: Duration(3 * time.Second), MinOutputTokens: 32, OnExhausted: "fail_closed",
+			},
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
 		Accounts: AccountsConfig{

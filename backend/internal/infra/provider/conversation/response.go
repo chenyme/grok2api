@@ -8,7 +8,11 @@ import (
 
 // ResponseOptions 保留无法直接交给 Responses 上游执行的下游协议语义。
 type ResponseOptions struct {
-	AnthropicThinking          bool
+	AnthropicThinking bool
+	// ReasoningEffort is the effective client-facing Messages setting after
+	// budget and effort aliases have been converted to a canonical level.
+	ReasoningEffort            string
+	ReasoningEffortSet         bool
 	AnthropicWebSearch         bool
 	AnthropicWebSearchRequired bool
 	AnthropicWebSearchQuery    string
@@ -36,7 +40,6 @@ func (o ResponseOptions) InlineCitationsEnabled() bool {
 	}
 	return enabled
 }
-
 
 type responseEnvelope struct {
 	ID        string         `json:"id"`

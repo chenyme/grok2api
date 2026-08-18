@@ -214,6 +214,18 @@ qualityGuard:
 	if !value.QualityGuard.Enabled || value.QualityGuard.DeprecatedClientKeyID != 999 || value.QualityGuard.ActiveInterval.Value() != 45*time.Minute {
 		t.Fatalf("qualityGuard = %#v", value.QualityGuard)
 	}
+	retry := value.QualityGuard.RequestRetry
+	if retry.Enabled || retry.MaxAttempts != 6 || retry.HoldTimeout.Value() != 3*time.Second || retry.MinOutputTokens != 32 || retry.OnExhausted != "fail_closed" {
+		t.Fatalf("loaded requestRetry defaults = %#v", retry)
+	}
+}
+
+func TestDefaultQualityGuardRequestRetryContract(t *testing.T) {
+	t.Parallel()
+	got := defaultConfig().QualityGuard.RequestRetry
+	if got.Enabled || got.MaxAttempts != 6 || got.HoldTimeout.Value() != 3*time.Second || got.MinOutputTokens != 32 || got.OnExhausted != "fail_closed" {
+		t.Fatalf("requestRetry defaults = %#v", got)
+	}
 }
 
 func TestEnabledQualityGuardUsesManagedIdentity(t *testing.T) {
@@ -370,6 +382,22 @@ func TestRoutingMaxAttemptsSupportsLargeCredentialPools(t *testing.T) {
 	cfg.Routing.MaxAttempts = -2
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("values below unlimited sentinel should be rejected")
+	}
+}
+
+func TestValidateRejectsInvalidAutoAssignShareConfig(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Routing.AutoAssignMaxNodeShare = 0.03
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("autoAssignMaxNodeShare 0.03 should be rejected")
+	}
+	cfg = defaultConfig()
+	cfg.Routing.AutoAssignMaxMigrationShare = 1.5
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("autoAssignMaxMigrationShare 1.5 should be rejected")
+	}
+	if !validAutoAssignShare(0) || !validAutoAssignShare(0.3) || !validAutoAssignShare(1) {
+		t.Fatal("0, 0.3, and 1 must remain valid shares")
 	}
 }
 

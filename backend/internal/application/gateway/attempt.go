@@ -171,6 +171,23 @@ func (r *failureAttemptRecorder) captureStreamFailure(credential accountdomain.C
 	})
 }
 
+func (r *failureAttemptRecorder) captureQualityDegraded(credential accountdomain.Credential, startedAt time.Time) {
+	status := http.StatusOK
+	r.append(audit.Attempt{
+		Source:             audit.AttemptSourceUpstreamHTTP,
+		Stage:              "quality_hold",
+		AccountID:          auditAccountID(credential.ID),
+		AccountName:        credential.Name,
+		Method:             r.method,
+		RequestPath:        r.path,
+		StartedAt:          startedAt.UTC(),
+		DurationMS:         time.Since(startedAt).Milliseconds(),
+		UpstreamStatusCode: &status,
+		UpstreamStatus:     "200 OK",
+		TransportError:     ErrorQualityDegraded,
+	})
+}
+
 func (r *failureAttemptRecorder) append(attempt audit.Attempt) {
 	attempt.Number = len(r.attempts) + 1
 	r.attempts = append(r.attempts, attempt)

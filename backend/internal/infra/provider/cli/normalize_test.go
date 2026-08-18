@@ -59,13 +59,15 @@ func TestNormalizeBuildReasoningEffort(t *testing.T) {
 		{name: "prefixed 4.6 uppercase max maps to xhigh", model: "Build/grok-4.6", effort: "MAX", want: "xhigh"},
 		{name: "unknown xhigh remains guarded", model: "future-model", effort: "xhigh", want: "high"},
 		{name: "unknown max remains guarded", model: "future-model", effort: "max", want: "high"},
+		{name: "minimal maps to low", model: "grok-4.6", effort: "minimal", want: "low"},
 		{name: "high", model: "grok-4.5", effort: "high", want: "high"},
 		{name: "medium", model: "grok-4.5", effort: "medium", want: "medium"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			body := []byte(`{"reasoning":{"effort":"` + test.effort + `"},"input":"hello"}`)
-			normalized, err := normalizeBuildRequest(body, test.model, conversation.OperationResponses)
+			metadata := &provider.NormalizedRequestMetadata{}
+			normalized, err := normalizeBuildRequestWithMetadata(body, test.model, conversation.OperationResponses, metadata)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -77,7 +79,26 @@ func TestNormalizeBuildReasoningEffort(t *testing.T) {
 			if !ok || reasoning["effort"] != test.want {
 				t.Fatalf("reasoning = %#v, want %q", payload["reasoning"], test.want)
 			}
+			if metadata.ReasoningEffort != test.want {
+				t.Fatalf("metadata effort = %q, want %q", metadata.ReasoningEffort, test.want)
+			}
 		})
+	}
+}
+
+func TestNormalizeBuildReasoningMetadataRejectsArbitraryValuesAndDefaults(t *testing.T) {
+	for _, body := range []string{
+		`{"input":"hello"}`,
+		`{"input":"hello","reasoning":{"effort":"customer@example.com"}}`,
+		`{"input":"hello","reasoning":{"effort":123}}`,
+	} {
+		metadata := &provider.NormalizedRequestMetadata{}
+		if _, err := normalizeBuildRequestWithMetadata([]byte(body), "grok-4.6", conversation.OperationResponses, metadata); err != nil {
+			t.Fatal(err)
+		}
+		if metadata.ReasoningEffort != "" {
+			t.Fatalf("body %s persisted metadata %q", body, metadata.ReasoningEffort)
+		}
 	}
 }
 
@@ -203,7 +224,8 @@ func TestNormalizeBuildComposerStripsReasoningEffort(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			normalized, err := normalizeBuildRequest(test.body, modeldomain.GrokComposer25Fast, test.operation)
+			metadata := &provider.NormalizedRequestMetadata{}
+			normalized, err := normalizeBuildRequestWithMetadata(test.body, modeldomain.GrokComposer25Fast, test.operation, metadata)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -215,6 +237,9 @@ func TestNormalizeBuildComposerStripsReasoningEffort(t *testing.T) {
 				if _, exists := reasoning["effort"]; exists {
 					t.Fatalf("Composer reasoning effort leaked upstream: %#v", payload)
 				}
+			}
+			if metadata.ReasoningEffort != "fixed" {
+				t.Fatalf("Composer metadata effort = %q, want fixed", metadata.ReasoningEffort)
 			}
 		})
 	}

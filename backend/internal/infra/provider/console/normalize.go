@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	auditdomain "github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
@@ -17,6 +18,10 @@ var (
 )
 
 func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
+	return normalizeRequestWithMetadata(body, spec, nil)
+}
+
+func normalizeRequestWithMetadata(body []byte, spec ModelSpec, metadata *provider.NormalizedRequestMetadata) ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("解析 Console Responses 请求: %w", err)
@@ -36,11 +41,45 @@ func normalizeRequest(body []byte, spec ModelSpec) ([]byte, error) {
 	if _, exists := payload["max_output_tokens"]; !exists && spec.MaxOutputTokens > 0 {
 		payload["max_output_tokens"] = spec.MaxOutputTokens
 	}
+	requestedEffort := metadata != nil && auditdomain.NormalizeReasoningEffort(metadata.ReasoningEffort) != ""
+	requestedEffort = requestedEffort || hasRecognizedConsoleReasoningEffort(payload)
 	normalizeReasoning(payload, spec)
+	updateConsoleReasoningMetadata(payload, spec, requestedEffort, metadata)
 	ensureReasoningInclude(payload)
 	retainedClientTools := normalizeConsoleTools(payload)
 	normalizeConsoleToolChoice(payload, retainedClientTools)
 	return json.Marshal(payload)
+}
+
+func hasRecognizedConsoleReasoningEffort(payload map[string]any) bool {
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	effort, _ := reasoning["effort"].(string)
+	if strings.EqualFold(strings.TrimSpace(effort), "auto") {
+		return true
+	}
+	return normalizeEffort(effort) != ""
+}
+
+func updateConsoleReasoningMetadata(payload map[string]any, spec ModelSpec, requested bool, metadata *provider.NormalizedRequestMetadata) {
+	if metadata == nil {
+		return
+	}
+	previous := auditdomain.NormalizeReasoningEffort(metadata.ReasoningEffort)
+	metadata.ReasoningEffort = ""
+	if !requested || !spec.SupportsReasoning {
+		return
+	}
+	if !spec.SupportsReasoningEffort {
+		metadata.ReasoningEffort = "fixed"
+		return
+	}
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	effort, _ := reasoning["effort"].(string)
+	if normalized := auditdomain.NormalizeReasoningEffort(effort); normalized != "" {
+		metadata.ReasoningEffort = normalized
+		return
+	}
+	metadata.ReasoningEffort = previous
 }
 
 func normalizeConsoleResponseFormat(payload map[string]any) {
@@ -215,6 +254,7 @@ func normalizeConsoleTools(payload map[string]any) bool {
 		delete(payload, "tool_choice")
 		return false
 	}
+	hasClientViewImage := hasConsoleFunctionTool(tools, "view_image")
 	result := make([]any, 0, len(tools))
 	retainedClientTools := false
 	for _, rawTool := range tools {
@@ -225,8 +265,12 @@ func normalizeConsoleTools(payload map[string]any) bool {
 		typeName, _ := tool["type"].(string)
 		switch strings.ToLower(strings.TrimSpace(typeName)) {
 		case "web_search", "web_search_preview", "web_search_preview_2025_03_11", "web_search_2025_08_26":
-			clean := map[string]any{"type": "web_search", "enable_image_understanding": true}
-			if enabled, ok := tool["enable_image_understanding"].(bool); ok {
+			// xAI equips web_search with a server-side tool also named view_image
+			// when image understanding is enabled. Prefer the client's function of
+			// that name so Codex can still inspect local files without mgw rejecting
+			// the request as a duplicate tool definition.
+			clean := map[string]any{"type": "web_search", "enable_image_understanding": !hasClientViewImage}
+			if enabled, ok := tool["enable_image_understanding"].(bool); ok && !hasClientViewImage {
 				clean["enable_image_understanding"] = enabled
 			}
 			// Forward the image-search toggle (enable_image_search) so clients
@@ -291,6 +335,21 @@ func normalizeConsoleTools(payload map[string]any) bool {
 	}
 	payload["tools"] = result
 	return retainedClientTools
+}
+
+func hasConsoleFunctionTool(tools []any, target string) bool {
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		typeName, _ := tool["type"].(string)
+		name, _ := tool["name"].(string)
+		if strings.EqualFold(strings.TrimSpace(typeName), "function") && strings.EqualFold(strings.TrimSpace(name), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool) {

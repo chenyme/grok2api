@@ -1,11 +1,13 @@
 import importlib.util
 import json
+import os
 import stat
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("quality_guard.py")
@@ -226,8 +228,50 @@ class ConfigTests(unittest.TestCase):
                     "rotation_timeout_seconds": 45, "rotatable_node_ids": [],
                 },
             }), encoding="utf-8")
-            loaded = quality_guard.Config.from_bootstrap(path)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                loaded = quality_guard.Config.from_bootstrap(path)
             self.assertEqual((loaded.node_ids, loaded.internal_token), (("2", "9"), "scoped-secret"))
+            self.assertEqual(loaded.base_url, "http://grok2api:8000")
+
+    def test_bootstrap_honors_grok2api_base_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bootstrap.json"
+            path.write_text(json.dumps({
+                "version": 1,
+                "enabled": True,
+                "internal_token": "scoped-secret",
+                "config": {
+                    "model": "grok-4.5", "node_ids": ["2"], "mode": "hybrid",
+                    "prompt": "probe", "expected": "QUALITY_OK",
+                    "active_interval_seconds": 1800, "passive_poll_seconds": 5,
+                    "soft_tps": 500, "hard_tps": 1000, "consecutive_soft": 2, "consecutive_errors": 2,
+                    "quarantine_seconds": 300, "no_account_backoff_seconds": 300,
+                    "min_healthy_nodes": 1, "max_output_tokens": 384, "fail_closed": False,
+                    "min_generation_ms": 1000, "rotation_url": "", "rotation_token": "",
+                    "rotation_timeout_seconds": 45, "rotatable_node_ids": [],
+                },
+            }), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GROK2API_BASE_URL": "  http://127.0.0.1:18182/  "}, clear=True):
+                loaded = quality_guard.Config.from_bootstrap(path)
+            self.assertEqual(loaded.base_url, "http://127.0.0.1:18182")
+
+            with mock.patch.dict(os.environ, {"GROK2API_BASE_URL": "  "}, clear=True):
+                loaded = quality_guard.Config.from_bootstrap(path)
+            self.assertEqual(loaded.base_url, "http://grok2api:8000")
+
+    def test_rejects_unsafe_grok2api_base_urls(self):
+        invalid = (
+            "http://127.0.0.1:18182?x=1",
+            "http://127.0.0.1:18182?",
+            "http://127.0.0.1:18182#fragment",
+            "http://127.0.0.1:18182#",
+            "http://user:pass@127.0.0.1:18182",
+            "http://127.0.0.1:invalid",
+            "http://:18182",
+        )
+        for base_url in invalid:
+            with self.subTest(base_url=base_url), self.assertRaisesRegex(ValueError, "GROK2API_BASE_URL"):
+                config(base_url=base_url).validate()
 
     def test_disabled_bootstrap_exits_cleanly(self):
         with tempfile.TemporaryDirectory() as directory:

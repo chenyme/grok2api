@@ -95,6 +95,14 @@ routing:
   segmentedSelectorEnabled: true
   segmentedSelectorMinCandidates: 3000
   segmentedSelectorWindowSize: 64
+  # [按需修改] 大账号池才需要打开。0 保持历史行为：不健康节点上的 auto 账号会一次性迁走。
+  # 0.05–1 表示每个健康节点最多吸收该比例的活跃账号。环境变量
+  # GROK2API_AUTO_ASSIGN_MAX_NODE_SHARE 可覆盖。
+  autoAssignMaxNodeShare: 0
+  # [按需修改] 大账号池才需要打开。0 保持历史行为：首轮疏散不限额，容量/再均衡仍最多 200 次。
+  # 0.05–1 限制单轮已绑定账号迁移比例。环境变量
+  # GROK2API_AUTO_ASSIGN_MAX_MIGRATION_SHARE 可覆盖。
+  autoAssignMaxMigrationShare: 0
 
 audit:
   # [通常不要修改] 审计批量写入参数；bufferSize 的修改需重启生效。
@@ -135,3 +143,12 @@ qualityGuard:
   rotationTimeout: 45s
   nodeIDs: []
   rotatableNodeIDs: []
+  # Optional request-path withhold/retry for thinking models. Disabled by default.
+  # Missing thinking with enough visible output is not delivered; another account
+  # is tried (up to maxAttempts). fail_closed returns 503 instead of the last body.
+  requestRetry:
+    enabled: false
+    maxAttempts: 6
+    holdTimeout: 3s
+    minOutputTokens: 32
+    onExhausted: fail_closed # fail_open | fail_closed
