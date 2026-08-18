@@ -539,6 +539,14 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 	if shouldHoldQualityStream(input, nil, route, audit.OperationImage, cfg) {
 		t.Fatal("image must not hold")
 	}
+	if shouldHoldQualityStream(input, nil, route, audit.OperationCompaction, cfg) {
+		t.Fatal("codex compaction operation must not hold")
+	}
+	tui := input
+	tui.Body = []byte(`{"input":[{"role":"user","content":"` + tuiCompactionPrompt + `"}]}`)
+	if shouldHoldQualityStream(tui, nil, route, audit.OperationResponses, cfg) {
+		t.Fatal("tui compaction prompt must not hold even when tagged responses")
+	}
 	for _, test := range []struct {
 		name string
 		body string

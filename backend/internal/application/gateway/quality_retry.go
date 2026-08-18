@@ -261,6 +261,12 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	default:
 		return false
 	}
+	// TUI compaction is a normal /v1/responses body (no compaction_trigger).
+	// CreateResponse retags it to OperationCompaction; also skip here so a
+	// missed tag cannot withhold a 100s+ summary as missing-thinking.
+	if isResponsesCompactionRequest(input.Body) {
+		return false
+	}
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
