@@ -935,7 +935,14 @@ func validStatsigID(value string) bool {
 	if err != nil {
 		decoded, err = base64.StdEncoding.DecodeString(value)
 	}
-	return err == nil && len(decoded) == 70
+	if err != nil {
+		return false
+	}
+	// Real statsig IDs are 70 bytes. The browser also sends a 72-byte
+	// "error-type" fallback (base64 of "x:TypeError: Cannot read
+	// properties of undefined (reading 'childNodes')") that xAI's
+	// anti-bot accepts. Accept both.
+	return len(decoded) == 70 || len(decoded) == 72
 }
 
 func validCredentialEncryptionKey(value string) bool {
