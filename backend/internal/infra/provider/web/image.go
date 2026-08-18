@@ -1467,6 +1467,11 @@ func (a *Adapter) postJSONWithReferer(ctx context.Context, cfg Config, lease *eg
 		}
 		request.Header = buildHeaders(token, lease, "application/json")
 		applyAppHeaders(request.Header, cfg.BaseURL, referer)
+		// tls-client (Chrome JA3) passes the app-level anti-bot checks that
+		// soft-block Go's default TLS fingerprint with 429/403. It only
+		// auto-decompresses gzip, so restrict Accept-Encoding to gzip;
+		// br/zstd bodies would arrive compressed and break json.Unmarshal.
+		request.Header.Set("Accept-Encoding", "gzip")
 		a.applySignedStatsig(requestCtx, request, token, lease)
 		response, err := lease.DoDeferredForbidden(request)
 		if err != nil {
