@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("quality_guard.py")
@@ -227,7 +228,8 @@ class ConfigTests(unittest.TestCase):
                     "rotation_timeout_seconds": 45, "rotatable_node_ids": [],
                 },
             }), encoding="utf-8")
-            loaded = quality_guard.Config.from_bootstrap(path)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                loaded = quality_guard.Config.from_bootstrap(path)
             self.assertEqual((loaded.node_ids, loaded.internal_token), (("2", "9"), "scoped-secret"))
             self.assertEqual(loaded.base_url, "http://grok2api:8000")
 
@@ -249,16 +251,27 @@ class ConfigTests(unittest.TestCase):
                     "rotation_timeout_seconds": 45, "rotatable_node_ids": [],
                 },
             }), encoding="utf-8")
-            previous = os.environ.get("GROK2API_BASE_URL")
-            os.environ["GROK2API_BASE_URL"] = "http://127.0.0.1:18182/"
-            try:
+            with mock.patch.dict(os.environ, {"GROK2API_BASE_URL": "  http://127.0.0.1:18182/  "}, clear=True):
                 loaded = quality_guard.Config.from_bootstrap(path)
-            finally:
-                if previous is None:
-                    os.environ.pop("GROK2API_BASE_URL", None)
-                else:
-                    os.environ["GROK2API_BASE_URL"] = previous
             self.assertEqual(loaded.base_url, "http://127.0.0.1:18182")
+
+            with mock.patch.dict(os.environ, {"GROK2API_BASE_URL": "  "}, clear=True):
+                loaded = quality_guard.Config.from_bootstrap(path)
+            self.assertEqual(loaded.base_url, "http://grok2api:8000")
+
+    def test_rejects_unsafe_grok2api_base_urls(self):
+        invalid = (
+            "http://127.0.0.1:18182?x=1",
+            "http://127.0.0.1:18182?",
+            "http://127.0.0.1:18182#fragment",
+            "http://127.0.0.1:18182#",
+            "http://user:pass@127.0.0.1:18182",
+            "http://127.0.0.1:invalid",
+            "http://:18182",
+        )
+        for base_url in invalid:
+            with self.subTest(base_url=base_url), self.assertRaisesRegex(ValueError, "GROK2API_BASE_URL"):
+                config(base_url=base_url).validate()
 
     def test_disabled_bootstrap_exits_cleanly(self):
         with tempfile.TemporaryDirectory() as directory:
