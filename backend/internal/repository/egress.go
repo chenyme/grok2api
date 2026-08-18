@@ -20,6 +20,16 @@ type EgressNodePageRepository interface {
 	ListEgressNodePage(ctx context.Context, input EgressNodeListQuery) ([]egress.Node, int64, error)
 }
 
+// EgressProxyProfileRepository manages reusable physical proxy settings.
+// Updating a profile returns the node IDs whose materialized proxy changed.
+type EgressProxyProfileRepository interface {
+	ListEgressProxyProfiles(context.Context, PageQuery) ([]egress.ProxyProfile, int64, error)
+	GetEgressProxyProfile(context.Context, uint64) (egress.ProxyProfile, error)
+	CreateEgressProxyProfile(context.Context, egress.ProxyProfile) (egress.ProxyProfile, error)
+	UpdateEgressProxyProfile(context.Context, egress.ProxyProfile, bool) (egress.ProxyProfile, []uint64, error)
+	DeleteEgressProxyProfile(context.Context, uint64) error
+}
+
 type EgressNodeCleanupPreview struct {
 	Nodes               int64
 	BoundAccounts       int64

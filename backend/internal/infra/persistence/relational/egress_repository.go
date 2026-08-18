@@ -37,9 +37,14 @@ func (r *EgressRepository) ListEgressNodes(ctx context.Context, scope egress.Sco
 	if err != nil {
 		return nil, err
 	}
+	profileNames, err := r.egressProxyProfileNames(ctx, rows)
+	if err != nil {
+		return nil, err
+	}
 	for _, row := range rows {
 		value := toEgressDomain(row)
 		value.AssignedAccountCount = counts[value.ID]
+		value.ProxyProfileName = profileNames[value.ProxyProfileID]
 		values = append(values, value)
 	}
 	return values, nil
@@ -93,10 +98,15 @@ func (r *EgressRepository) ListEgressNodePage(ctx context.Context, input reposit
 	if err != nil {
 		return nil, 0, err
 	}
+	profileNames, err := r.egressProxyProfileNames(ctx, rows)
+	if err != nil {
+		return nil, 0, err
+	}
 	values := make([]egress.Node, 0, len(rows))
 	for _, row := range rows {
 		value := toEgressDomain(row)
 		value.AssignedAccountCount = counts[value.ID]
+		value.ProxyProfileName = profileNames[value.ProxyProfileID]
 		values = append(values, value)
 	}
 	return values, total, nil
@@ -114,7 +124,13 @@ func (r *EgressRepository) GetEgressNode(ctx context.Context, id uint64) (egress
 
 func (r *EgressRepository) CreateEgressNode(ctx context.Context, value egress.Node) (egress.Node, error) {
 	row := fromEgressDomain(value)
-	if err := r.db.db.WithContext(ctx).Create(&row).Error; err != nil {
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := materializeEgressProxyProfile(tx, &row); err != nil {
+			return err
+		}
+		return tx.Create(&row).Error
+	})
+	if err != nil {
 		return egress.Node{}, mapError(err)
 	}
 	return toEgressDomain(row), nil
@@ -136,14 +152,44 @@ func (r *EgressRepository) CreateEgressNodes(ctx context.Context, values []egres
 
 func (r *EgressRepository) UpdateEgressNode(ctx context.Context, value egress.Node) (egress.Node, error) {
 	row := fromEgressDomain(value)
-	result := r.db.db.WithContext(ctx).Save(&row)
-	if result.Error != nil {
-		return egress.Node{}, mapError(result.Error)
-	}
-	if result.RowsAffected == 0 {
-		return egress.Node{}, repository.ErrNotFound
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := materializeEgressProxyProfile(tx, &row); err != nil {
+			return err
+		}
+		// Select("*").Updates keeps zero values while avoiding Save's fallback
+		// INSERT, which could resurrect a node deleted after the service read it.
+		result := tx.Model(&egressNodeModel{}).Where("id = ?", row.ID).Select("*").Updates(&row)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return repository.ErrNotFound
+		}
+		return nil
+	})
+	if err != nil {
+		return egress.Node{}, mapError(err)
 	}
 	return toEgressDomain(row), nil
+}
+
+// materializeEgressProxyProfile enforces the profile row as the canonical
+// source whenever a node is written. Locking the profile in the node write
+// transaction serializes this path with profile updates, preventing an older
+// application-layer snapshot from restoring stale encrypted proxy data.
+func materializeEgressProxyProfile(tx *gorm.DB, row *egressNodeModel) error {
+	if row.ProxyProfileID == nil || *row.ProxyProfileID == 0 {
+		return nil
+	}
+	var profile egressProxyProfileModel
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id", "encrypted_proxy_url").First(&profile, *row.ProxyProfileID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return repository.ErrEgressProxyProfileNotFound
+		}
+		return err
+	}
+	row.EncryptedProxyURL = profile.EncryptedProxyURL
+	return nil
 }
 
 func (r *EgressRepository) UpdateEgressNodesEnabled(ctx context.Context, ids []uint64, enabled bool) (int, error) {
@@ -476,6 +522,7 @@ func (r *EgressRepository) SaveEgressOperationsConfig(ctx context.Context, value
 		// Preserve it across ordinary configuration updates so the legacy proxy
 		// migration cannot run again and overwrite an intentionally direct source.
 		row.SubscriptionProxyMigrationCompleted = locked.SubscriptionProxyMigrationCompleted
+		row.ProxyProfileMigrationCompleted = locked.ProxyProfileMigrationCompleted
 		if err := validateLockedEgressFallbackNodes(tx, row); err != nil {
 			return err
 		}
@@ -729,6 +776,38 @@ func (r *EgressRepository) assignedAccountCounts(ctx context.Context) (map[uint6
 	return r.assignedAccountCountsForNodes(ctx, nil)
 }
 
+func (r *EgressRepository) egressProxyProfileNames(ctx context.Context, nodes []egressNodeModel) (map[uint64]string, error) {
+	ids := make([]uint64, 0)
+	seen := make(map[uint64]struct{})
+	for _, node := range nodes {
+		id := valueEgressNodeID(node.ProxyProfileID)
+		if id == 0 {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return map[uint64]string{}, nil
+	}
+	type row struct {
+		ID   uint64
+		Name string
+	}
+	var rows []row
+	if err := r.db.db.WithContext(ctx).Model(&egressProxyProfileModel{}).Select("id", "name").Where("id IN ?", ids).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	result := make(map[uint64]string, len(rows))
+	for _, row := range rows {
+		result[row.ID] = row.Name
+	}
+	return result, nil
+}
+
 func (r *EgressRepository) assignedAccountCountsForNodes(ctx context.Context, nodeIDs []uint64) (map[uint64]int, error) {
 	type row struct {
 		NodeID uint64
@@ -758,6 +837,7 @@ func toEgressDomain(row egressNodeModel) egress.Node {
 	return egress.Node{
 		ID: row.ID, Name: row.Name, Scope: egress.Scope(row.Scope), Enabled: row.Enabled, ProxyPool: row.ProxyPool,
 		SourceID: valueEgressNodeID(row.SourceID), SourceKey: row.SourceKey, AccountCapacity: row.AccountCapacity,
+		ProxyProfileID:    valueEgressNodeID(row.ProxyProfileID),
 		EncryptedProxyURL: row.EncryptedProxyURL, UserAgent: row.UserAgent, EncryptedCloudflareCookie: row.EncryptedCloudflareCookie,
 		ClearanceRefreshedAt: row.ClearanceRefreshedAt, ClearanceFingerprint: row.ClearanceFingerprint,
 		ClearanceBindingFingerprint: row.ClearanceBindingFingerprint,
@@ -782,6 +862,7 @@ func fromEgressDomain(value egress.Node) egressNodeModel {
 	return egressNodeModel{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled, ProxyPool: value.ProxyPool,
 		SourceID: egressNodeID(value.SourceID), SourceKey: value.SourceKey, AccountCapacity: value.AccountCapacity,
+		ProxyProfileID:    egressNodeID(value.ProxyProfileID),
 		EncryptedProxyURL: value.EncryptedProxyURL, UserAgent: value.UserAgent, EncryptedCloudflareCookie: value.EncryptedCloudflareCookie,
 		ClearanceRefreshedAt: value.ClearanceRefreshedAt, ClearanceFingerprint: value.ClearanceFingerprint,
 		ClearanceBindingFingerprint: value.ClearanceBindingFingerprint,

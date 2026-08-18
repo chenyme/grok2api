@@ -31,6 +31,8 @@ type Node struct {
 	SourceID                    uint64
 	SourceKey                   string
 	AccountCapacity             int
+	ProxyProfileID              uint64
+	ProxyProfileName            string
 	EncryptedProxyURL           string
 	UserAgent                   string
 	EncryptedCloudflareCookie   string
@@ -65,6 +67,8 @@ type PublicNode struct {
 	ProxyPool            bool
 	SourceID             uint64
 	AccountCapacity      int
+	ProxyProfileID       uint64
+	ProxyProfileName     string
 	UserAgent            string
 	CookieConfigured     bool
 	AccountBoundProxy    bool
@@ -83,6 +87,27 @@ type PublicNode struct {
 	AssignedAccountCount int
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+// ProxyProfile is a reusable physical proxy configuration. Provider-specific
+// health, capacity, browser identity, and Clearance remain on Node.
+type ProxyProfile struct {
+	ID                uint64
+	Name              string
+	EncryptedProxyURL string
+	BoundNodeCount    int
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type PublicProxyProfile struct {
+	ID               uint64
+	Name             string
+	ProxyDisplay     string
+	ProxyFingerprint string
+	BoundNodeCount   int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 type ProbeStatus string

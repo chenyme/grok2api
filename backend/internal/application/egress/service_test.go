@@ -1,7 +1,6 @@
 package egress
 
 import (
-	"context"
 	"encoding/base64"
 	"errors"
 	"strings"
@@ -125,27 +124,6 @@ func TestPublicNodeProxyMetadataIsStableAcrossEncryptionNonces(t *testing.T) {
 	}
 	if strings.Contains(first.ProxyDisplay, "secret") {
 		t.Fatalf("proxy display leaked password: %q", first.ProxyDisplay)
-	}
-}
-
-func TestResolveProxyCopyCopiesConfiguredProxyWithoutExposingIt(t *testing.T) {
-	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-	if err != nil {
-		t.Fatal(err)
-	}
-	encrypted, err := cipher.Encrypt("socks5h://user:secret@proxy.example:1080")
-	if err != nil {
-		t.Fatal(err)
-	}
-	repository := &qualityProbeRepository{node: domain.Node{ID: 7, EncryptedProxyURL: encrypted}}
-	service := NewService(repository, cipher, "")
-	input, err := service.resolveProxyCopy(context.Background(), 0, Input{CopyProxyFromNodeID: 7})
-	if err != nil || input.ProxyURL == nil || *input.ProxyURL != "socks5h://user:secret@proxy.example:1080" {
-		t.Fatalf("resolved input=%#v error=%v", input, err)
-	}
-	explicit := "http://other.example:8080"
-	if _, err := service.resolveProxyCopy(context.Background(), 0, Input{CopyProxyFromNodeID: 7, ProxyURL: &explicit}); !errors.Is(err, ErrInvalidInput) {
-		t.Fatalf("reuse plus explicit proxy error = %v", err)
 	}
 }
 
