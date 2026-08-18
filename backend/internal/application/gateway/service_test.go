@@ -191,8 +191,9 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 
 	adapter := &failoverAdapter{
 		firstID: first.ID, failureStatus: http.StatusPaymentRequired,
-		failureBody:   `{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits"}`,
-		failureHeader: http.Header{"X-Should-Retry": {"false"}},
+		failureBody:     `{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits"}`,
+		failureHeader:   http.Header{"X-Should-Retry": {"false"}},
+		reasoningEffort: "high",
 	}
 	registry := provider.NewRegistry(adapter)
 	cipher := testCipher(t)
@@ -202,7 +203,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	clientService := clientkeyapp.NewService(nil, nil, nil, 60, 4, nil)
 	selector := NewSelector(accountRepo, concurrency, sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientService, registry, selector, responseRepo, 3)
-	result, err := service.CreateResponse(ctx, Input{RequestID: "req-1", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test"}`), PromptCacheSeed: "claude-session", GrokTurnIndex: "3"})
+	result, err := service.CreateResponse(ctx, Input{RequestID: "req-1", ClientKey: clientKey, PublicModel: "grok-test", Body: []byte(`{"model":"grok-test","reasoning":{"effort":"high"}}`), PromptCacheSeed: "claude-session", GrokTurnIndex: "3"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +238,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("observed account = %#v, err = %v", observedAccount, err)
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
-	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 || logs[0].UsageSource != audit.UsageSourceUpstream || logs[0].StatusCode != http.StatusOK || logs[0].AttemptCount != 1 {
+	if err != nil || total != 1 || logs[0].AccountID == nil || *logs[0].AccountID != second.ID || logs[0].ClientKeyName != "test-key" || logs[0].ModelPublicID != "grok-test" || logs[0].ModelUpstreamModel != "Build/grok-test" || logs[0].ReasoningEffort != "high" || logs[0].AccountName != "second" || logs[0].CachedInputTokens != 80 || logs[0].UsageSource != audit.UsageSourceUpstream || logs[0].StatusCode != http.StatusOK || logs[0].AttemptCount != 1 {
 		t.Fatalf("audit = %#v, %d, %v", logs, total, err)
 	}
 	detail, err := auditRepo.Get(ctx, logs[0].ID)
@@ -2597,6 +2598,7 @@ type failoverAdapter struct {
 	lastPromptCacheKey     string
 	lastReasoningReplayKey string
 	lastGrokTurnIndex      string
+	reasoningEffort        string
 	forwardedModels        []string
 	resourceStatus         int
 	transportErrorIDs      map[uint64]error
@@ -4147,6 +4149,9 @@ func (a *failoverAdapter) Definition() provider.Definition {
 	}
 }
 func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	if request.NormalizedMetadata != nil {
+		request.NormalizedMetadata.ReasoningEffort = a.reasoningEffort
+	}
 	a.mu.Lock()
 	a.attempts = append(a.attempts, request.Credential.ID)
 	a.forwardedModels = append(a.forwardedModels, request.Model)
