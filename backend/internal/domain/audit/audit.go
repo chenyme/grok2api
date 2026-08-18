@@ -82,6 +82,7 @@ type Record struct {
 	Provider                string
 	Operation               Operation
 	UsageSource             UsageSource
+	ReasoningEffort         string
 	AccountID               *uint64
 	AccountName             string
 	EgressNodeID            *uint64
