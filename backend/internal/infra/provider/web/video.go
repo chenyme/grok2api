@@ -270,6 +270,12 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 	if err != nil {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoCreateFailureStage(err), 0, err)
 	}
+	// Free Web accounts reject videoLength > 6 with 429 "Too many requests"
+	// (verified: 6→200, 7/8/15→429). The gateway default duration is 8, so
+	// clamp to the upstream maximum instead of burning the retry loop.
+	if request.Duration > webVideoMaxSeconds {
+		request.Duration = webVideoMaxSeconds
+	}
 	segments := videoSegments(request.Duration)
 	if len(segments) == 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("duration 必须在 1 到 15 秒之间"))
@@ -534,6 +540,10 @@ func nestedMap(value map[string]any, keys ...string) map[string]any {
 	}
 	return current
 }
+
+// webVideoMaxSeconds is the maximum videoLength accepted by grok.com Web
+// media generation on free accounts.
+const webVideoMaxSeconds = 6
 
 func videoSegments(seconds int) []int {
 	if seconds < 1 || seconds > 15 {
