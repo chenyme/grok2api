@@ -662,6 +662,10 @@ export function AccountsPage() {
       importAbortRef.current = null;
       setQuickImportOpen(false);
       setQuickImportTokens("");
+      if (result.failed > 0) {
+        toast.warning(t("accounts.importedWithFailures", result));
+        return;
+      }
       if (result.syncFailed > 0) {
         toast.warning(t("accounts.importedWithSyncFailures", result));
         return;
@@ -1017,7 +1021,7 @@ export function AccountsPage() {
   function submitQuickImport(): void {
     const value = quickImportTokens.trim();
     if (!value) return;
-    const filename = provider === "grok_console" ? "grok-console-sso-tokens.txt" : "grok-web-sso-tokens.txt";
+    const filename = provider === "grok_build" ? "grok-build-refresh-tokens.txt" : provider === "grok_console" ? "grok-console-sso-tokens.txt" : "grok-web-sso-tokens.txt";
     importMutation.mutate([new File([value], filename, { type: "text/plain" })]);
   }
 
@@ -1304,7 +1308,7 @@ export function AccountsPage() {
             <DropdownMenuTrigger asChild><Button size="sm"><Plus />{t("accounts.connectAccount")}</Button></DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {provider === "grok_build" ? <DropdownMenuItem onClick={() => void startDeviceLogin()}><ExternalLink />{t("accounts.deviceLogin")}</DropdownMenuItem> : null}
-              {provider !== "grok_build" ? <DropdownMenuItem disabled={bulkTaskPending} onClick={() => setQuickImportOpen(true)}><ClipboardPaste />{t("accounts.quickImportSSO")}</DropdownMenuItem> : null}
+              <DropdownMenuItem disabled={bulkTaskPending} onClick={() => setQuickImportOpen(true)}><ClipboardPaste />{t(provider === "grok_build" ? "accounts.quickImportRT" : "accounts.quickImportSSO")}</DropdownMenuItem>
               <DropdownMenuItem disabled={bulkTaskPending} onClick={() => fileInputRef.current?.click()}><FileUp />{provider === "grok_build" ? t("accounts.importAuth") : provider === "grok_console" ? t("console.importFile") : t("accounts.importWebFile")}</DropdownMenuItem>
               {hasProviderAccounts ? (
                 <>
@@ -1769,12 +1773,12 @@ export function AccountsPage() {
       <Dialog open={quickImportOpen} onOpenChange={(open) => { setQuickImportOpen(open); if (!open) { setQuickImportTokens(""); if (quickImportFileInputRef.current) quickImportFileInputRef.current.value = ""; } }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{t(provider === "grok_console" ? "console.quickImportTitle" : "accounts.quickImportTitle")}</DialogTitle>
-            <DialogDescription>{t(provider === "grok_console" ? "console.quickImportDescription" : "accounts.quickImportDescription")}</DialogDescription>
+            <DialogTitle>{t(provider === "grok_build" ? "accounts.quickImportRTTitle" : provider === "grok_console" ? "console.quickImportTitle" : "accounts.quickImportTitle")}</DialogTitle>
+            <DialogDescription>{t(provider === "grok_build" ? "accounts.quickImportRTDescription" : provider === "grok_console" ? "console.quickImportDescription" : "accounts.quickImportDescription")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <Label htmlFor="quick-sso-tokens">{t("accounts.ssoTokens")}</Label>
+              <Label htmlFor="quick-account-tokens">{t(provider === "grok_build" ? "accounts.refreshTokens" : "accounts.ssoTokens")}</Label>
               <Button type="button" variant="secondary" size="sm" disabled={importMutation.isPending} onClick={() => quickImportFileInputRef.current?.click()}><FileUp />{t("accounts.uploadTXT")}</Button>
               <input
                 ref={quickImportFileInputRef}
@@ -1788,13 +1792,13 @@ export function AccountsPage() {
               />
             </div>
             <Textarea
-              id="quick-sso-tokens"
+              id="quick-account-tokens"
               className="min-h-56 font-mono"
               autoComplete="off"
               spellCheck={false}
               value={quickImportTokens}
               onChange={(event) => setQuickImportTokens(event.target.value)}
-              placeholder={t("accounts.ssoTokenPlaceholder")}
+              placeholder={t(provider === "grok_build" ? "accounts.refreshTokenPlaceholder" : "accounts.ssoTokenPlaceholder")}
             />
           </div>
           <DialogFooter>

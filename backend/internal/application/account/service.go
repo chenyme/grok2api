@@ -76,6 +76,7 @@ const (
 	maxCredentialExportAccounts                   = 10000
 	maxCredentialImportAccounts                   = 10000
 	credentialImportChunkSize                     = 100
+	credentialImportPrepareWorkers                = 3
 	maxQuotaResetAccounts                         = 10000
 	quotaResetChunkSize                           = 500
 	maxBatchUpdateAccounts                        = 10000
@@ -220,6 +221,7 @@ type ImportResult struct {
 	Created    int
 	Updated    int
 	Skipped    int
+	Failed     int
 	AccountIDs []uint64
 }
 
@@ -1404,6 +1406,7 @@ func (s *Service) importCredentialDocumentsWithProgress(ctx context.Context, ada
 	seeds := make([]provider.CredentialSeed, 0)
 	seen := make(map[string]struct{})
 	parsedAccounts := 0
+	skipped := 0
 	for index, document := range documents {
 		values, err := adapter.ParseImportedCredentials(document)
 		if err != nil {
@@ -1420,6 +1423,7 @@ func (s *Service) importCredentialDocumentsWithProgress(ctx context.Context, ada
 			if value.SourceKey != "" {
 				key := string(value.Provider) + "\x00" + value.SourceKey
 				if _, exists := seen[key]; exists {
+					skipped++
 					continue
 				}
 				seen[key] = struct{}{}
@@ -1427,17 +1431,141 @@ func (s *Service) importCredentialDocumentsWithProgress(ctx context.Context, ada
 			seeds = append(seeds, value)
 		}
 	}
-	return s.persistImportedSeeds(ctx, seeds, observer, progress)
+	var result ImportResult
+	var err error
+	if preparer, ok := adapter.(provider.CredentialImportPreparer); ok && hasRefreshTokenOnlySeed(seeds) {
+		result, err = s.persistPreparedImportedSeeds(ctx, seeds, preparer, observer, progress)
+	} else {
+		result, err = s.persistImportedSeeds(ctx, seeds, observer, progress)
+	}
+	result.Skipped += skipped
+	return result, err
 }
 
-func (s *Service) persistImportedSeeds(ctx context.Context, seeds []provider.CredentialSeed, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+func hasRefreshTokenOnlySeed(seeds []provider.CredentialSeed) bool {
+	for _, seed := range seeds {
+		if strings.TrimSpace(seed.AccessToken) == "" && strings.TrimSpace(seed.RefreshToken) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) persistPreparedImportedSeeds(ctx context.Context, seeds []provider.CredentialSeed, preparer provider.CredentialImportPreparer, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
 	result := ImportResult{AccountIDs: make([]uint64, 0, len(seeds))}
 	if progress != nil {
 		if err := progress(0, len(seeds)); err != nil {
+			return result, err
+		}
+	}
+	prepareCtx, cancelPrepare := context.WithCancel(ctx)
+	defer cancelPrepare()
+	var (
+		mu        sync.Mutex
+		firstErr  error
+		completed int
+		persisted bool
+		seen      = make(map[string]struct{}, len(seeds))
+	)
+	_, batchErr := batch.ForEachObserved(prepareCtx, seeds, batch.Options{Workers: credentialImportPrepareWorkers}, func(itemCtx context.Context, seed provider.CredentialSeed) (provider.CredentialSeed, error) {
+		if strings.TrimSpace(seed.AccessToken) == "" && strings.TrimSpace(seed.RefreshToken) != "" {
+			return preparer.PrepareImportedCredential(itemCtx, seed)
+		}
+		return seed, nil
+	}, func(index int, item batch.Result[provider.CredentialSeed]) {
+		mu.Lock()
+		defer mu.Unlock()
+		completed++
+		if !item.Completed || item.Err != nil {
+			result.Failed++
+			if item.Err != nil {
+				s.logger.Warn("account_rt_import_failed", "index", index+1, "error", item.Err)
+			}
+			reportCredentialImportProgress(progress, completed, len(seeds), &firstErr, cancelPrepare)
+			return
+		}
+		seed := item.Value
+		if seed.SourceKey != "" {
+			key := string(seed.Provider) + "\x00" + seed.SourceKey
+			if _, exists := seen[key]; exists {
+				result.Skipped++
+				reportCredentialImportProgress(progress, completed, len(seeds), &firstErr, cancelPrepare)
+				return
+			}
+			seen[key] = struct{}{}
+		}
+
+		// OAuth providers may invalidate the submitted refresh token as soon as
+		// they return its replacement. Persist that replacement before any
+		// request-scoped observer or progress callback can abort the import.
+		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), credentialStateWriteTimeout)
+		stored, err := s.persistImportedSeed(persistCtx, seed)
+		cancelPersist()
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			cancelPrepare()
+			return
+		}
+		persisted = true
+		result.AccountIDs = append(result.AccountIDs, stored.ID)
+		if stored.Created {
+			result.Created++
+		} else {
+			result.Updated++
+		}
+		if firstErr == nil && observer != nil {
+			if err := observer(stored.ID); err != nil {
+				firstErr = err
+				cancelPrepare()
+			}
+		}
+		reportCredentialImportProgress(progress, completed, len(seeds), &firstErr, cancelPrepare)
+	})
+	if persisted {
+		s.WakeCredentialRefresh()
+	}
+	return result, errors.Join(firstErr, batchErr)
+}
+
+func reportCredentialImportProgress(progress BatchProgressObserver, completed, total int, firstErr *error, cancel context.CancelFunc) {
+	if progress == nil || *firstErr != nil {
+		return
+	}
+	if err := progress(completed, total); err != nil {
+		*firstErr = err
+		cancel()
+	}
+}
+
+func (s *Service) persistImportedSeed(ctx context.Context, seed provider.CredentialSeed) (repository.AccountUpsertResult, error) {
+	value, err := s.credentialFromSeed(seed)
+	if err != nil {
+		return repository.AccountUpsertResult{}, err
+	}
+	stored, err := s.accounts.UpsertManyByIdentity(ctx, []accountdomain.Credential{value})
+	if err != nil {
+		return repository.AccountUpsertResult{}, err
+	}
+	if len(stored) != 1 {
+		return repository.AccountUpsertResult{}, fmt.Errorf("导入账号持久化结果数量无效: %d", len(stored))
+	}
+	s.reconcileProviderLinksBestEffort(ctx, stored[0].ID)
+	return stored[0], nil
+}
+
+func (s *Service) persistImportedSeeds(ctx context.Context, seeds []provider.CredentialSeed, observer ImportedAccountObserver, progress BatchProgressObserver) (ImportResult, error) {
+	return s.persistImportedSeedsFromProgress(ctx, seeds, observer, progress, 0, len(seeds), true)
+}
+
+func (s *Service) persistImportedSeedsFromProgress(ctx context.Context, seeds []provider.CredentialSeed, observer ImportedAccountObserver, progress BatchProgressObserver, completed, total int, reportInitial bool) (ImportResult, error) {
+	result := ImportResult{AccountIDs: make([]uint64, 0, len(seeds))}
+	if progress != nil && reportInitial {
+		if err := progress(completed, total); err != nil {
 			return ImportResult{}, err
 		}
 	}
-	completed := 0
 	for start := 0; start < len(seeds); start += credentialImportChunkSize {
 		end := min(start+credentialImportChunkSize, len(seeds))
 		values := make([]accountdomain.Credential, 0, end-start)
@@ -1462,7 +1590,7 @@ func (s *Service) persistImportedSeeds(ctx context.Context, seeds []provider.Cre
 			}
 			completed++
 			if progress != nil {
-				if err := progress(completed, len(seeds)); err != nil {
+				if err := progress(completed, total); err != nil {
 					return ImportResult{}, err
 				}
 			}

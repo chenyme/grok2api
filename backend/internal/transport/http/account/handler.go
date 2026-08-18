@@ -273,6 +273,7 @@ type accountImportResponse struct {
 	Created    int `json:"created"`
 	Updated    int `json:"updated"`
 	Skipped    int `json:"skipped"`
+	Failed     int `json:"failed"`
 	Synced     int `json:"synced"`
 	SyncFailed int `json:"syncFailed"`
 }
@@ -1057,7 +1058,7 @@ func writeAccountEvent(c *gin.Context, event string, value any) error {
 }
 
 func (h *Handler) importFile(c *gin.Context, providerValue accountdomain.Provider) {
-	fileDescription := "账号凭据 JSON 或逐行 JSON 文本"
+	fileDescription := "账号凭据 JSON、逐行 JSON 或 refresh token 文本"
 	if providerValue == accountdomain.ProviderWeb {
 		fileDescription = "Grok Web JSON、逐行 JSON 或 SSO 文本"
 	} else if providerValue == accountdomain.ProviderConsole {
@@ -1085,7 +1086,7 @@ func (h *Handler) importFile(c *gin.Context, providerValue accountdomain.Provide
 		stream.WriteError("authImportFailed", "导入账号失败")
 		return
 	}
-	_ = stream.Write("complete", accountImportResponse{Created: result.Created, Updated: result.Updated, Synced: syncResult.Succeeded, SyncFailed: syncResult.Failed})
+	_ = stream.Write("complete", accountImportResponse{Created: result.Created, Updated: result.Updated, Skipped: result.Skipped, Failed: result.Failed, Synced: syncResult.Succeeded, SyncFailed: syncResult.Failed})
 }
 
 func readAccountImportDocuments(c *gin.Context, fileDescription string) ([][]byte, bool) {

@@ -2160,6 +2160,10 @@ Object.assign(resources["zh-CN"].translation.settings.egress as unknown as Recor
 });
 
 Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<string, string>, {
+  importAuth: "导入账号或 RT 文件", quickImportRT: "快速导入 RT",
+  quickImportRTTitle: "快速导入 Grok Build Refresh Token", quickImportRTDescription: "支持粘贴多个 xAI Refresh Token，或上传每行一个 RT 的 TXT 文件。导入时会先换取 access token，后续自动续期会沿用对应的 OAuth client ID。",
+  refreshTokens: "Refresh Token（每行一个）", refreshTokenPlaceholder: "refresh_token_1\nrt=refresh_token_2\nrefresh_token=refresh_token_3",
+  importedWithFailures: "导入完成：新增 {{created}}，更新 {{updated}}，跳过 {{skipped}}，RT 验证失败 {{failed}}；初始同步成功 {{synced}}，失败 {{syncFailed}}",
   refreshErrorStatus: "HTTP 状态", refreshErrorCode: "错误码", refreshErrorMessage: "错误信息", refreshErrorResponse: "额外详情",
   egressConfiguration: "代理配置", egressConfigurationTitle: "配置 {{count}} 个账号的代理", egressConfigurationDescription: "选择绑定或解绑所选账号的固定出口代理。",
   bindEgress: "绑定代理", unbindEgress: "解绑代理", unbindEgressDescription: "移除所选账号的固定代理绑定；账号随后按当前出口策略重新参与调度。",
@@ -2168,6 +2172,10 @@ Object.assign(resources["zh-CN"].translation.accounts as unknown as Record<strin
 });
 
 Object.assign(resources.en.translation.accounts as unknown as Record<string, string>, {
+  importAuth: "Import accounts or RTs", quickImportRT: "Quick import RTs",
+  quickImportRTTitle: "Quick import Grok Build refresh tokens", quickImportRTDescription: "Paste xAI refresh tokens or upload a TXT file with one RT per line. Import exchanges each RT for an access token, and later renewals retain its OAuth client ID.",
+  refreshTokens: "Refresh tokens (one per line)", refreshTokenPlaceholder: "refresh_token_1\nrt=refresh_token_2\nrefresh_token=refresh_token_3",
+  importedWithFailures: "Import complete: {{created}} created, {{updated}} updated, {{skipped}} skipped, {{failed}} RT validations failed; initial sync {{synced}} succeeded, {{syncFailed}} failed",
   refreshErrorStatus: "HTTP status", refreshErrorCode: "Code", refreshErrorMessage: "Message", refreshErrorResponse: "Details",
   renewAllDescription: "Refresh every enabled Grok Build account with a refresh credential. Invalid accounts are forced to contact the upstream once; accounts without refresh credentials are skipped.",
   egressConfiguration: "Proxy configuration", egressConfigurationTitle: "Configure proxy for {{count}} accounts", egressConfigurationDescription: "Choose whether to bind or unbind a fixed egress proxy for the selected accounts.",

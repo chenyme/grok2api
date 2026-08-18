@@ -9,14 +9,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
 
 const (
-	credentialImportProvider    = "grok_build"
-	maxCredentialImportAccounts = 10000
+	credentialImportProvider     = "grok_build"
+	maxCredentialImportAccounts  = 10000
+	maxImportedRefreshTokenBytes = 16 << 10
 )
 
 type credentialImportDocument struct {
@@ -94,7 +96,51 @@ func parseImportedCredentialEntries(data []byte) ([]importedCredentialEntry, err
 	if entries, recognized, err := parseLooseCredentialDocument(data); recognized {
 		return entries, err
 	}
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed != "" && !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return parsePlainTextRefreshTokens(trimmed)
+	}
 	return nil, sequenceErr
+}
+
+// parsePlainTextRefreshTokens accepts one refresh token per line. The optional
+// rt= and refresh_token= prefixes make common exports directly importable.
+func parsePlainTextRefreshTokens(value string) ([]importedCredentialEntry, error) {
+	scanner := bufio.NewScanner(strings.NewReader(value))
+	scanner.Buffer(make([]byte, 64*1024), maxImportedRefreshTokenBytes+1)
+	entries := make([]importedCredentialEntry, 0)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if key, token, ok := strings.Cut(line, "="); ok {
+			switch strings.ToLower(strings.TrimSpace(key)) {
+			case "rt", "refresh_token":
+				line = strings.TrimSpace(token)
+			}
+		}
+		if line == "" {
+			return nil, fmt.Errorf("refresh token 不能为空")
+		}
+		if len(line) > maxImportedRefreshTokenBytes {
+			return nil, fmt.Errorf("refresh token 长度不能超过 %d 字节", maxImportedRefreshTokenBytes)
+		}
+		if strings.IndexFunc(line, unicode.IsSpace) >= 0 {
+			return nil, fmt.Errorf("refresh token 不能包含空白字符")
+		}
+		if len(entries) >= maxCredentialImportAccounts {
+			return nil, fmt.Errorf("%w: 单次最多导入 %d 个账号", provider.ErrCredentialLimit, maxCredentialImportAccounts)
+		}
+		entries = append(entries, importedCredentialEntry{Provider: credentialImportProvider, RefreshToken: line})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("读取 refresh token 文本: %w", err)
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("文本中没有 refresh token")
+	}
+	return entries, nil
 }
 
 func parseImportedCredentialJSONSequence(data []byte) ([]importedCredentialEntry, error) {

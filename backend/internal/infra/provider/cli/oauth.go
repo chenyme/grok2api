@@ -74,7 +74,11 @@ func (c *oauthClient) pollDevice(ctx context.Context, deviceCode string) (tokenP
 }
 
 func (c *oauthClient) refresh(ctx context.Context, refreshToken string) (tokenPayload, error) {
-	form := url.Values{"grant_type": {"refresh_token"}, "client_id": {c.clientID}, "refresh_token": {refreshToken}}
+	return c.refreshWithClientID(ctx, refreshToken, "")
+}
+
+func (c *oauthClient) refreshWithClientID(ctx context.Context, refreshToken, clientID string) (tokenPayload, error) {
+	form := url.Values{"grant_type": {"refresh_token"}, "client_id": {firstNonEmpty(clientID, c.clientID)}, "refresh_token": {refreshToken}}
 	value, err := c.exchange(ctx, form, refreshToken, false)
 	if errors.Is(err, provider.ErrAuthorizationDenied) {
 		return tokenPayload{}, &provider.CredentialRefreshError{Code: "refresh_denied", Message: "OAuth authorization was denied", Permanent: true, Cause: err}

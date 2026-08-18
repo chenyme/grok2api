@@ -389,6 +389,38 @@ func TestParseImportedCredentialsBatch(t *testing.T) {
 	}
 }
 
+func TestParseImportedCredentialsPlainRefreshTokens(t *testing.T) {
+	values, err := parseImportedCredentials([]byte("rt=refresh-one\nrefresh_token=refresh-two\nrefresh-one\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(values) != 3 || values[0].AccessToken != "" || values[0].RefreshToken != "refresh-one" || values[1].RefreshToken != "refresh-two" || values[2].RefreshToken != "refresh-one" {
+		t.Fatalf("refresh token import = %#v", values)
+	}
+	if values[0].SourceKey == "" || values[0].SourceKey == values[1].SourceKey || values[0].SourceKey != values[2].SourceKey {
+		t.Fatalf("refresh token source keys = %q, %q, %q", values[0].SourceKey, values[1].SourceKey, values[2].SourceKey)
+	}
+}
+
+func TestParseImportedCredentialsPlainRefreshTokensRejectsUnsafeLines(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "empty prefixed token", data: "rt=   \n"},
+		{name: "embedded whitespace", data: "refresh token\n"},
+		{name: "embedded unicode whitespace", data: "refresh\u00a0token\n"},
+		{name: "oversized token", data: strings.Repeat("x", maxImportedRefreshTokenBytes+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseImportedCredentials([]byte(test.data)); err == nil {
+				t.Fatal("expected invalid refresh token text")
+			}
+		})
+	}
+}
+
 func TestParseImportedCredentialsJSONSequence(t *testing.T) {
 	data := []byte("\xef\xbb\xbf{\n  \"access_token\": \"access-1\",\n  \"sub\": \"user-1\"\n}\r\n\r\n" +
 		"{\"refresh_token\":\"refresh-2\",\"email\":\"two@example.com\"}\r\n")

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -9,8 +10,59 @@ import (
 	"testing"
 	"time"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 )
+
+func TestPrepareImportedCredentialRefreshesRTOnlySeed(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idToken := "header." + base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"user-1","email":"user@example.com","team_id":"team-1"}`)) + ".signature"
+	requests := 0
+	httpClient := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests++
+		wantRefresh := "original-rt"
+		response := `{"access_token":"fresh-access","refresh_token":"rotated-rt","id_token":"` + idToken + `","expires_in":3600}`
+		if requests == 2 {
+			wantRefresh = "rotated-rt"
+			response = `{"access_token":"renewed-access","refresh_token":"rotated-again","expires_in":3600}`
+		}
+		if request.FormValue("grant_type") != "refresh_token" || request.FormValue("refresh_token") != wantRefresh || request.FormValue("client_id") != "custom-client" {
+			t.Fatalf("form = %#v", request.Form)
+		}
+		return oauthResponse(http.StatusOK, response), nil
+	})}
+	adapter := &Adapter{oauth: newOAuthClient(httpClient, nil), cipher: cipher}
+	prepared, err := adapter.PrepareImportedCredential(context.Background(), provider.CredentialSeed{OIDCClientID: "custom-client", RefreshToken: "original-rt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.AccessToken != "fresh-access" || prepared.RefreshToken != "rotated-rt" || prepared.UserID != "user-1" || prepared.Email != "user@example.com" || prepared.TeamID != "team-1" || prepared.OIDCClientID != "custom-client" || prepared.SourceKey == "" {
+		t.Fatalf("prepared seed = %#v", prepared)
+	}
+	lead := time.Until(prepared.ExpiresAt)
+	if lead < 59*time.Minute || lead > 61*time.Minute {
+		t.Fatalf("expires in = %s", lead)
+	}
+	encryptedRefresh, err := cipher.Encrypt(prepared.RefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := adapter.RefreshCredential(context.Background(), accountdomain.Credential{OIDCClientID: prepared.OIDCClientID, EncryptedRefreshToken: encryptedRefresh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewedRefresh, err := cipher.Decrypt(renewed.EncryptedRefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewedRefresh != "rotated-again" || requests != 2 {
+		t.Fatalf("renewed refresh = %q, requests = %d", renewedRefresh, requests)
+	}
+}
 
 func TestOAuthDeviceFlowMatchesOfficialWireContract(t *testing.T) {
 	version := "0.2.111"
