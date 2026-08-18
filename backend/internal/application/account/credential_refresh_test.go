@@ -84,6 +84,29 @@ func TestEnsureCredentialPreservesBotFlagWhenRefreshedTokenCannotBeInspected(t *
 	}
 }
 
+func TestEnsureCredentialPersistsRotatedTokenAfterRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	adapter.afterRefresh = cancel
+
+	refreshed, err := service.EnsureCredential(ctx, credential, true)
+	if err != nil {
+		t.Fatalf("refresh after request cancellation = %v", err)
+	}
+	if refreshed.EncryptedAccessToken != "access-1" || refreshed.EncryptedRefreshToken != "refresh-1" {
+		t.Fatalf("refreshed credential = %#v", refreshed)
+	}
+	stored, err := service.accounts.Get(context.Background(), credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EncryptedAccessToken != "access-1" || stored.EncryptedRefreshToken != "refresh-1" || stored.LastRefreshAt == nil {
+		t.Fatalf("rotated credential was not persisted: %#v", stored)
+	}
+}
+
 func TestEnsureCredentialCollapsesConcurrentForcedRefreshes(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -446,6 +469,162 @@ func TestCredentialRefreshFailureDistinguishesTransientAndPermanent(t *testing.T
 	}
 }
 
+func TestCredentialRefreshRejectsFalsePermanentClassification(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now.Add(2 * time.Hour) }
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 401, Code: "invalid_client", Message: "Client authentication failed", Permanent: true}
+
+	current := credential
+	for attempt := 0; attempt < credentialUnclassifiedAuthLimit+1; attempt++ {
+		service.clearRefreshState(credential.ID)
+		if _, err := service.EnsureCredential(ctx, current, true); err == nil {
+			t.Fatal("refresh unexpectedly succeeded")
+		}
+		var err error
+		current, err = service.accounts.Get(ctx, credential.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if current.RefreshPermanent || current.RefreshUnclassifiedAuthCount != 0 || current.AuthStatus != accountdomain.AuthStatusActive || current.RefreshDueAt == nil || current.RefreshDueAt.Before(service.now().Add(credentialConfigurationRetry)) {
+		t.Fatalf("configuration error was treated as an account rejection: %#v", current)
+	}
+}
+
+func TestCredentialRefreshConvergesRepeatedUnclassifiedAuthRejectionAfterExpiry(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 401, Code: "oauth_http_401", Message: "Unauthorized"}
+
+	current := credential
+	for attempt := 1; attempt <= credentialUnclassifiedAuthLimit; attempt++ {
+		service.clearRefreshState(credential.ID)
+		if _, err := service.EnsureCredential(ctx, current, true); err == nil {
+			t.Fatalf("refresh attempt %d unexpectedly succeeded", attempt)
+		}
+		var err error
+		current, err = service.accounts.Get(ctx, credential.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.AuthStatus != accountdomain.AuthStatusActive || current.RefreshPermanent || current.RefreshUnclassifiedAuthCount != attempt {
+			t.Fatalf("attempt %d state = %#v", attempt, current)
+		}
+	}
+
+	service.now = func() time.Time { return credential.ExpiresAt.Add(time.Minute) }
+	service.clearRefreshState(credential.ID)
+	if _, err := service.EnsureCredential(ctx, current, true); err == nil {
+		t.Fatal("expired unclassified rejection unexpectedly succeeded")
+	}
+	converged, err := service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if converged.AuthStatus != accountdomain.AuthStatusReauthRequired || converged.RefreshPermanent || converged.RefreshUnclassifiedAuthCount != credentialUnclassifiedAuthLimit+1 {
+		t.Fatalf("unclassified rejection did not converge safely: %#v", converged)
+	}
+
+	adapter.refreshErr = nil
+	service.clearRefreshState(credential.ID)
+	recovered, err := service.ensureCredential(ctx, converged, ensureCredentialOptions{force: true, bypassCooldown: true, retryPermanentOnce: true})
+	if err != nil {
+		t.Fatalf("manual refresh did not recover unclassified reauth state: %v", err)
+	}
+	if recovered.AuthStatus != accountdomain.AuthStatusActive || recovered.RefreshPermanent || recovered.RefreshUnclassifiedAuthCount != 0 {
+		t.Fatalf("manual recovery state = %#v", recovered)
+	}
+}
+
+func TestCredentialRefreshUnclassifiedAuthCountResetsOnDifferentFailureAndSuccess(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	current := credential
+
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 400, Code: "oauth_http_400"}
+	for attempt := 1; attempt <= 2; attempt++ {
+		service.clearRefreshState(credential.ID)
+		if _, err := service.EnsureCredential(ctx, current, true); err == nil {
+			t.Fatal("unclassified refresh unexpectedly succeeded")
+		}
+		var err error
+		current, err = service.accounts.Get(ctx, credential.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if current.RefreshUnclassifiedAuthCount != 2 {
+		t.Fatalf("unclassified count = %d", current.RefreshUnclassifiedAuthCount)
+	}
+
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 503, Code: "temporarily_unavailable"}
+	service.clearRefreshState(credential.ID)
+	if _, err := service.EnsureCredential(ctx, current, true); err == nil {
+		t.Fatal("transient refresh unexpectedly succeeded")
+	}
+	var err error
+	current, err = service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.RefreshUnclassifiedAuthCount != 0 || current.AuthStatus != accountdomain.AuthStatusActive {
+		t.Fatalf("different failure did not reset unclassified count: %#v", current)
+	}
+
+	adapter.refreshErr = &provider.CredentialRefreshError{Status: 400, Code: "oauth_http_400"}
+	service.clearRefreshState(credential.ID)
+	if _, err := service.EnsureCredential(ctx, current, true); err == nil {
+		t.Fatal("unclassified refresh unexpectedly succeeded")
+	}
+	current, err = service.accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.RefreshUnclassifiedAuthCount != 1 {
+		t.Fatalf("new unclassified sequence count = %d", current.RefreshUnclassifiedAuthCount)
+	}
+
+	adapter.refreshErr = nil
+	service.clearRefreshState(credential.ID)
+	recovered, err := service.EnsureCredential(ctx, current, true)
+	if err != nil {
+		t.Fatalf("successful refresh failed: %v", err)
+	}
+	if recovered.RefreshUnclassifiedAuthCount != 0 || recovered.RefreshFailureCount != 0 || recovered.AuthStatus != accountdomain.AuthStatusActive {
+		t.Fatalf("successful refresh did not clear rejection state: %#v", recovered)
+	}
+}
+
+func TestHistoricalNonTerminalPermanentStateCanRefreshAgain(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	service, credential, adapter := newCredentialRefreshTestService(t, now)
+	service.now = func() time.Time { return now }
+	if err := service.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, repository.CredentialRefreshFailure{
+		Count: 1, RetryAt: now, Status: 400, Code: "oauth_http_400", Message: "historical status-only classification", Permanent: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stuck, err := service.accounts.Get(ctx, credential.ID)
+	if err != nil || !stuck.RefreshPermanent {
+		t.Fatalf("historical state = %#v err=%v", stuck, err)
+	}
+
+	recovered, err := service.EnsureCredential(ctx, stuck, true)
+	if err != nil {
+		t.Fatalf("historical non-terminal state did not retry: %v", err)
+	}
+	if recovered.RefreshPermanent || recovered.LastRefreshErrorCode != "" || adapter.refreshCount.Load() != 1 {
+		t.Fatalf("recovered credential = %#v count=%d", recovered, adapter.refreshCount.Load())
+	}
+}
+
 func TestCredentialDecryptFailedAllowsRetryAfterKeyRecovery(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
@@ -661,6 +840,7 @@ type credentialRefreshAdapter struct {
 	billing      accountdomain.Billing
 	billingErr   error
 	refreshErr   error
+	afterRefresh func()
 }
 
 func (a *credentialRefreshAdapter) Provider() accountdomain.Provider {
@@ -690,7 +870,10 @@ func (a *credentialRefreshAdapter) RefreshCredential(ctx context.Context, _ acco
 	if a.refreshErr != nil {
 		return provider.RefreshedCredential{}, a.refreshErr
 	}
-	return provider.RefreshedCredential{EncryptedAccessToken: fmt.Sprintf("access-%d", count), EncryptedRefreshToken: fmt.Sprintf("refresh-%d", count), ExpiresAt: time.Now().UTC().Add(time.Hour)}, nil
+	if a.afterRefresh != nil {
+		a.afterRefresh()
+	}
+	return provider.RefreshedCredential{EncryptedAccessToken: fmt.Sprintf("access-%d", count), EncryptedRefreshToken: fmt.Sprintf("refresh-%d", count), ExpiresAt: time.Now().UTC().Add(time.Hour), RefreshTokenRotated: true}, nil
 }
 
 func (a *credentialRefreshAdapter) ForwardResponse(context.Context, provider.ResponseResourceRequest) (*provider.Response, error) {

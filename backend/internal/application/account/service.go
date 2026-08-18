@@ -58,7 +58,9 @@ const (
 	credentialRefreshTimeout        time.Duration = 30 * time.Second
 	credentialRefreshStateTTL       time.Duration = 5 * time.Second
 	credentialStateWriteTimeout     time.Duration = 5 * time.Second
+	credentialConfigurationRetry    time.Duration = 30 * time.Minute
 	credentialRefreshBatchSize                    = 100
+	credentialUnclassifiedAuthLimit               = 5
 	managedTaskWorkerCeiling                      = 50
 	quotaRefreshQueueSize                         = 4096
 	quotaRefreshTimeout                           = 30 * time.Second
@@ -2459,7 +2461,7 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 		refreshed, err := adapter.RefreshCredential(ctx, latest)
 		if err != nil {
 			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialRefreshStateTTL)
-			s.recordCredentialRefreshFailure(persistCtx, latest, err, !options.retryPermanentOnce)
+			s.recordCredentialRefreshFailure(persistCtx, latest, err, !options.retryPermanentOnce, release != nil)
 			cancel()
 			return nil, err
 		}
@@ -2469,8 +2471,19 @@ func (s *Service) ensureCredential(ctx context.Context, value accountdomain.Cred
 		if metadata := s.credentialMetadata(riskCredential); metadata.BuildBotFlagInspected {
 			botFlagSource = metadata.BuildBotFlagSource
 		}
-		updated, err := s.accounts.UpdateTokens(ctx, latest.ID, refreshed.EncryptedAccessToken, refreshed.EncryptedRefreshToken, refreshed.ExpiresAt, botFlagSource)
+		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), credentialStateWriteTimeout)
+		updated, err := s.accounts.UpdateTokens(persistCtx, latest.ID, refreshed.EncryptedAccessToken, refreshed.EncryptedRefreshToken, refreshed.ExpiresAt, botFlagSource)
+		cancelPersist()
 		if err != nil {
+			s.logger.Error("credential_refresh_token_write_failed",
+				"account_id", latest.ID,
+				"provider", latest.Provider,
+				"refresh_token_rotated", refreshed.RefreshTokenRotated,
+				"egress_node_id", latest.EgressNodeID,
+				"build_api_fallback_marked", latest.BuildAPIFallback,
+				"distributed_lock", release != nil,
+				"error", err,
+			)
 			return nil, err
 		}
 		s.invalidateBuildBotFlagCache()
@@ -2552,7 +2565,7 @@ func (s *Service) clearRefreshState(accountID uint64) {
 	s.refreshMu.Unlock()
 }
 
-func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential accountdomain.Credential, refreshErr error, preservePermanent bool) {
+func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential accountdomain.Credential, refreshErr error, preservePermanent, distributedLock bool) {
 	if errors.Is(refreshErr, context.Canceled) || errors.Is(refreshErr, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.Canceled) {
 		return
 	}
@@ -2580,17 +2593,33 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 		errorCode = "oauth_timeout"
 		errorMessage = "OAuth request timed out"
 	}
-	// 真正的 OAuth 永久失败（invalid_grant 等）只能由成功换 token 清除。
-	// credential_decrypt_failed 是可恢复本地错误：不得被旧 permanent 粘住，也不得把本次可恢复失败抬升为永久。
-	if permanent && isRecoverableRefreshErrorCode(errorCode) {
+	// Defend against adapters or historical rows that classified every OAuth
+	// 400/401 as terminal. Only explicit credential-specific terminal codes may
+	// stop future refresh attempts.
+	if permanent && !provider.IsPermanentCredentialRefreshErrorCode(errorCode) {
 		permanent = false
 	}
+	// 真正的 OAuth 永久失败（invalid_grant 等）只能由成功换 token 清除。
+	// 非终态错误不得被旧的 status-only permanent 分类粘住。
 	if preservePermanent && credential.RefreshPermanent && !isRecoverableRefreshErrorCode(credential.LastRefreshErrorCode) && !isRecoverableRefreshErrorCode(errorCode) {
 		permanent = true
 	}
 	now := s.now()
+	unclassifiedAuthFailure := provider.IsUnclassifiedCredentialAuthRejection(errorStatus, errorCode)
+	configurationError := provider.IsCredentialRefreshConfigurationErrorCode(errorCode)
+	unclassifiedAuthFailureCount := 0
+	if unclassifiedAuthFailure {
+		unclassifiedAuthFailureCount = 1
+		if credential.LastRefreshErrorStatus == errorStatus && strings.EqualFold(strings.TrimSpace(credential.LastRefreshErrorCode), strings.TrimSpace(errorCode)) {
+			unclassifiedAuthFailureCount = credential.RefreshUnclassifiedAuthCount + 1
+		}
+	}
 	retryAt := now.Add(credentialRefreshBackoff(credential.ID, failureCount, retryAfter))
+	if configurationError && retryAt.Before(now.Add(credentialConfigurationRetry)) {
+		retryAt = now.Add(credentialConfigurationRetry)
+	}
 	accessTokenAlive := credential.EncryptedAccessToken != "" && !credential.ExpiresAt.IsZero() && credential.ExpiresAt.After(now)
+	requiresReauth := unclassifiedAuthFailure && !accessTokenAlive && unclassifiedAuthFailureCount >= credentialUnclassifiedAuthLimit
 	if permanent && accessTokenAlive {
 		// refresh token 已永久失效时，提前重试没有意义；到 access token 到期时再完成失效收敛。
 		retryAt = credential.ExpiresAt
@@ -2598,11 +2627,31 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 		retryAt = now
 	}
 	if err := s.accounts.UpdateCredentialRefreshFailure(ctx, credential.ID, repository.CredentialRefreshFailure{
-		Count: failureCount, RetryAt: retryAt, Status: errorStatus, Code: errorCode,
+		Count: failureCount, UnclassifiedAuthFailureCount: unclassifiedAuthFailureCount,
+		RetryAt: retryAt, Status: errorStatus, Code: errorCode,
 		Message: errorMessage, Response: errorResponse, Permanent: permanent,
 	}); err != nil {
 		s.logger.Warn("credential_refresh_state_write_failed", "account_id", credential.ID, "error", err)
 	}
+	s.logger.Warn("credential_refresh_failed",
+		"account_id", credential.ID,
+		"provider", credential.Provider,
+		"http_status", errorStatus,
+		"error_code", errorCode,
+		"error_message", errorMessage,
+		"permanent", permanent,
+		"failure_count", failureCount,
+		"unclassified_auth_failure", unclassifiedAuthFailure,
+		"unclassified_auth_failure_count", unclassifiedAuthFailureCount,
+		"configuration_error", configurationError,
+		"requires_reauth", requiresReauth,
+		"retry_at", retryAt,
+		"access_token_alive", accessTokenAlive,
+		"refresh_token_rotated", false,
+		"egress_node_id", credential.EgressNodeID,
+		"build_api_fallback_marked", credential.BuildAPIFallback,
+		"distributed_lock", distributedLock,
+	)
 	if permanent && accessTokenAlive {
 		s.logger.Warn("credential_refresh_permanent_but_token_alive", "account_id", credential.ID, "error_code", errorCode, "expires_at", credential.ExpiresAt, "retry_at", retryAt)
 		s.WakeCredentialRefresh()
@@ -2612,6 +2661,19 @@ func (s *Service) recordCredentialRefreshFailure(ctx context.Context, credential
 		if err := s.MarkReauthRequired(ctx, credential.ID, "OAuth refresh failed: "+errorCode); err != nil {
 			s.logger.Warn("credential_refresh_reauth_mark_failed", "account_id", credential.ID, "error", err)
 		}
+		return
+	}
+	if requiresReauth {
+		if err := s.MarkReauthRequired(ctx, credential.ID, "OAuth refresh repeatedly rejected without a classifiable error"); err != nil {
+			s.logger.Warn("credential_refresh_unclassified_reauth_mark_failed", "account_id", credential.ID, "error", err)
+			return
+		}
+		s.logger.Warn("credential_refresh_unclassified_reauth_required",
+			"account_id", credential.ID,
+			"http_status", errorStatus,
+			"error_code", errorCode,
+			"failure_count", unclassifiedAuthFailureCount,
+		)
 		return
 	}
 	s.logger.Warn("credential_refresh_deferred", "account_id", credential.ID, "failure_count", failureCount, "retry_at", retryAt, "error_code", errorCode)
@@ -2682,12 +2744,7 @@ func (s *Service) resolvePermanentRefreshFailure(ctx context.Context, credential
 
 // isRecoverableRefreshErrorCode 标识“永久标记可被后续成功刷新清除”的本地/临时错误。
 func isRecoverableRefreshErrorCode(code string) bool {
-	switch strings.TrimSpace(code) {
-	case "credential_decrypt_failed":
-		return true
-	default:
-		return false
-	}
+	return !provider.IsPermanentCredentialRefreshErrorCode(code)
 }
 
 func credentialRefreshBackoff(accountID uint64, failureCount int, retryAfter time.Duration) time.Duration {

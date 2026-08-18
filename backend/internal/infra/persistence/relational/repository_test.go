@@ -501,7 +501,7 @@ func TestFreshSchemaContract(t *testing.T) {
 		}
 	}
 	assertTableColumns(t, database, "provider_accounts", []string{"provider", "source_key", "auth_status", "build_api_fallback", "build_route_mode", "build_super_entitled"}, []string{"oidc_client_id", "expires_at", "encrypted_access_token", "encrypted_refresh_token"})
-	assertTableColumns(t, database, "account_credentials", []string{"account_id", "auth_type", "client_id", "encrypted_primary", "encrypted_refresh", "expires_at", "refresh_due_at", "last_refresh_at", "refresh_failures", "last_refresh_error_status", "last_refresh_error", "last_refresh_error_message", "last_refresh_error_response", "refresh_permanent"}, nil)
+	assertTableColumns(t, database, "account_credentials", []string{"account_id", "auth_type", "client_id", "encrypted_primary", "encrypted_refresh", "expires_at", "refresh_due_at", "last_refresh_at", "refresh_failures", "refresh_unclassified_auth_failures", "last_refresh_error_status", "last_refresh_error", "last_refresh_error_message", "last_refresh_error_response", "refresh_permanent"}, nil)
 	assertTableColumns(t, database, "web_account_profiles", []string{"account_id", "tier", "synced_at", "nsfw_enabled_at"}, nil)
 	assertTableColumns(t, database, "admin_sessions", nil, []string{"revoked_at"})
 	assertTableColumns(t, database, "account_model_capabilities", []string{"account_id", "upstream_model"}, []string{"provider", "synced_at"})
@@ -525,6 +525,49 @@ func TestFreshSchemaContract(t *testing.T) {
 	}
 	if expiresNotNull != 0 {
 		t.Fatal("account credential expires_at must be nullable when the upstream expiry is unknown")
+	}
+}
+
+func TestInitializeSchemaAddsUnclassifiedAuthFailureCountWithoutLosingCredentialState(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewAccountRepository(database)
+	now := time.Now().UTC()
+	created, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "legacy-refresh", SourceKey: "legacy-refresh",
+		EncryptedAccessToken: "preserved-access", EncryptedRefreshToken: "preserved-refresh",
+		ExpiresAt: now.Add(time.Hour), AuthStatus: account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateCredentialRefreshFailure(ctx, created.ID, repository.CredentialRefreshFailure{
+		Count: 3, UnclassifiedAuthFailureCount: 3, RetryAt: now.Add(10 * time.Minute),
+		Status: 401, Code: "oauth_http_401", Message: "Unauthorized",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.withSQLiteForeignKeysDisabled(ctx, func() error {
+		if err := database.db.WithContext(ctx).Migrator().DropConstraint(&accountCredentialModel{}, "chk_account_credentials_refresh_unclassified_auth_failures"); err != nil {
+			return err
+		}
+		return database.db.WithContext(ctx).Migrator().DropColumn(&accountCredentialModel{}, "RefreshUnclassifiedAuthFailures")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !database.db.WithContext(ctx).Migrator().HasColumn(&accountCredentialModel{}, "RefreshUnclassifiedAuthFailures") {
+		t.Fatal("refresh_unclassified_auth_failures column was not restored")
+	}
+	stored, err := repo.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.EncryptedAccessToken != "preserved-access" || stored.EncryptedRefreshToken != "preserved-refresh" || stored.RefreshFailureCount != 3 || stored.LastRefreshErrorStatus != 401 || stored.LastRefreshErrorCode != "oauth_http_401" || stored.RefreshUnclassifiedAuthCount != 0 {
+		t.Fatalf("credential state after schema upgrade = %#v", stored)
 	}
 }
 
