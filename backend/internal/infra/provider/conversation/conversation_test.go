@@ -430,7 +430,7 @@ func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !options.AnthropicThinking {
+	if !options.AnthropicThinking || !options.ReasoningEffortSet || options.ReasoningEffort != "high" {
 		t.Fatal("thinking option 未保留")
 	}
 	var payload map[string]any
@@ -459,6 +459,21 @@ func TestConvertAnthropicClaudeCodeRequestToResponses(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicDisabledThinkingReportsNoneMetadata(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat","max_tokens":1024,
+		"messages":[{"role":"user","content":"hello"}],
+		"thinking":{"type":"disabled"}
+	}`)
+	_, options, err := ConvertRequestWithOptions(body, "grok-4.3", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.AnthropicThinking || !options.ReasoningEffortSet || options.ReasoningEffort != "none" {
+		t.Fatalf("options = %#v", options)
+	}
+}
+
 func TestConvertAnthropicMessagesPreservesExtendedReasoningEffort(t *testing.T) {
 	for _, effort := range []string{"xhigh", "max"} {
 		t.Run(effort, func(t *testing.T) {
@@ -481,6 +496,26 @@ func TestConvertAnthropicMessagesPreservesExtendedReasoningEffort(t *testing.T) 
 				t.Fatalf("reasoning = %#v", payload["reasoning"])
 			}
 		})
+	}
+}
+
+func TestConvertAnthropicMessagesUsesThinkingEffortBeforeBudget(t *testing.T) {
+	body := []byte(`{
+		"model":"public-chat","max_tokens":1024,
+		"messages":[{"role":"user","content":"hello"}],
+		"thinking":{"type":"enabled","effort":"high","budget_tokens":1024}
+	}`)
+	converted, options, err := ConvertRequestWithOptions(body, "grok-4.5", OperationMessages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if json.Unmarshal(converted, &payload) != nil {
+		t.Fatalf("converted = %s", converted)
+	}
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	if reasoning["effort"] != "high" || !options.ReasoningEffortSet || options.ReasoningEffort != "high" {
+		t.Fatalf("reasoning = %#v, options = %#v", reasoning, options)
 	}
 }
 
