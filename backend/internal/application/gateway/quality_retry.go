@@ -17,12 +17,15 @@ import (
 )
 
 const (
-	ErrorQualityDegraded      = "quality_degraded"
-	qualityRetryFailOpen      = "fail_open"
-	qualityRetryFailClosed    = "fail_closed"
-	defaultQualityMaxAttempts = 6
-	defaultQualityHoldTimeout = 3 * time.Second
-	defaultQualityMinOutput   = int64(32)
+	ErrorQualityDegraded             = "quality_degraded"
+	qualityRetryFailOpen             = "fail_open"
+	qualityRetryFailClosed           = "fail_closed"
+	defaultQualityMaxAttempts        = 6
+	defaultQualityHoldTimeout        = 3 * time.Second
+	defaultQualityMinOutput          = int64(32)
+	defaultMissingThinkingCooldown   = 24 * time.Hour
+	lastErrorMissingThinking         = "missing_thinking"
+	lastErrorMissingThinkingDisabled = "missing_thinking_disabled"
 	// An empty stream that idles while held is treated as an account-quality
 	// failure: the request can still rotate before any bytes reach the client.
 	qualityIdleAccountCooldown = 24 * time.Hour
@@ -41,6 +44,7 @@ type QualityRetryRuntime struct {
 	HoldTimeout     time.Duration
 	MinOutputTokens int64
 	OnExhausted     string
+	AccountCooldown time.Duration
 }
 
 // QualityStreamSignals is the hold classifier input. Tests drive this
@@ -82,6 +86,9 @@ func normalizeQualityRetry(cfg QualityRetryRuntime) QualityRetryRuntime {
 	}
 	if cfg.MinOutputTokens <= 0 {
 		cfg.MinOutputTokens = defaultQualityMinOutput
+	}
+	if cfg.AccountCooldown <= 0 {
+		cfg.AccountCooldown = defaultMissingThinkingCooldown
 	}
 	cfg.OnExhausted = normalizeQualityExhaustionPolicy(cfg.OnExhausted)
 	return cfg
@@ -318,6 +325,18 @@ func nonEmptyJSONCollection(raw json.RawMessage) bool {
 func jsonStringEquals(raw json.RawMessage, want string) bool {
 	var value string
 	return json.Unmarshal(raw, &value) == nil && strings.EqualFold(strings.TrimSpace(value), want)
+}
+
+func (s *Service) applyMissingThinkingPenalty(ctx context.Context, requestID string, credential accountdomain.Credential, cooldown time.Duration) {
+	if err := s.selector.MarkMissingThinking(ctx, credential, cooldown); err != nil {
+		s.logger.Error("quality_degraded_penalty_failed", "request_id", requestID, "account_id", credential.ID, "error", err)
+		return
+	}
+	if isMissingThinkingStrike(credential.LastError) && (credential.CooldownUntil == nil || !time.Now().UTC().Before(*credential.CooldownUntil)) {
+		s.logger.Info("quality_degraded_disabled", "request_id", requestID, "account_id", credential.ID)
+		return
+	}
+	s.logger.Info("quality_degraded_cooldown", "request_id", requestID, "account_id", credential.ID, "cooldown", cooldown.String())
 }
 
 func (s *Service) recordQualityDegraded(ctx context.Context, base audit.Record, credential accountdomain.Credential, usage Usage, startedAt time.Time, trace *infraegress.Trace, provider accountdomain.Provider) {

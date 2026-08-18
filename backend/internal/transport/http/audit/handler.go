@@ -386,7 +386,7 @@ func (h *Handler) degradeAccounts(c *gin.Context) {
 		Totals: degradeTotalsResponse{
 			Hits: result.Totals.Hits, Accounts: result.Totals.Accounts, StillEnabled: result.Totals.StillEnabled,
 			Disabled: result.Totals.Disabled, Deleted: result.Totals.Deleted, Hard: result.Totals.Hard,
-			Soft: result.Totals.Soft, Burst: result.Totals.Burst, MaxTPS: result.Totals.MaxTPS,
+			Soft: result.Totals.Soft, Burst: result.Totals.Burst, Thinking: result.Totals.Thinking, MaxTPS: result.Totals.MaxTPS,
 		},
 		Series: result.Series, Nodes: result.Nodes, Accounts: accounts,
 		AccountPage: degradeAccountPageResponse{
@@ -432,6 +432,7 @@ type degradeTotalsResponse struct {
 	Hard         int64   `json:"hard"`
 	Soft         int64   `json:"soft"`
 	Burst        int64   `json:"burst"`
+	Thinking     int64   `json:"thinking"`
 	MaxTPS       float64 `json:"maxTPS"`
 }
 

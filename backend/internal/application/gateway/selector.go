@@ -920,8 +920,13 @@ func (s *Selector) MarkSuccess(ctx context.Context, credential account.Credentia
 	s.markSuccess(ctx, credential, true)
 }
 
+func isMissingThinkingStrike(lastError string) bool {
+	return lastError == lastErrorMissingThinking || lastError == lastErrorMissingThinkingDisabled
+}
+
 func (s *Selector) markSuccess(ctx context.Context, credential account.Credential, quotaProbe bool) {
 	now := time.Now().UTC()
+	keepThinkingStrike := isMissingThinkingStrike(credential.LastError)
 	healthChanged := credential.FailureCount > 0 || credential.CooldownUntil != nil || credential.LastError != ""
 	touchLastUsed := healthChanged
 	s.selectionMu.Lock()
@@ -933,7 +938,11 @@ func (s *Selector) markSuccess(ctx context.Context, credential account.Credentia
 	}
 	s.selectionMu.Unlock()
 	if healthChanged {
-		if err := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, 0, nil, "", true); err == nil {
+		lastError := ""
+		if keepThinkingStrike {
+			lastError = lastErrorMissingThinking
+		}
+		if err := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, 0, nil, lastError, true); err == nil {
 			s.ApplyInvalidation(repository.InvalidationEvent{
 				Kind: repository.InvalidationAccountHealthChanged, Provider: credential.Provider, AccountID: credential.ID,
 			})
@@ -1105,6 +1114,44 @@ func (s *Selector) clearQuotaConsumptionAccount(provider account.Provider, accou
 		}
 	}
 	s.quotaMu.Unlock()
+}
+
+// MarkMissingThinking cools an account for the first no-thinking hit and
+// disables it if missing thinking appears again after that cooldown.
+func (s *Selector) MarkMissingThinking(ctx context.Context, credential account.Credential, cooldown time.Duration) error {
+	if cooldown <= 0 {
+		cooldown = defaultMissingThinkingCooldown
+	}
+	now := time.Now().UTC()
+	inCooldown := credential.CooldownUntil != nil && now.Before(*credential.CooldownUntil)
+	if isMissingThinkingStrike(credential.LastError) && !inCooldown {
+		disabled := false
+		if _, err := s.accounts.UpdateMany(ctx, credential.Provider, []uint64{credential.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil {
+			return err
+		}
+		_ = s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, credential.FailureCount, nil, lastErrorMissingThinkingDisabled, false)
+		s.ApplyInvalidation(repository.InvalidationEvent{
+			Kind: repository.InvalidationAccountStateChanged, Provider: credential.Provider, AccountID: credential.ID,
+		})
+		s.evictCandidate(credential.Provider, credential.ID)
+		if s.sticky != nil {
+			_ = s.sticky.DeleteByAccount(ctx, credential.ID)
+		}
+		return nil
+	}
+	if inCooldown {
+		return nil
+	}
+	until := now.Add(cooldown)
+	if err := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, credential.FailureCount, &until, lastErrorMissingThinking, false); err != nil {
+		return err
+	}
+	s.ApplyInvalidation(repository.InvalidationEvent{
+		Kind: repository.InvalidationAccountHealthChanged, Provider: credential.Provider, AccountID: credential.ID,
+		FailureCount: credential.FailureCount, CooldownUntil: &until,
+	})
+	s.evictCandidate(credential.Provider, credential.ID)
+	return nil
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {

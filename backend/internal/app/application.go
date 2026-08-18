@@ -496,6 +496,7 @@ func qualityRetryRuntime(value config.QualityGuardRequestRetryConfig) gateway.Qu
 		HoldTimeout:     value.HoldTimeout.Value(),
 		MinOutputTokens: int64(value.MinOutputTokens),
 		OnExhausted:     value.OnExhausted,
+		AccountCooldown: value.AccountCooldown.Value(),
 	}
 }
 
