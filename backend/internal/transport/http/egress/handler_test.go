@@ -2,6 +2,7 @@ package egress
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -14,8 +15,56 @@ import (
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/gin-gonic/gin"
 )
+
+type proxyRevealRepository struct{ node egressdomain.Node }
+
+func (r *proxyRevealRepository) ListEgressNodes(context.Context, egressdomain.Scope, repository.SortQuery) ([]egressdomain.Node, error) {
+	return []egressdomain.Node{r.node}, nil
+}
+func (r *proxyRevealRepository) ListEgressNodePage(context.Context, repository.EgressNodeListQuery) ([]egressdomain.Node, int64, error) {
+	return []egressdomain.Node{r.node}, 1, nil
+}
+func (r *proxyRevealRepository) GetEgressNode(_ context.Context, id uint64) (egressdomain.Node, error) {
+	if id != r.node.ID {
+		return egressdomain.Node{}, repository.ErrNotFound
+	}
+	return r.node, nil
+}
+func (r *proxyRevealRepository) CreateEgressNode(_ context.Context, value egressdomain.Node) (egressdomain.Node, error) {
+	return value, nil
+}
+func (r *proxyRevealRepository) UpdateEgressNode(_ context.Context, value egressdomain.Node) (egressdomain.Node, error) {
+	return value, nil
+}
+func (r *proxyRevealRepository) DeleteEgressNode(context.Context, uint64) error { return nil }
+
+func TestProxyURLRevealIsExplicitAndNeverCacheable(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL := "socks5h://user:secret@proxy.example:1080"
+	encrypted, err := cipher.Encrypt(proxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := egressapp.NewService(&proxyRevealRepository{node: egressdomain.Node{ID: 7, EncryptedProxyURL: encrypted}}, cipher, "")
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Params = gin.Params{{Key: "id", Value: "7"}}
+	context.Request = httptest.NewRequest("POST", "/egress-nodes/7/proxy-url/reveal", nil)
+	NewHandler(service).proxyURL(context)
+	if recorder.Code != 200 || !strings.Contains(recorder.Body.String(), "secret") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "private, no-store" || recorder.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("reveal cache headers = %#v", recorder.Header())
+	}
+}
 
 func TestQualityGuardStatusReadsOnlyPublicState(t *testing.T) {
 	path := t.TempDir() + "/state.json"

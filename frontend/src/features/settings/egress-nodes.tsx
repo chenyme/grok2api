@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleAlert, CircleHelp, MoreHorizontal, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { CircleAlert, CircleHelp, Eye, EyeOff, MoreHorizontal, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -19,7 +19,7 @@ import { Table, TableActionCell, TableActionHead, TableBody, TableCell, TableHea
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EgressAutomation, EgressSources } from "@/features/settings/egress-operations";
-import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, importEgressText, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type ClearanceMode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
+import { cleanupUnhealthyEgressNodes, createEgressNode, deleteEgressNode, deleteEgressNodes, getEgressNodeProxyURL, importEgressText, listAllEgressNodes, listEgressNodes, previewUnhealthyEgressNodes, refreshEgressClearance, testEgressNode, updateEgressNode, updateEgressNodesEnabled, type ClearanceMode, type EgressIPProbeDTO, type EgressNodeDTO, type EgressNodeInput, type EgressScope } from "@/features/settings/settings-api";
 import { ErrorState, TableLoadingRow } from "@/shared/components/data-state";
 import { DataTableShell } from "@/shared/components/data-table-shell";
 import { DataTableFilters } from "@/shared/components/data-table-filters";
@@ -38,6 +38,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<EgressNodeDTO | null | undefined>(undefined);
+  const [proxyVisible, setProxyVisible] = useState(false);
+  const [revealedProxyURL, setRevealedProxyURL] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [importForm, setImportForm] = useState<ImportForm>(emptyImport);
   const [form, setForm] = useState<EgressNodeInput>(emptyInput);
@@ -62,17 +64,36 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
     refetchInterval: 2_000,
     refetchIntervalInBackground: false,
   });
+  const proxyCopyOptions = useQuery({
+    queryKey: ["egress-nodes", "proxy-copy-options"],
+    queryFn: () => listAllEgressNodes(),
+    enabled: editing !== undefined,
+    staleTime: 30_000,
+  });
   const save = useMutation({
     mutationFn: () => {
+      const normalizedProxyURL = form.proxyURL?.trim() || "";
       const input = {
         ...form,
-        proxyURL: form.proxyURL?.trim() || undefined,
+        proxyURL: normalizedProxyURL && (!editing || normalizedProxyURL !== revealedProxyURL) ? normalizedProxyURL : undefined,
         userAgent: form.scope === "grok_build" ? "" : form.userAgent,
         cloudflareCookies: form.scope === "grok_build" ? undefined : form.cloudflareCookies?.trim() || undefined,
       };
       return editing ? updateEgressNode(editing.id, input) : createEgressNode(input);
     },
     onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["egress-nodes"] }); setEditing(undefined); toast.success(t("settings.egress.saved")); },
+    onError: (error) => showError(error, t("settings.egress.operationFailed")),
+  });
+  const revealProxy = useMutation({
+    mutationFn: () => {
+      if (!editing) throw new Error(t("egressProxyEditor.revealUnavailable"));
+      return getEgressNodeProxyURL(editing.id);
+    },
+    onSuccess: ({ proxyURL }) => {
+      setRevealedProxyURL(proxyURL);
+      setProxyVisible(true);
+      setForm((current) => ({ ...current, proxyURL, copyProxyFromNodeId: undefined }));
+    },
     onError: (error) => showError(error, t("settings.egress.operationFailed")),
   });
   const importText = useMutation({
@@ -147,6 +168,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
 
   function openCreate() {
     setForm(emptyInput);
+    setProxyVisible(false);
+    setRevealedProxyURL("");
     setEditing(null);
   }
 
@@ -158,6 +181,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
 
   function openEdit(node: EgressNodeDTO) {
     setForm({ name: node.name, scope: node.scope, enabled: node.enabled, proxyPool: node.proxyPool, accountCapacity: node.accountCapacity, userAgent: node.scope === "grok_build" ? "" : node.userAgent, proxyURL: "", cloudflareCookies: "" });
+    setProxyVisible(false);
+    setRevealedProxyURL("");
     setEditing(node);
   }
 
@@ -276,8 +301,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
           footer={query.data && query.data.total > 0 ? <Pagination page={query.data.page} pageSize={query.data.pageSize} total={query.data.total} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} /> : undefined}
         >
           {query.isError ? <ErrorState message={query.error.message} onRetry={() => void query.refetch()} /> : null}
-          {!query.isError ? <Table viewportRows={10} rowHeight={48} className="min-w-[800px] table-fixed">
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-10 px-2"><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} disabled={nodes.length === 0} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead><SortableTableHead className="w-18" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-24" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-16" field="proxy" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="w-28" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-14 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-24" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="w-52"><div className="flex items-center justify-center gap-1"><span>{t("settings.egress.probe")}</span><Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.probeHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80">{t("settings.egress.probeHelp")}</TooltipContent></Tooltip></div></TableHead><TableActionHead /></TableRow></TableHeader>
+          {!query.isError ? <Table viewportRows={10} rowHeight={48} className="min-w-[920px] table-fixed">
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead className="w-10 px-2"><Checkbox checked={allPageSelected ? true : selectedOnPage.length > 0 ? "indeterminate" : false} disabled={nodes.length === 0} onCheckedChange={(checked) => togglePage(checked === true)} aria-label={t("common.selectPage")} /></TableHead><SortableTableHead className="w-18" field="name" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.name")}</SortableTableHead><SortableTableHead className="w-24" field="scope" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.scope")}</SortableTableHead><SortableTableHead className="w-44" field="proxy" sortBy={sort.field} sortOrder={sort.order} onSort={changeSort}>{t("settings.egress.proxy")}</SortableTableHead><SortableTableHead className="w-28" field="clearance" sortBy={sort.field} sortOrder={sort.order} align="center" onSort={changeSort}>{t("settings.egress.clearance")}</SortableTableHead><TableHead className="w-14 text-center">{t("settings.egress.accounts")}</TableHead><SortableTableHead className="w-24" field="health" sortBy={sort.field} sortOrder={sort.order} initialOrder="desc" align="center" title={t("settings.egress.healthHelp")} onSort={changeSort}>{t("settings.egress.health")}</SortableTableHead><TableHead className="w-52"><div className="flex items-center justify-center gap-1"><span>{t("settings.egress.probe")}</span><Tooltip><TooltipTrigger asChild><button type="button" className="text-muted-foreground transition-colors hover:text-foreground" aria-label={t("settings.egress.probeHelp")}><CircleHelp className="size-3.5" /></button></TooltipTrigger><TooltipContent className="max-w-80">{t("settings.egress.probeHelp")}</TooltipContent></Tooltip></div></TableHead><TableActionHead /></TableRow></TableHeader>
           {query.isPending ? <TableBody><TableLoadingRow colSpan={9} /></TableBody> : null}
           {!query.isPending && nodes.length === 0 ? <TableBody><TableRow><TableCell colSpan={9} className="h-24 text-center text-xs text-muted-foreground">{hasActiveFilters ? t("settings.egress.noMatches") : t("settings.egress.directFallback")}</TableCell></TableRow></TableBody> : null}
           {!query.isPending && nodes.length > 0 ? <VirtualTableBody items={nodes} colSpan={9} rowHeight={48} renderRow={(node) => (
@@ -291,7 +316,9 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                   </div>
                 </TableCell>
                 <TableCell className="text-center"><Badge variant="secondary" className="text-[10px]">{scopeLabel(node.scope)}</Badge></TableCell>
-                <TableCell className="text-center"><Badge variant={node.proxyConfigured ? "secondary" : "outline"} className={cn("text-[10px]", node.proxyConfigured ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground")}>{node.proxyConfigured ? t("settings.egress.configured") : t("settings.egress.direct")}</Badge></TableCell>
+                <TableCell>
+                  {node.proxyConfigured ? <div className="min-w-0" title={`${node.proxyDisplay || t("settings.egress.configured")} · ${node.proxyFingerprint || ""}`}><p className="truncate text-xs font-medium">{node.proxyDisplay || t("settings.egress.configured")}</p>{node.proxyFingerprint ? <p className="font-mono text-[10px] text-muted-foreground">#{node.proxyFingerprint}</p> : null}</div> : <Badge variant="outline" className="text-[10px] text-muted-foreground">{t("settings.egress.direct")}</Badge>}
+                </TableCell>
                 <TableCell className="text-center"><ClearanceBadge node={node} clearanceMode={clearanceMode} /></TableCell>
                 <TableCell className="text-center text-xs tabular-nums"><span className="font-medium">{node.assignedAccountCount}</span>{node.accountCapacity > 0 ? <span className="text-muted-foreground"> / {node.accountCapacity}</span> : null}</TableCell>
                 <TableCell><HealthMeter value={node.health} /></TableCell>
@@ -405,18 +432,37 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                 </Badge>
               </div>
             ) : null}
+            <Field label={t("egressProxyEditor.method")} controlId="egress-proxy-method" help={t("egressProxyEditor.copyHelp")}>
+              <Select value={form.copyProxyFromNodeId || "manual"} onValueChange={(value) => {
+                setProxyVisible(false);
+                setRevealedProxyURL("");
+                setForm({ ...form, copyProxyFromNodeId: value === "manual" ? undefined : value, proxyURL: "" });
+              }}>
+                <SelectTrigger id="egress-proxy-method"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="manual">{t("egressProxyEditor.manual")}</SelectItem>
+                  {(proxyCopyOptions.data?.items ?? []).filter((node) => node.proxyConfigured && node.id !== editing?.id).map((node) => <SelectItem key={node.id} value={node.id}>{t("egressProxyEditor.copyFrom")} {node.name} · {scopeLabel(node.scope)} · {node.proxyDisplay || `#${node.proxyFingerprint}`}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
             <Field label={t("settings.egress.proxyURL")} controlId="egress-proxy" help={t("settings.egress.proxyProtocols")}>
-              <Input id="egress-proxy" type="password" autoComplete="new-password" placeholder={editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => {
+              <div className="flex gap-2">
+              <Input id="egress-proxy" type={proxyVisible ? "text" : "password"} autoComplete="new-password" disabled={Boolean(form.copyProxyFromNodeId)} placeholder={form.copyProxyFromNodeId ? t("egressProxyEditor.copyOnSave") : editing?.proxyConfigured ? t("settings.egress.keepConfigured") : "socks5h://user:pass@host:port"} value={form.proxyURL} onChange={(event) => {
                 const proxyURL = event.target.value;
-                setForm({ ...form, proxyURL, proxyPool: editing?.proxyConfigured || proxyURL.trim() ? form.proxyPool : false });
+                setForm({ ...form, proxyURL, copyProxyFromNodeId: undefined, proxyPool: editing?.proxyConfigured || proxyURL.trim() ? form.proxyPool : false });
               }} />
+              {editing?.proxyConfigured ? <Button type="button" variant="outline" size="icon" className="shrink-0" disabled={revealProxy.isPending || Boolean(form.copyProxyFromNodeId)} aria-label={t(proxyVisible ? "egressProxyEditor.hide" : "egressProxyEditor.reveal")} onClick={() => {
+                if (revealedProxyURL) setProxyVisible((visible) => !visible);
+                else revealProxy.mutate();
+              }}>{revealProxy.isPending ? <Spinner /> : proxyVisible ? <EyeOff /> : <Eye />}</Button> : null}
+              </div>
             </Field>
             <div className="flex items-start justify-between gap-4 rounded-md bg-muted/45 px-3 py-2.5">
               <div className="space-y-1">
                 <Label htmlFor="egress-proxy-pool">{t("settings.egress.proxyPool")}</Label>
                 <p className="max-w-[390px] text-xs leading-5 text-muted-foreground">{t("settings.egress.proxyPoolHelp")}</p>
               </div>
-              <Switch id="egress-proxy-pool" className="mt-0.5" checked={form.proxyPool} disabled={!editing?.proxyConfigured && !form.proxyURL?.trim()} onCheckedChange={(proxyPool) => setForm({ ...form, proxyPool })} />
+              <Switch id="egress-proxy-pool" className="mt-0.5" checked={form.proxyPool} disabled={!editing?.proxyConfigured && !form.proxyURL?.trim() && !form.copyProxyFromNodeId} onCheckedChange={(proxyPool) => setForm({ ...form, proxyPool })} />
             </div>
             {form.scope !== "grok_build" && (clearanceMode === "manual" || form.scope === "grok_console_asset") ? (
               <Field label={t("settings.egress.userAgent")} controlId="egress-user-agent">

@@ -60,6 +60,8 @@ type PublicNode struct {
 	Scope                Scope
 	Enabled              bool
 	ProxyConfigured      bool
+	ProxyDisplay         string
+	ProxyFingerprint     string
 	ProxyPool            bool
 	SourceID             uint64
 	AccountCapacity      int

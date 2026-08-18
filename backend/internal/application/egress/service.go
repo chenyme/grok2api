@@ -78,16 +78,17 @@ const (
 )
 
 type Input struct {
-	Name              string
-	Scope             domain.Scope
-	Enabled           bool
-	ProxyPool         *bool
-	AccountCapacity   *int
-	ProxyURL          *string
-	ClearProxyURL     bool
-	UserAgent         string
-	CloudflareCookies *string
-	ClearCookies      bool
+	Name                string
+	Scope               domain.Scope
+	Enabled             bool
+	ProxyPool           *bool
+	AccountCapacity     *int
+	ProxyURL            *string
+	CopyProxyFromNodeID uint64
+	ClearProxyURL       bool
+	UserAgent           string
+	CloudflareCookies   *string
+	ClearCookies        bool
 }
 
 type ListFilter struct {
@@ -323,6 +324,11 @@ func validListValue(value string, allowed ...string) bool {
 }
 
 func (s *Service) Create(ctx context.Context, input Input) (domain.PublicNode, error) {
+	var err error
+	input, err = s.resolveProxyCopy(ctx, 0, input)
+	if err != nil {
+		return domain.PublicNode{}, err
+	}
 	value, err := s.applyInput(domain.Node{}, input, true)
 	if err != nil {
 		return domain.PublicNode{}, err
@@ -335,6 +341,11 @@ func (s *Service) Create(ctx context.Context, input Input) (domain.PublicNode, e
 }
 
 func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.PublicNode, error) {
+	var err error
+	input, err = s.resolveProxyCopy(ctx, id, input)
+	if err != nil {
+		return domain.PublicNode{}, err
+	}
 	value, err := s.repository.GetEgressNode(ctx, id)
 	if errors.Is(err, repository.ErrNotFound) {
 		return domain.PublicNode{}, ErrNotFound
@@ -360,6 +371,55 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 		s.forgetClearance(updated.ID)
 	}
 	return s.publicNode(updated), err
+}
+
+// ProxyURL returns one administrator-selected secret without placing it in
+// ordinary list/detail payloads. HTTP handlers must mark the response no-store.
+func (s *Service) ProxyURL(ctx context.Context, id uint64) (string, error) {
+	value, err := s.repository.GetEgressNode(ctx, id)
+	if errors.Is(err, repository.ErrNotFound) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(value.EncryptedProxyURL) == "" {
+		return "", fmt.Errorf("%w: 节点未配置代理地址", ErrInvalidInput)
+	}
+	proxyURL, err := s.cipher.Decrypt(value.EncryptedProxyURL)
+	if err != nil {
+		return "", err
+	}
+	return NormalizeProxyURL(proxyURL)
+}
+
+func (s *Service) resolveProxyCopy(ctx context.Context, targetID uint64, input Input) (Input, error) {
+	if input.CopyProxyFromNodeID == 0 {
+		return input, nil
+	}
+	if input.CopyProxyFromNodeID == targetID || input.ProxyURL != nil || input.ClearProxyURL {
+		return Input{}, fmt.Errorf("%w: 从已有节点复制代理配置时，不能同时修改或清除代理地址", ErrInvalidInput)
+	}
+	source, err := s.repository.GetEgressNode(ctx, input.CopyProxyFromNodeID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return Input{}, fmt.Errorf("%w: 用于复制代理配置的源节点不存在", ErrInvalidInput)
+	}
+	if err != nil {
+		return Input{}, err
+	}
+	if strings.TrimSpace(source.EncryptedProxyURL) == "" {
+		return Input{}, fmt.Errorf("%w: 源节点未配置代理地址", ErrInvalidInput)
+	}
+	proxyURL, err := s.cipher.Decrypt(source.EncryptedProxyURL)
+	if err != nil {
+		return Input{}, err
+	}
+	proxyURL, err = NormalizeProxyURL(proxyURL)
+	if err != nil || proxyURL == "" {
+		return Input{}, fmt.Errorf("%w: 源节点的代理地址无效", ErrInvalidInput)
+	}
+	input.ProxyURL = &proxyURL
+	return input, nil
 }
 
 func (s *Service) validateFallbackNodeUpdate(ctx context.Context, node domain.Node) error {
@@ -822,7 +882,7 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 	if value.Scope == domain.ScopeBuild {
 		userAgent = ""
 	}
-	accountBoundProxy := s.accountBoundProxy(value)
+	proxyDisplay, proxyFingerprint, accountBoundProxy := s.proxyMetadata(value.EncryptedProxyURL)
 	proxyPool := value.ProxyPool || accountBoundProxy
 	health, failureCount, cooldownUntil, lastError := value.Health, value.FailureCount, value.CooldownUntil, value.LastError
 	if proxyPool {
@@ -830,7 +890,8 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 	}
 	return domain.PublicNode{
 		ID: value.ID, Name: value.Name, Scope: value.Scope, Enabled: value.Enabled,
-		ProxyConfigured: value.EncryptedProxyURL != "", UserAgent: userAgent, CookieConfigured: value.EncryptedCloudflareCookie != "",
+		ProxyConfigured: value.EncryptedProxyURL != "", ProxyDisplay: proxyDisplay, ProxyFingerprint: proxyFingerprint,
+		UserAgent: userAgent, CookieConfigured: value.EncryptedCloudflareCookie != "",
 		ProxyPool:         proxyPool,
 		SourceID:          value.SourceID,
 		AccountCapacity:   value.AccountCapacity,
@@ -842,6 +903,52 @@ func (s *Service) publicNode(value domain.Node) domain.PublicNode {
 		AssignedAccountCount: value.AssignedAccountCount,
 		CreatedAt:            value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
+}
+
+func (s *Service) proxyMetadata(encrypted string) (string, string, bool) {
+	if s == nil || s.cipher == nil || strings.TrimSpace(encrypted) == "" {
+		return "", "", false
+	}
+	proxyURL, err := s.cipher.Decrypt(encrypted)
+	if err != nil {
+		return "", "", false
+	}
+	proxyURL, err = NormalizeProxyURL(proxyURL)
+	if err != nil || proxyURL == "" {
+		return "", "", false
+	}
+	return ProxyDisplay(proxyURL), security.HashToken(proxyURL)[:12], strings.Contains(proxyURL, ProxyAccountPlaceholder)
+}
+
+// ProxyDisplay preserves the routable endpoint and, for standard proxies, the
+// username, while ensuring passwords and tunnel credentials never enter list
+// responses. The short fingerprint lets operators identify duplicate physical
+// proxies without revealing the secret.
+func ProxyDisplay(proxyURL string) string {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return ""
+	}
+	if tunnelproxy.IsSupportedScheme(parsed.Scheme) {
+		config, parseErr := tunnelproxy.Parse(proxyURL)
+		if parseErr != nil {
+			return ""
+		}
+		return strings.ToLower(config.Scheme) + "://***@" + config.Server
+	}
+	if parsed.Host == "" {
+		return ""
+	}
+	if parsed.User != nil {
+		username := parsed.User.Username()
+		if _, hasPassword := parsed.User.Password(); hasPassword {
+			parsed.User = url.UserPassword(username, "***")
+		} else {
+			parsed.User = url.User(username)
+		}
+	}
+	parsed.Path, parsed.RawPath, parsed.RawQuery, parsed.Fragment = "", "", "", ""
+	return parsed.String()
 }
 
 func (s *Service) accountBoundProxy(value domain.Node) bool {

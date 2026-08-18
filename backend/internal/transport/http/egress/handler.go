@@ -58,6 +58,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/egress-nodes/cleanup", h.cleanup)
 	router.POST("/egress-nodes/test", h.testNodes)
 	router.POST("/egress-nodes/:id/test", h.testNode)
+	router.POST("/egress-nodes/:id/proxy-url/reveal", h.proxyURL)
 	router.POST("/egress-nodes/:id/quality-test", h.testQuality)
 	router.GET("/egress-quality-guard", h.qualityGuardStatus)
 	router.PUT("/egress-quality-guard/config", h.updateQualityGuardConfig)
@@ -439,16 +440,17 @@ func (h *Handler) refreshClearance(c *gin.Context) {
 }
 
 type nodeRequest struct {
-	Name              string  `json:"name"`
-	Scope             string  `json:"scope"`
-	Enabled           bool    `json:"enabled"`
-	ProxyPool         *bool   `json:"proxyPool"`
-	AccountCapacity   *int    `json:"accountCapacity"`
-	ProxyURL          *string `json:"proxyURL"`
-	ClearProxyURL     bool    `json:"clearProxyURL"`
-	UserAgent         string  `json:"userAgent"`
-	CloudflareCookies *string `json:"cloudflareCookies"`
-	ClearCookies      bool    `json:"clearCookies"`
+	Name                string  `json:"name"`
+	Scope               string  `json:"scope"`
+	Enabled             bool    `json:"enabled"`
+	ProxyPool           *bool   `json:"proxyPool"`
+	AccountCapacity     *int    `json:"accountCapacity"`
+	ProxyURL            *string `json:"proxyURL"`
+	CopyProxyFromNodeID uint64  `json:"copyProxyFromNodeId,string"`
+	ClearProxyURL       bool    `json:"clearProxyURL"`
+	UserAgent           string  `json:"userAgent"`
+	CloudflareCookies   *string `json:"cloudflareCookies"`
+	ClearCookies        bool    `json:"clearCookies"`
 }
 
 type nodeResponse struct {
@@ -457,6 +459,8 @@ type nodeResponse struct {
 	Scope                string              `json:"scope"`
 	Enabled              bool                `json:"enabled"`
 	ProxyConfigured      bool                `json:"proxyConfigured"`
+	ProxyDisplay         string              `json:"proxyDisplay,omitempty"`
+	ProxyFingerprint     string              `json:"proxyFingerprint,omitempty"`
 	ProxyPool            bool                `json:"proxyPool"`
 	SourceID             uint64              `json:"sourceId,omitempty,string"`
 	AccountCapacity      int                 `json:"accountCapacity"`
@@ -633,7 +637,8 @@ func (value nodeRequest) input() egressapp.Input {
 	return egressapp.Input{
 		Name: value.Name, Scope: egressdomain.Scope(value.Scope), Enabled: value.Enabled, ProxyPool: value.ProxyPool,
 		AccountCapacity: value.AccountCapacity,
-		ProxyURL:        value.ProxyURL, ClearProxyURL: value.ClearProxyURL, UserAgent: value.UserAgent,
+		ProxyURL:        value.ProxyURL, CopyProxyFromNodeID: value.CopyProxyFromNodeID,
+		ClearProxyURL: value.ClearProxyURL, UserAgent: value.UserAgent,
 		CloudflareCookies: value.CloudflareCookies, ClearCookies: value.ClearCookies,
 	}
 }
@@ -734,10 +739,26 @@ func (h *Handler) update(c *gin.Context) {
 	response.Success(c, http.StatusOK, newNodeResponse(value))
 }
 
+func (h *Handler) proxyURL(c *gin.Context) {
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("Pragma", "no-cache")
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	value, err := h.service.ProxyURL(c.Request.Context(), id)
+	if err != nil {
+		h.writeError(c, err)
+		return
+	}
+	response.Success(c, http.StatusOK, gin.H{"proxyURL": value})
+}
+
 func newNodeResponse(value egressdomain.PublicNode) nodeResponse {
 	return nodeResponse{
 		ID: value.ID, Name: value.Name, Scope: string(value.Scope), Enabled: value.Enabled,
-		ProxyConfigured: value.ProxyConfigured, ProxyPool: value.ProxyPool, UserAgent: value.UserAgent, CookieConfigured: value.CookieConfigured,
+		ProxyConfigured: value.ProxyConfigured, ProxyDisplay: value.ProxyDisplay, ProxyFingerprint: value.ProxyFingerprint,
+		ProxyPool: value.ProxyPool, UserAgent: value.UserAgent, CookieConfigured: value.CookieConfigured,
 		AccountBoundProxy: value.AccountBoundProxy,
 		SourceID:          value.SourceID, AccountCapacity: value.AccountCapacity,
 		Health: value.Health, FailureCount: value.FailureCount, CooldownUntil: value.CooldownUntil, LastError: value.LastError,
