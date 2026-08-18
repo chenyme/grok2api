@@ -31,9 +31,14 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 		}
 	}
 	thinkingEnabled := false
+	reasoningEffort := ""
+	reasoningEffortSet := false
 	if request.Thinking != nil {
 		switch request.Thinking.Type {
-		case "", "disabled":
+		case "":
+		case "disabled":
+			reasoningEffort = "none"
+			reasoningEffortSet = true
 		case "enabled", "adaptive":
 			thinkingEnabled = true
 		default:
@@ -83,6 +88,9 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 	}
 	if thinkingEnabled {
 		effort := anthropicThinkingEffort(request.Thinking.BudgetTokens)
+		if request.Thinking.Effort != "" {
+			effort = request.Thinking.Effort
+		}
 		if request.OutputConfig != nil && request.OutputConfig.Effort != "" {
 			effort = request.OutputConfig.Effort
 		}
@@ -93,6 +101,8 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 		default:
 			return nil, ResponseOptions{}, fmt.Errorf("不支持 output_config.effort=%q", effort)
 		}
+		reasoningEffort = effort
+		reasoningEffortSet = true
 		target["reasoning"] = map[string]any{"effort": effort, "summary": "detailed"}
 		target["include"] = []any{"reasoning.encrypted_content"}
 	}
@@ -122,6 +132,8 @@ func convertMessagesRequest(body []byte, model string) ([]byte, ResponseOptions,
 	converted, err := json.Marshal(target)
 	return converted, ResponseOptions{
 		AnthropicThinking:          thinkingEnabled,
+		ReasoningEffort:            reasoningEffort,
+		ReasoningEffortSet:         reasoningEffortSet,
 		AnthropicWebSearch:         webSearchEnabled,
 		AnthropicWebSearchRequired: webSearchRequired,
 		AnthropicWebSearchQuery:    webSearchQuery,
@@ -141,6 +153,7 @@ type anthropicRequest struct {
 	Metadata      map[string]any     `json:"metadata"`
 	Thinking      *struct {
 		Type         string `json:"type"`
+		Effort       string `json:"effort"`
 		BudgetTokens int    `json:"budget_tokens"`
 	} `json:"thinking"`
 	TopK         json.RawMessage      `json:"top_k"`

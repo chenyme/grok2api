@@ -221,6 +221,9 @@ func (a *Adapter) config() Config {
 }
 
 func (a *Adapter) ForwardResponse(ctx context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	if request.NormalizedMetadata != nil {
+		*request.NormalizedMetadata = provider.NormalizedRequestMetadata{}
+	}
 	accessToken, err := a.cipher.Decrypt(request.Credential.EncryptedAccessToken)
 	if err != nil {
 		return nil, err
@@ -233,13 +236,16 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	if request.NormalizeBody {
 		if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 			body, conversationOptions, err = conversation.ConvertRequestWithOptions(body, request.Model, request.Operation)
+			if err == nil && conversationOptions.ReasoningEffortSet && request.NormalizedMetadata != nil {
+				request.NormalizedMetadata.ReasoningEffort = conversationOptions.ReasoningEffort
+			}
 		} else {
 			var foreignCompactions int
 			body, foreignCompactions, err = expandGatewayCompactionHistory(body, a.compaction, request.PromptCacheKey)
 			if err != nil {
 				return invalidResponsesResponse(err), nil
 			}
-			body, toolCompatibility, err = normalizeResponsesRequest(body, request.Model)
+			body, toolCompatibility, err = normalizeResponsesRequestWithMetadata(body, request.Model, request.NormalizedMetadata)
 			if toolCompatibility != nil {
 				compactionRequested = toolCompatibility.compactionRequested
 				if foreignCompactions > 0 {
@@ -253,7 +259,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			}
 			return invalidResponsesResponse(err), nil
 		}
-		body, err = normalizeBuildRequest(body, request.Model, request.Operation)
+		body, err = normalizeBuildRequestWithMetadata(body, request.Model, request.Operation, request.NormalizedMetadata)
 		if err != nil {
 			if request.Operation == conversation.OperationChat || request.Operation == conversation.OperationMessages {
 				return invalidConversationResponse(request.Operation, err), nil

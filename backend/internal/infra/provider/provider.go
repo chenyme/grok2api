@@ -300,6 +300,16 @@ type ResponseResourceRequest struct {
 	Streaming     bool
 	NormalizeBody bool
 	Operation     string
+	// NormalizedMetadata receives non-sensitive metadata from the exact payload
+	// normalization used for the physical upstream request. The caller owns the
+	// value; adapters update it synchronously before network I/O.
+	NormalizedMetadata *NormalizedRequestMetadata
+}
+
+// NormalizedRequestMetadata contains safe request attributes that may be kept
+// in audit records. It must never contain request content or credentials.
+type NormalizedRequestMetadata struct {
+	ReasoningEffort string
 }
 
 // Response represents an upstream response that has not yet been written downstream.

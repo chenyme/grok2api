@@ -6,18 +6,24 @@ import (
 	"fmt"
 	"strings"
 
+	auditdomain "github.com/chenyme/grok2api/backend/internal/domain/audit"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
 
 // normalizeResponsesRequest 改写路由字段和兼容别名，并为上游不支持的新工具协议建立请求级映射。
 func normalizeResponsesRequest(body []byte, model string) ([]byte, *responsesToolCompatibility, error) {
+	return normalizeResponsesRequestWithMetadata(body, model, nil)
+}
+
+func normalizeResponsesRequestWithMetadata(body []byte, model string, metadata *provider.NormalizedRequestMetadata) ([]byte, *responsesToolCompatibility, error) {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, nil, fmt.Errorf("解析 Responses 请求: %w", err)
 	}
 	payload["model"] = mustJSON(model)
-	if _, err := normalizeBuildRequestPayload(payload, model, conversation.OperationResponses); err != nil {
+	if _, err := normalizeBuildRequestPayloadWithMetadata(payload, model, conversation.OperationResponses, metadata); err != nil {
 		return nil, nil, err
 	}
 	if responseFormat, exists := payload["response_format"]; exists {
@@ -59,11 +65,15 @@ func normalizeResponsesRequest(body []byte, model string) ([]byte, *responsesToo
 // normalizeBuildRequest applies the stable compatibility boundary shared by Responses,
 // Chat Completions, and Anthropic Messages before the request reaches Grok Build.
 func normalizeBuildRequest(body []byte, model, operation string) ([]byte, error) {
+	return normalizeBuildRequestWithMetadata(body, model, operation, nil)
+}
+
+func normalizeBuildRequestWithMetadata(body []byte, model, operation string, metadata *provider.NormalizedRequestMetadata) ([]byte, error) {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("解析 Build 请求: %w", err)
 	}
-	changed, err := normalizeBuildRequestPayload(payload, model, operation)
+	changed, err := normalizeBuildRequestPayloadWithMetadata(payload, model, operation, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +84,12 @@ func normalizeBuildRequest(body []byte, model, operation string) ([]byte, error)
 }
 
 func normalizeBuildRequestPayload(payload map[string]json.RawMessage, model, operation string) (bool, error) {
+	return normalizeBuildRequestPayloadWithMetadata(payload, model, operation, nil)
+}
+
+func normalizeBuildRequestPayloadWithMetadata(payload map[string]json.RawMessage, model, operation string, metadata *provider.NormalizedRequestMetadata) (bool, error) {
+	requestedEffort := metadata != nil && auditdomain.NormalizeReasoningEffort(metadata.ReasoningEffort) != ""
+	requestedEffort = requestedEffort || hasRecognizedBuildReasoningEffort(payload)
 	changed := false
 	// client_metadata is a Codex transport envelope and may contain local paths,
 	// repository remotes, and installation/session identifiers. It is consumed by
@@ -110,7 +126,55 @@ func normalizeBuildRequestPayload(payload map[string]json.RawMessage, model, ope
 	if err != nil {
 		return false, err
 	}
+	updateBuildReasoningMetadata(payload, model, requestedEffort, metadata)
 	return changed || defaultsChanged, nil
+}
+
+func hasRecognizedBuildReasoningEffort(payload map[string]json.RawMessage) bool {
+	effort, ok := buildReasoningEffort(payload)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
+}
+
+func updateBuildReasoningMetadata(payload map[string]json.RawMessage, model string, requested bool, metadata *provider.NormalizedRequestMetadata) {
+	if metadata == nil {
+		return
+	}
+	previous := auditdomain.NormalizeReasoningEffort(metadata.ReasoningEffort)
+	metadata.ReasoningEffort = ""
+	if !requested {
+		return
+	}
+	if modeldomain.IsGrokComposerModel(model) {
+		metadata.ReasoningEffort = "fixed"
+		return
+	}
+	if effort, ok := buildReasoningEffort(payload); ok {
+		metadata.ReasoningEffort = auditdomain.NormalizeReasoningEffort(effort)
+		return
+	}
+	metadata.ReasoningEffort = previous
+}
+
+func buildReasoningEffort(payload map[string]json.RawMessage) (string, bool) {
+	raw := payload["reasoning"]
+	if isEmptyJSON(raw) {
+		return "", false
+	}
+	var reasoning struct {
+		Effort string `json:"effort"`
+	}
+	if json.Unmarshal(raw, &reasoning) != nil || strings.TrimSpace(reasoning.Effort) == "" {
+		return "", false
+	}
+	return reasoning.Effort, true
 }
 
 // applyBuildResponseDefaults mirrors the official Grok Build client boundary.
@@ -173,6 +237,8 @@ func normalizeBuildReasoningEffortPayload(payload map[string]json.RawMessage, mo
 	}
 	var normalized string
 	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "minimal":
+		normalized = modeldomain.ReasoningEffortLow
 	case "xhigh":
 		if modeldomain.SupportsReasoningEffort(model, modeldomain.ReasoningEffortXHigh) {
 			normalized = modeldomain.ReasoningEffortXHigh

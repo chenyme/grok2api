@@ -43,6 +43,7 @@ export function RequestAuditDetailDialog({ audit, open, onOpenChange }: { audit:
           <DialogTitle>{t("audits.detailTitle")}</DialogTitle>
           <DialogDescription className="flex min-w-0 flex-wrap gap-x-4 gap-y-0.5">
             <span className="truncate" title={audit?.requestId}>{audit?.requestId}</span>
+            {audit?.reasoningEffort ? <Badge variant="secondary">{t("audits.reasoningEffort")}: {audit.reasoningEffort}</Badge> : null}
             {audit ? <span>{formatDateTime(audit.createdAt, i18n.language)}</span> : null}
           </DialogDescription>
         </DialogHeader>
