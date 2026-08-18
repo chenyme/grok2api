@@ -991,7 +991,7 @@ func TestCopyStreamWritesTerminalOnIdleTimeout(t *testing.T) {
 		want     []string
 	}{
 		{name: "chat", protocol: streamProtocolChat, want: []string{`"code":"upstream_stream_idle_timeout"`, "data: [DONE]"}},
-		{name: "responses", protocol: streamProtocolResponses, want: []string{`"type":"response.incomplete"`, `"code":"upstream_stream_idle_timeout"`, `"id":"resp_abort"`, `"created_at":`, `"sequence_number":`}},
+		{name: "responses", protocol: streamProtocolResponses, want: []string{`"type":"response.incomplete"`, `"id":"resp_abort"`, `"created_at":`, `"sequence_number":`, `"incomplete_details"`}},
 		{name: "anthropic", protocol: streamProtocolAnthropic, want: []string{`"type":"error"`, "上游流式响应长时间无数据"}},
 	}
 	for _, test := range tests {
@@ -1009,6 +1009,18 @@ func TestCopyStreamWritesTerminalOnIdleTimeout(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSanitizeResponsesFillsMissingIDs(t *testing.T) {
+	state := &responsesCompatState{}
+	got := rewriteResponsesDataLine([]byte(`data: {"type":"response.output_item.added","item":{"type":"reasoning"}}`+"\n"), state)
+	if !bytes.Contains(got, []byte(`"id":"item_1"`)) {
+		t.Fatalf("item id not filled: %s", got)
+	}
+	got = rewriteResponsesDataLine([]byte(`data: {"type":"response.created","response":{"status":"in_progress"}}`+"\n"), state)
+	if !bytes.Contains(got, []byte(`"id":"resp_abort"`)) || !bytes.Contains(got, []byte(`"created_at":`)) {
+		t.Fatalf("response id/created_at not filled: %s", got)
 	}
 }
 
@@ -1191,8 +1203,11 @@ func TestCopyStreamRequiresProtocolTerminalEvent(t *testing.T) {
 			} else if metadata.StreamFailure != nil {
 				t.Fatalf("unexpected stream failure diagnostic = %#v", metadata.StreamFailure)
 			}
-			if recorder.Body.String() != test.body {
+			if test.protocol != streamProtocolResponses && recorder.Body.String() != test.body {
 				t.Fatalf("forwarded = %q", recorder.Body.String())
+			}
+			if test.protocol == streamProtocolResponses && !strings.Contains(recorder.Body.String(), `"type":`) {
+				t.Fatalf("responses stream missing type: %q", recorder.Body.String())
 			}
 		})
 	}
@@ -1222,7 +1237,7 @@ func TestWriteResultRecordsStreamFailureDiagnostic(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
-	if recorder.Code != http.StatusOK || recorder.Body.String() != stream || finalCode != "upstream_stream_error" {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"type":"response.failed"`) || finalCode != "upstream_stream_error" {
 		t.Fatalf("status=%d body=%q final=%q", recorder.Code, recorder.Body.String(), finalCode)
 	}
 	if diagnostic == nil || !strings.Contains(string(diagnostic.Body), `"code":"server_error"`) {

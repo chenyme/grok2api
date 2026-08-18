@@ -1289,6 +1289,7 @@ type responseMetadata struct {
 func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol, onFirstToken func()) (responseMetadata, error) {
 	inspector := &responseInspector{protocol: protocol, onFirstToken: onFirstToken}
 	markerFilter := internalSSEMarkerFilter{enabled: protocol == streamProtocolChat}
+	var compat responsesCompatState
 	buffer := make([]byte, responseCopyBufferBytes)
 	transferred := 0
 	for {
@@ -1297,6 +1298,9 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 			chunk := buffer[:n]
 			inspector.Inspect(chunk)
 			chunk = markerFilter.Filter(chunk, false)
+			if protocol == streamProtocolResponses {
+				chunk = rewriteResponsesStreamChunk(chunk, &compat)
+			}
 			if transferred+len(chunk) > maxStreamResponseTransferBytes {
 				return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
 			}
@@ -1334,7 +1338,8 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 			if inspector.terminalSuccess {
 				return inspector.Metadata(), nil
 			}
-			if trailer := streamAbortTrailer(protocol, readErr, inspector.Metadata()); len(trailer) > 0 {
+			compat.rememberFromMeta(inspector.Metadata())
+			if trailer := streamAbortTrailer(protocol, readErr, inspector.Metadata(), &compat); len(trailer) > 0 {
 				if transferred+len(trailer) <= maxStreamResponseTransferBytes {
 					if err := setResponseWriteDeadline(writer); err == nil {
 						if _, err := writer.Write(trailer); err == nil {
@@ -1348,7 +1353,7 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 	}
 }
 
-func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetadata) []byte {
+func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetadata, compat *responsesCompatState) []byte {
 	code, message := "upstream_stream_interrupted", "上游流式响应中断"
 	if errors.Is(cause, neterror.ErrUpstreamStreamIdleTimeout) {
 		code, message = "upstream_stream_idle_timeout", "上游流式响应长时间无数据"
@@ -1368,26 +1373,32 @@ func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetad
 		}
 		return []byte("data: " + string(payload) + "\n\ndata: [DONE]\n\n")
 	case streamProtocolResponses:
-		id := strings.TrimSpace(meta.ResponseID)
-		if id == "" {
-			id = "resp_abort"
+		if compat == nil {
+			compat = &responsesCompatState{}
 		}
+		compat.rememberFromMeta(meta)
+		id := compat.ensureID()
 		response := map[string]any{
-			"id":         id,
-			"object":     "response",
-			"created_at": time.Now().Unix(),
-			"status":     "incomplete",
-			"output":     []any{},
-			"error":      map[string]any{"code": code, "message": message},
+			"id":                 id,
+			"object":             "response",
+			"created_at":         compat.createdAt,
+			"completed_at":       compat.createdAt,
+			"status":             "incomplete",
+			"output":             []any{},
+			"error":              nil,
+			"incomplete_details": map[string]any{"reason": code},
 		}
 		if model := strings.TrimSpace(meta.Model); model != "" {
 			response["model"] = model
 		}
-		payload, err := json.Marshal(map[string]any{
+		event := map[string]any{
 			"type":            "response.incomplete",
+			"id":              id,
 			"sequence_number": meta.SequenceNumber + 1,
 			"response":        response,
-		})
+		}
+		sanitizeResponsesEvent(event, compat)
+		payload, err := json.Marshal(event)
 		if err != nil {
 			return nil
 		}
