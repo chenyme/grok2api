@@ -279,6 +279,18 @@ type QualityGuardConfig struct {
 	RotationToken           string   `yaml:"rotationToken"`
 	RotationTimeout         Duration `yaml:"rotationTimeout"`
 	RotatableNodeIDs        []uint64 `yaml:"rotatableNodeIDs"`
+	// RequestRetry withholds a thinking-model stream that already has enough
+	// visible output and no reasoning, then retries on another account.
+	RequestRetry QualityGuardRequestRetryConfig `yaml:"requestRetry"`
+}
+
+// QualityGuardRequestRetryConfig holds the in-process missing-thinking withhold policy.
+type QualityGuardRequestRetryConfig struct {
+	Enabled         bool     `yaml:"enabled"`
+	MaxAttempts     int      `yaml:"maxAttempts"`
+	HoldTimeout     Duration `yaml:"holdTimeout"`
+	MinOutputTokens int      `yaml:"minOutputTokens"`
+	OnExhausted     string   `yaml:"onExhausted"`
 }
 
 type ClientKeyDefaultsConfig struct {
@@ -690,6 +702,9 @@ func (c Config) Validate() error {
 }
 
 func validateQualityGuardConfig(value QualityGuardConfig) error {
+	if err := validateQualityGuardRequestRetry(value.RequestRetry); err != nil {
+		return err
+	}
 	if !value.Enabled {
 		return nil
 	}
@@ -737,6 +752,27 @@ func validateQualityGuardConfig(value QualityGuardConfig) error {
 		if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			return errors.New("qualityGuard.rotationURL 必须是无凭据的 HTTP(S) URL")
 		}
+	}
+	return nil
+}
+
+func validateQualityGuardRequestRetry(value QualityGuardRequestRetryConfig) error {
+	if !value.Enabled {
+		return nil
+	}
+	if value.MaxAttempts != 0 && (value.MaxAttempts < 1 || value.MaxAttempts > 6) {
+		return errors.New("qualityGuard.requestRetry.maxAttempts 必须在 1 到 6 之间")
+	}
+	if d := value.HoldTimeout.Value(); d != 0 && (d < 200*time.Millisecond || d > 30*time.Second) {
+		return errors.New("qualityGuard.requestRetry.holdTimeout 必须在 200ms 到 30s 之间")
+	}
+	if value.MinOutputTokens != 0 && (value.MinOutputTokens < 8 || value.MinOutputTokens > 256) {
+		return errors.New("qualityGuard.requestRetry.minOutputTokens 必须在 8 到 256 之间")
+	}
+	switch strings.TrimSpace(value.OnExhausted) {
+	case "", "fail_open", "fail_closed":
+	default:
+		return errors.New("qualityGuard.requestRetry.onExhausted 必须是 fail_open 或 fail_closed")
 	}
 	return nil
 }
@@ -869,6 +905,9 @@ func defaultConfig() Config {
 			QuarantineDuration: Duration(5 * time.Minute), NoAccountBackoff: Duration(5 * time.Minute),
 			MinimumHealthyNodes: 3, MaxOutputTokens: 384,
 			MinimumGenerationWindow: Duration(time.Second), RotationTimeout: Duration(45 * time.Second),
+			RequestRetry: QualityGuardRequestRetryConfig{
+				MaxAttempts: 6, HoldTimeout: Duration(3 * time.Second), MinOutputTokens: 32, OnExhausted: "fail_closed",
+			},
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
 		Accounts: AccountsConfig{
