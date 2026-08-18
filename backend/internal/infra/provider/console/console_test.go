@@ -470,6 +470,75 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 	})
 }
 
+func TestNormalizeRequestAvoidsClientViewImageToolCollision(t *testing.T) {
+	spec, ok := Resolve("grok-4.5")
+	if !ok {
+		t.Fatal("grok-4.5 missing")
+	}
+	tests := []struct {
+		name      string
+		operation string
+		body      string
+	}{
+		{
+			name:      "responses",
+			operation: conversation.OperationResponses,
+			body: `{"model":"grok-4.5","input":"Reply only OK. Do not call tools.","tools":[
+				{"type":"function","name":"view_image","description":"View a local image","strict":false,"parameters":{"type":"object"}},
+				{"type":"web_search","enable_image_understanding":true}],"tool_choice":"auto"}`,
+		},
+		{
+			name:      "chat completions",
+			operation: conversation.OperationChat,
+			body: `{"model":"grok-4.5","messages":[{"role":"user","content":"Reply only OK."}],"tools":[
+				{"type":"function","function":{"name":"view_image","description":"View a local image","strict":false,"parameters":{"type":"object"}}},
+				{"type":"web_search"}],"tool_choice":"auto"}`,
+		},
+		{
+			name:      "anthropic messages",
+			operation: conversation.OperationMessages,
+			body: `{"model":"grok-4.5","max_tokens":64,"messages":[{"role":"user","content":"Reply only OK."}],"tools":[
+				{"name":"view_image","description":"View a local image","input_schema":{"type":"object"}},
+				{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"auto"}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := []byte(test.body)
+			var err error
+			if test.operation != conversation.OperationResponses {
+				body, err = conversation.ConvertRequest(body, spec.UpstreamModel, test.operation)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			body, err = normalizeRequest(body, spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			tools, _ := payload["tools"].([]any)
+			if len(tools) != 2 {
+				t.Fatalf("tools = %#v", tools)
+			}
+			function, _ := tools[0].(map[string]any)
+			if toolIdentity(function) != "function:view_image" || function["parameters"] == nil {
+				t.Fatalf("client view_image must be retained: %#v", function)
+			}
+			webSearch, _ := tools[1].(map[string]any)
+			if webSearch["type"] != "web_search" || webSearch["enable_image_understanding"] != false {
+				t.Fatalf("server view_image must be disabled: %#v", webSearch)
+			}
+			if payload["tool_choice"] != "auto" {
+				t.Fatalf("tool_choice = %#v", payload["tool_choice"])
+			}
+		})
+	}
+}
+
 func TestNormalizeRequestDoesNotInjectToolsForConsoleCatalog(t *testing.T) {
 	for _, spec := range catalog {
 		t.Run(spec.PublicID, func(t *testing.T) {
