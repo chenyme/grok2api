@@ -190,6 +190,10 @@ The sidecar talks to grok2api at `GROK2API_BASE_URL`, which defaults to
 renamed or published on host networking, for example
 `GROK2API_BASE_URL=http://127.0.0.1:8000`.
 
+Missing-thinking **request-path withhold/retry** (`qualityGuard.requestRetry`)
+runs inside the grok2api gateway, not this sidecar. See `config.example.yaml`
+and the root README.
+
 Verify the managed nodes, model, and minimum healthy-node count before leaving
 the sidecar running. Never commit the state volume or
 production logs.

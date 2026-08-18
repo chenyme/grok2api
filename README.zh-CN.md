@@ -291,7 +291,7 @@ Web 可与对应的 Build、Console 建立一对一弱关联。关联只共享�
 
 ### Codex、Claude Code 与 Prompt Cache
 
-Responses 与 Messages 支持流式、工具、推理、多轮会话和 compact。客户端会话信号会保持稳定，用于 Grok Build Prompt Cache 亲和；实际命中仍要求上游账号兼容且请求前缀未变化。
+Responses 与 Messages 支持流式、工具、推理、多轮会话和 compact。客户端会话信号会保持稳定，用于 Grok Build Prompt Cache 亲和；实际命中仍要求上游账号兼容且请求前缀未变化。同一网关实例内，仍可解密的 compact 摘要在 session / PromptCacheKey 漂移后也会展开；无法解密的外源 blob 仍视为兼容边界。
 
 Responses 与 Chat Completions 按 OpenAI 语义报告输入总量；Messages 按 Anthropic 语义分开报告未缓存输入和缓存读取。审计保留输入总量与缓存部分，用于计费对账。
 
@@ -348,6 +348,7 @@ curl http://127.0.0.1:8000/v1/responses \
 - 代理池模式，单次连接失败不会触发全局冷却
 - 固定代理传输失败后立即复测；同节点复测自动合并，后续绑定请求限时等待并在恢复后快速重试
 - 可选的[出口质量守护程序](./tools/egress-quality-guard/README.zh-CN.md)，支持逐节点模型探测、防误杀隔离和自动恢复；通过内置的 `quality-guard` Compose profile 按需启用
+- 固定 sticky 会话应各自建成独立节点（`proxyPool=false`）。不要把多条 sticky 合成一个节点，否则质量守护只能整组摘流，无法定位坏会话
 
 Hysteria 与 TUIC 暂未支持。FlareSolverr 仅接受 HTTP/SOCKS 代理地址，因此自动刷新 Clearance 暂不能直接使用隧道分享链接。
 
@@ -357,7 +358,16 @@ Hysteria 与 TUIC 暂未支持。FlareSolverr 仅接受 HTTP/SOCKS 代理地址�
 qualityGuard:
   enabled: true
   model: "grok-4.5"
+  # 可选：思考模型缺 reasoning 时先扣住响应，换号再打，不把降智正文发给用户。
+  requestRetry:
+    enabled: false
+    maxAttempts: 6
+    holdTimeout: 3s
+    minOutputTokens: 32
+    onExhausted: fail_closed # fail_open | fail_closed
 ```
+
+`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。默认关闭。开启后，可见输出达到 `minOutputTokens` 且全程无 reasoning 时**不发给用户**，排除该账号再试；全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。不处理图/视频/工具、stored response 钉账号和 ForcedEgress 探针。
 
 ```bash
 docker compose --profile quality-guard up -d --build
