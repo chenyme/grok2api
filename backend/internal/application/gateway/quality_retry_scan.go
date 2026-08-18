@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -12,9 +13,9 @@ import (
 )
 
 const (
-	qualityProtocolChat       = "chat"
-	qualityProtocolResponses  = "responses"
-	qualityProtocolAnthropic  = "anthropic"
+	qualityProtocolChat        = "chat"
+	qualityProtocolResponses   = "responses"
+	qualityProtocolAnthropic   = "anthropic"
 	qualityReasoningSSEComment = ": grok2api-reasoning-start"
 	qualityHoldMaxBufferBytes  = 4 << 20
 )
@@ -29,7 +30,86 @@ type qualityScanState struct {
 	usage           Usage
 	responseID      string
 	terminal        bool
-	contentSeenAt   time.Time
+}
+
+type qualityReadResult struct {
+	data []byte
+	err  error
+}
+
+// qualityReadPump is the sole reader of the upstream body. It lets the hold
+// timer win while an upstream Read is blocked, then remains the continuation
+// reader for the response body after the held prefix is replayed.
+type qualityReadPump struct {
+	source    io.ReadCloser
+	results   chan qualityReadResult
+	done      chan struct{}
+	closeOnce sync.Once
+	pending   []byte
+	finalErr  error
+}
+
+func newQualityReadPump(source io.ReadCloser) *qualityReadPump {
+	pump := &qualityReadPump{
+		source:  source,
+		results: make(chan qualityReadResult),
+		done:    make(chan struct{}),
+	}
+	go pump.run()
+	return pump
+}
+
+func (p *qualityReadPump) run() {
+	defer close(p.results)
+	buf := make([]byte, 4096)
+	for {
+		n, err := p.source.Read(buf)
+		if n == 0 && err == nil {
+			continue
+		}
+		result := qualityReadResult{err: err}
+		if n > 0 {
+			result.data = append([]byte(nil), buf[:n]...)
+		}
+		select {
+		case p.results <- result:
+		case <-p.done:
+			return
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (p *qualityReadPump) Read(dst []byte) (int, error) {
+	for len(p.pending) == 0 {
+		if p.finalErr != nil {
+			return 0, p.finalErr
+		}
+		result, ok := <-p.results
+		if !ok {
+			p.finalErr = io.EOF
+			return 0, io.EOF
+		}
+		p.pending = result.data
+		p.finalErr = result.err
+		if len(p.pending) == 0 && p.finalErr != nil {
+			return 0, p.finalErr
+		}
+	}
+	n := copy(dst, p.pending)
+	p.pending = p.pending[n:]
+	return n, nil
+}
+
+func (p *qualityReadPump) Close() error {
+	var err error
+	p.closeOnce.Do(func() {
+		close(p.done)
+		err = p.source.Close()
+	})
+	return err
 }
 
 func qualityProtocolForOperation(operation audit.Operation) string {
@@ -279,9 +359,6 @@ func noteVisibleContent(state *qualityScanState, text string) {
 		return
 	}
 	state.visibleRunes += utf8.RuneCountInString(text)
-	if state.contentSeenAt.IsZero() {
-		state.contentSeenAt = time.Now()
-	}
 }
 
 func peekQualityStream(ctx context.Context, body io.ReadCloser, protocol string, cfg QualityRetryRuntime) (io.ReadCloser, QualityVerdict, Usage, string, error) {
@@ -289,49 +366,45 @@ func peekQualityStream(ctx context.Context, body io.ReadCloser, protocol string,
 	if body == nil {
 		return io.NopCloser(bytes.NewReader(nil)), QualityDeliver, Usage{}, "", nil
 	}
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = body.Close()
-		case <-stop:
-		}
-	}()
-
+	pump := newQualityReadPump(body)
 	state := qualityScanState{protocol: protocol}
 	var held bytes.Buffer
-	buf := make([]byte, 4096)
+	holdTimer := time.NewTimer(cfg.HoldTimeout)
+	defer holdTimer.Stop()
 	for {
-		if ctx.Err() != nil {
-			_ = body.Close()
-			return io.NopCloser(bytes.NewReader(held.Bytes())), QualityDeliver, state.usage, state.responseID, ctx.Err()
-		}
-		if !state.contentSeenAt.IsZero() && cfg.HoldTimeout > 0 && time.Since(state.contentSeenAt) >= cfg.HoldTimeout {
-			sig := state.signals()
-			sig.HoldExpired = true
-			return newPrefixReplay(&held, body), ClassifyQualityHold(sig, cfg.MinOutputTokens), state.usage, state.responseID, nil
-		}
 		sig := state.signals()
 		if verdict := ClassifyQualityHold(sig, cfg.MinOutputTokens); verdict != QualityWait {
-			return newPrefixReplay(&held, body), verdict, state.usage, state.responseID, nil
+			return newPrefixReplay(&held, pump), verdict, state.usage, state.responseID, nil
 		}
-		n, err := body.Read(buf)
-		if n > 0 {
-			if held.Len()+n > qualityHoldMaxBufferBytes {
-				_, _ = held.Write(buf[:n])
-				return newPrefixReplay(&held, body), QualityDeliver, state.usage, state.responseID, nil
+
+		select {
+		case <-ctx.Done():
+			_ = pump.Close()
+			return io.NopCloser(bytes.NewReader(held.Bytes())), QualityDeliver, state.usage, state.responseID, ctx.Err()
+		case <-holdTimer.C:
+			sig.HoldExpired = true
+			return newPrefixReplay(&held, pump), ClassifyQualityHold(sig, cfg.MinOutputTokens), state.usage, state.responseID, nil
+		case result, ok := <-pump.results:
+			if !ok {
+				state.terminal = true
+				return newPrefixReplay(&held, pump), ClassifyQualityHold(state.signals(), cfg.MinOutputTokens), state.usage, state.responseID, nil
 			}
-			_, _ = held.Write(buf[:n])
-			ObserveQualityChunk(&state, buf[:n])
-		}
-		if err == io.EOF {
-			state.terminal = true
-			return newPrefixReplay(&held, io.NopCloser(bytes.NewReader(nil))), ClassifyQualityHold(state.signals(), cfg.MinOutputTokens), state.usage, state.responseID, nil
-		}
-		if err != nil {
-			_ = body.Close()
-			return io.NopCloser(bytes.NewReader(held.Bytes())), QualityDeliver, state.usage, state.responseID, err
+			if len(result.data) > 0 {
+				if held.Len()+len(result.data) > qualityHoldMaxBufferBytes {
+					_, _ = held.Write(result.data)
+					return newPrefixReplay(&held, pump), QualityDeliver, state.usage, state.responseID, nil
+				}
+				_, _ = held.Write(result.data)
+				ObserveQualityChunk(&state, result.data)
+			}
+			if result.err == io.EOF {
+				state.terminal = true
+				return newPrefixReplay(&held, pump), ClassifyQualityHold(state.signals(), cfg.MinOutputTokens), state.usage, state.responseID, nil
+			}
+			if result.err != nil {
+				_ = pump.Close()
+				return io.NopCloser(bytes.NewReader(held.Bytes())), QualityDeliver, state.usage, state.responseID, result.err
+			}
 		}
 	}
 }
@@ -345,4 +418,3 @@ func newPrefixReplay(held *bytes.Buffer, rest io.ReadCloser) io.ReadCloser {
 	}
 	return &replayReadCloser{Reader: io.MultiReader(bytes.NewReader(held.Bytes()), rest), source: rest}
 }
-

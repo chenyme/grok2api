@@ -214,6 +214,18 @@ qualityGuard:
 	if !value.QualityGuard.Enabled || value.QualityGuard.DeprecatedClientKeyID != 999 || value.QualityGuard.ActiveInterval.Value() != 45*time.Minute {
 		t.Fatalf("qualityGuard = %#v", value.QualityGuard)
 	}
+	retry := value.QualityGuard.RequestRetry
+	if retry.Enabled || retry.MaxAttempts != 6 || retry.HoldTimeout.Value() != 3*time.Second || retry.MinOutputTokens != 32 || retry.OnExhausted != "fail_closed" {
+		t.Fatalf("loaded requestRetry defaults = %#v", retry)
+	}
+}
+
+func TestDefaultQualityGuardRequestRetryContract(t *testing.T) {
+	t.Parallel()
+	got := defaultConfig().QualityGuard.RequestRetry
+	if got.Enabled || got.MaxAttempts != 6 || got.HoldTimeout.Value() != 3*time.Second || got.MinOutputTokens != 32 || got.OnExhausted != "fail_closed" {
+		t.Fatalf("requestRetry defaults = %#v", got)
+	}
 }
 
 func TestEnabledQualityGuardUsesManagedIdentity(t *testing.T) {

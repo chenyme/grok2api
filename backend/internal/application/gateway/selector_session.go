@@ -359,6 +359,27 @@ func (session *selectionSession) hasUnexcludedNormal(excluded map[uint64]bool) b
 	return false
 }
 
+// hasAvailableCandidate reports whether this request-level snapshot still has
+// an account the quality retry is allowed to switch to. This is deliberately
+// stronger than checking the routing attempt counter: a large attempt budget
+// does not imply that another account exists.
+func (session *selectionSession) hasAvailableCandidate(excluded map[uint64]bool, allowQuotaProbe bool) bool {
+	if session == nil {
+		return false
+	}
+	if session.hasUnexcludedNormal(excluded) {
+		return true
+	}
+	if allowQuotaProbe {
+		for _, index := range session.probeCandidates {
+			if !session.candidateExcluded(excluded, session.values[index].Credential.ID) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (session *selectionSession) unexcludedNormalIndexes(excluded map[uint64]bool) []int {
 	if len(excluded) == 0 && len(session.staleCandidates) == 0 {
 		return session.normalCandidates

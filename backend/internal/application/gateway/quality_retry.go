@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -15,10 +16,10 @@ import (
 )
 
 const (
-	ErrorQualityDegraded     = "quality_degraded"
-	qualityRetryFailOpen     = "fail_open"
-	qualityRetryFailClosed   = "fail_closed"
-	defaultQualityMaxAttempts = 2
+	ErrorQualityDegraded      = "quality_degraded"
+	qualityRetryFailOpen      = "fail_open"
+	qualityRetryFailClosed    = "fail_closed"
+	defaultQualityMaxAttempts = 6
 	defaultQualityHoldTimeout = 3 * time.Second
 	defaultQualityMinOutput   = int64(32)
 )
@@ -75,12 +76,7 @@ func normalizeQualityRetry(cfg QualityRetryRuntime) QualityRetryRuntime {
 	if cfg.MinOutputTokens <= 0 {
 		cfg.MinOutputTokens = defaultQualityMinOutput
 	}
-	switch strings.TrimSpace(strings.ToLower(cfg.OnExhausted)) {
-	case qualityRetryFailClosed:
-		cfg.OnExhausted = qualityRetryFailClosed
-	default:
-		cfg.OnExhausted = qualityRetryFailOpen
-	}
+	cfg.OnExhausted = normalizeQualityExhaustionPolicy(cfg.OnExhausted)
 	return cfg
 }
 
@@ -130,8 +126,8 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 	return QualityWait
 }
 
-// DecideQualityRetry caps withhold recovery at maxAttempts (default 2:
-// original + one extra account). The last withhold
+// DecideQualityRetry caps withhold recovery at maxAttempts (default 6:
+// original + five extra accounts). The last withhold
 // (attemptIndex == maxAttempts-1) is fail-open unless OnExhausted is fail_closed.
 func DecideQualityRetry(verdict QualityVerdict, attemptIndex, maxAttempts int, onExhausted string) QualityRetryAction {
 	if verdict != QualityWithhold {
@@ -147,7 +143,7 @@ func DecideQualityRetry(verdict QualityVerdict, attemptIndex, maxAttempts int, o
 		return QualityActionRetry
 	}
 	// attemptIndex == maxAttempts-1 (or past it): do not retry again.
-	if strings.EqualFold(strings.TrimSpace(onExhausted), qualityRetryFailClosed) {
+	if normalizeQualityExhaustionPolicy(onExhausted) == qualityRetryFailClosed {
 		return QualityActionReject
 	}
 	return QualityActionDeliverLast
@@ -160,10 +156,17 @@ func BoundQualityRetry(action QualityRetryAction, hasNextRoutingAttempt bool, on
 	if action != QualityActionRetry || hasNextRoutingAttempt {
 		return action
 	}
-	if strings.EqualFold(strings.TrimSpace(onExhausted), qualityRetryFailClosed) {
+	if normalizeQualityExhaustionPolicy(onExhausted) == qualityRetryFailClosed {
 		return QualityActionReject
 	}
 	return QualityActionDeliverLast
+}
+
+func normalizeQualityExhaustionPolicy(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), qualityRetryFailOpen) {
+		return qualityRetryFailOpen
+	}
+	return qualityRetryFailClosed
 }
 
 // QualityCommit is the single attempt-loop decision for a held stream.
@@ -203,10 +206,67 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
+	// Retrying a tool-capable request can repeat external side effects. Tool
+	// requests remain outside this feature until they have their own replay
+	// safety contract.
+	if qualityRequestUsesTools(input.Body) {
+		return false
+	}
+	// Aliases are rewritten before this gate, so inspect the effective request
+	// body instead of only the reasoning-capable base model. In particular,
+	// grok-4.3-none becomes grok-4.3 plus an explicit disabled setting.
+	if qualityRequestDisablesReasoning(input.Body) {
+		return false
+	}
 	if modeldomain.SupportsReasoningForProvider(route.Provider, input.PublicModel) {
 		return true
 	}
 	return modeldomain.SupportsReasoningForProvider(route.Provider, route.UpstreamModel)
+}
+
+func qualityRequestUsesTools(body []byte) bool {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	return nonEmptyJSONCollection(payload["tools"]) || nonEmptyJSONCollection(payload["functions"])
+}
+
+func qualityRequestDisablesReasoning(body []byte) bool {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	if jsonStringEquals(payload["reasoning_effort"], modeldomain.ReasoningEffortNone) {
+		return true
+	}
+	for _, key := range []string{"reasoning", "output_config", "thinking"} {
+		var nested map[string]json.RawMessage
+		if json.Unmarshal(payload[key], &nested) != nil {
+			continue
+		}
+		if jsonStringEquals(nested["effort"], modeldomain.ReasoningEffortNone) || jsonStringEquals(nested["type"], "disabled") {
+			return true
+		}
+		var budget int64
+		if raw, ok := nested["budget_tokens"]; ok && json.Unmarshal(raw, &budget) == nil && budget == 0 {
+			return true
+		}
+	}
+	return jsonStringEquals(payload["thinking"], "disabled")
+}
+
+func nonEmptyJSONCollection(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" || trimmed == "{}" {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")
+}
+
+func jsonStringEquals(raw json.RawMessage, want string) bool {
+	var value string
+	return json.Unmarshal(raw, &value) == nil && strings.EqualFold(strings.TrimSpace(value), want)
 }
 
 func (s *Service) recordQualityDegraded(ctx context.Context, base audit.Record, credential accountdomain.Credential, usage Usage, startedAt time.Time, trace *infraegress.Trace, provider accountdomain.Provider) {
