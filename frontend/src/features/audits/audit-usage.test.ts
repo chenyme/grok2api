@@ -79,6 +79,21 @@ describe("buildAuditUsageView", () => {
     assert.equal(values(view.tokenItems, "reasoning"), MISSING_AUDIT_USAGE_PLACEHOLDER);
   });
 
+  it("omits unavailable token rows for dedicated image and video operations", () => {
+    for (const operation of ["image", "image_edit", "video"] as const) {
+      const view = buildAuditUsageView(audit({
+        operation,
+        usageSource: "none",
+        mediaOutputImages: operation === "video" ? 0 : 1,
+        mediaOutputSeconds: operation === "video" ? 6 : 0,
+      }), formatNumber, labels);
+
+      assert.equal(view.mode, "metrics");
+      assert.equal(view.mediaItems?.length, 2);
+      assert.equal(view.tokenItems, undefined);
+    }
+  });
+
   it("still shows zero token counts when usage was reported", () => {
     const view = buildAuditUsageView(audit({
       mediaInputImages: 2,

@@ -191,8 +191,9 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 
 	adapter := &failoverAdapter{
 		firstID: first.ID, failureStatus: http.StatusPaymentRequired,
-		failureBody:   `{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits"}`,
-		failureHeader: http.Header{"X-Should-Retry": {"false"}},
+		failureBody:     `{"code":"personal-team-blocked:spending-limit","error":"You have run out of credits"}`,
+		failureHeader:   http.Header{"X-Should-Retry": {"false"}},
+		reasoningEffort: "high",
 	}
 	registry := provider.NewRegistry(adapter)
 	cipher := testCipher(t)
@@ -2597,6 +2598,7 @@ type failoverAdapter struct {
 	lastPromptCacheKey     string
 	lastReasoningReplayKey string
 	lastGrokTurnIndex      string
+	reasoningEffort        string
 	forwardedModels        []string
 	resourceStatus         int
 	transportErrorIDs      map[uint64]error
@@ -4147,6 +4149,9 @@ func (a *failoverAdapter) Definition() provider.Definition {
 	}
 }
 func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	if request.NormalizedMetadata != nil {
+		request.NormalizedMetadata.ReasoningEffort = a.reasoningEffort
+	}
 	a.mu.Lock()
 	a.attempts = append(a.attempts, request.Credential.ID)
 	a.forwardedModels = append(a.forwardedModels, request.Model)
