@@ -12,8 +12,12 @@ import (
 )
 
 type egressProxyProfileRow struct {
-	egressProxyProfileModel
-	BoundNodeCount int
+	ID                uint64
+	Name              string
+	EncryptedProxyURL string
+	BoundNodeCount    int `gorm:"column:bound_node_count"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 func (r *EgressRepository) ListEgressProxyProfiles(ctx context.Context, page repository.PageQuery) ([]egress.ProxyProfile, int64, error) {
@@ -40,7 +44,10 @@ func (r *EgressRepository) ListEgressProxyProfiles(ctx context.Context, page rep
 	}
 	values := make([]egress.ProxyProfile, 0, len(rows))
 	for _, row := range rows {
-		values = append(values, toEgressProxyProfileDomain(row.egressProxyProfileModel, row.BoundNodeCount))
+		values = append(values, toEgressProxyProfileDomain(egressProxyProfileModel{
+			ID: row.ID, Name: row.Name, EncryptedProxyURL: row.EncryptedProxyURL,
+			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		}, row.BoundNodeCount))
 	}
 	return values, total, nil
 }

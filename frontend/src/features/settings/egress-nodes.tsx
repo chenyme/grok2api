@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, CircleAlert, CircleHelp, Eye, EyeOff, MoreHorizontal, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, ChevronsUpDown, CircleAlert, CircleHelp, Eye, EyeOff, MoreHorizontal, Network, Pencil, Plus, Power, PowerOff, RefreshCw, Search, Trash2, Upload } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -56,6 +56,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
   const [selected, setSelected] = useState<Map<string, EgressNodeDTO>>(() => new Map());
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
   const [cleanupOpen, setCleanupOpen] = useState(false);
+  const [profileLibraryOpen, setProfileLibraryOpen] = useState(false);
+  const [profileLibraryCreate, setProfileLibraryCreate] = useState(false);
   const debouncedSearch = useDebouncedValue(search);
   const query = useQuery({
     queryKey: ["egress-nodes", "page", page, pageSize, debouncedSearch, scopeFilter, enabledFilter, probeFilter, assignmentFilter, sort.field, sort.order],
@@ -63,8 +65,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
       page, pageSize, search: debouncedSearch, scope: scopeFilter as EgressScope | "", enabled: enabledFilter,
       probe: probeFilter, assignment: assignmentFilter, sortBy: sort.field || undefined, sortOrder: sort.field ? sort.order : undefined,
     }),
-    refetchInterval: 2_000,
-    refetchIntervalInBackground: false,
+    staleTime: 15_000,
+    refetchOnWindowFocus: true,
   });
   const save = useMutation({
     mutationFn: () => {
@@ -242,8 +244,6 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
     <div className="space-y-8">
       <EgressSources scopeLabel={scopeLabel} />
 
-      <EgressProxyProfiles />
-
       <section className="space-y-3">
         <div className="flex min-h-8 items-center px-1">
           <h2 className="text-sm font-medium tracking-tight">{title}</h2>
@@ -288,6 +288,8 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                     <Button type="button" size="sm" variant="secondary" className="bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive" disabled={batchPending} onClick={() => setBatchDeleteOpen(true)}><Trash2 />{t("common.delete")}</Button>
                   </>
                 ) : null}
+                <Button type="button" size="sm" variant="secondary" onClick={() => { setProfileLibraryCreate(false); setProfileLibraryOpen(true); }}><Network />{t("egressProxyProfiles.libraryTitle")}</Button>
+                <Button type="button" size="icon" variant="secondary" className="size-8" disabled={query.isFetching} onClick={() => void query.refetch()} aria-label={t("egressProxyProfiles.refreshNodes")} title={t("egressProxyProfiles.refreshNodes")}><RefreshCw className={cn(query.isFetching && "animate-spin")} /></Button>
                 <Button type="button" size="sm" variant="secondary" disabled={cleanupUnhealthy.isPending} onClick={openCleanup}><Trash2 />{t("settings.egress.cleanupUnavailable")}</Button>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild><Button type="button" size="sm" variant="secondary"><Plus />{t("settings.egress.add")}</Button></DropdownMenuTrigger>
@@ -438,7 +440,7 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
                 setProxyVisible(false);
                 setRevealedProxyURL("");
                 setForm({ ...form, proxyProfileId: value === "manual" ? (editing?.proxyProfileId ? "0" : undefined) : value, proxyURL: "" });
-              }} />
+              }} onCreate={() => { setProfileLibraryCreate(true); setProfileLibraryOpen(true); }} />
             </Field> : null}
             <Field label={t("settings.egress.proxyURL")} controlId="egress-proxy" help={t("settings.egress.proxyProtocols")}>
               <div className="flex gap-2">
@@ -502,11 +504,26 @@ export function EgressNodes({ title, clearanceMode }: { title: string; clearance
           </form>
         </DialogContent>
       </Dialog>
+
+      {profileLibraryOpen ? <EgressProxyProfiles
+        key={profileLibraryCreate ? "create" : "manage"}
+        open={profileLibraryOpen}
+        startCreating={profileLibraryCreate}
+        onOpenChange={(open) => { setProfileLibraryOpen(open); if (!open) setProfileLibraryCreate(false); }}
+        onCreated={(profile) => {
+          if (!profileLibraryCreate || editing === undefined) return;
+          setProxyVisible(false);
+          setRevealedProxyURL("");
+          setForm((current) => ({ ...current, proxyProfileId: profile.id, proxyURL: "" }));
+          setProfileLibraryOpen(false);
+          setProfileLibraryCreate(false);
+        }}
+      /> : null}
     </div>
   );
 }
 
-function ProxyProfilePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function ProxyProfilePicker({ value, onChange, onCreate }: { value: string; onChange: (value: string) => void; onCreate: () => void }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -550,7 +567,7 @@ function ProxyProfilePicker({ value, onChange }: { value: string; onChange: (val
       <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input className="h-8 pl-8 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={t("egressProxyProfiles.search")} aria-label={t("egressProxyProfiles.search")} />
+          <Input type="search" autoComplete="off" data-1p-ignore data-lpignore="true" data-form-type="other" className="h-8 pl-8 text-xs" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder={t("egressProxyProfiles.search")} aria-label={t("egressProxyProfiles.search")} />
         </div>
         <div className="mt-2 max-h-56 space-y-0.5 overflow-y-auto overscroll-contain" role="listbox" aria-label={t("egressProxyProfiles.assignment")}>
           <button type="button" role="option" aria-selected={value === "manual"} className={cn("flex min-h-9 w-full items-center gap-2 rounded-md px-2 text-left text-xs hover:bg-accent", value === "manual" && "bg-accent/60")} onClick={() => choose("manual")}>
@@ -566,6 +583,9 @@ function ProxyProfilePicker({ value, onChange }: { value: string; onChange: (val
           </button>)}
         </div>
         {profiles.data && profiles.data.total > pageSize ? <div className="mt-2 flex h-8 items-center justify-between border-t px-1 pt-2"><span className="text-[11px] text-muted-foreground">{t("common.pageOf", { page, pages })}</span><div className="flex gap-0.5"><Button type="button" variant="ghost" size="icon" className="size-7" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label={t("common.previousPage")}><ChevronLeft /></Button><Button type="button" variant="ghost" size="icon" className="size-7" disabled={page >= pages} onClick={() => setPage(page + 1)} aria-label={t("common.nextPage")}><ChevronRight /></Button></div></div> : null}
+        <div className="mt-2 border-t pt-2">
+          <Button type="button" variant="ghost" size="sm" className="w-full justify-start text-muted-foreground" onClick={() => { setOpen(false); onCreate(); }}><Plus />{t("egressProxyProfiles.createFromPicker")}</Button>
+        </div>
       </PopoverContent>
     </Popover>
   );

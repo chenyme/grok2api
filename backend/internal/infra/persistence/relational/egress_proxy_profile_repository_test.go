@@ -102,6 +102,9 @@ func TestListEgressProxyProfilesIsPagedAndSearchable(t *testing.T) {
 	if err != nil || total != 25 || len(page) != 10 {
 		t.Fatalf("page total=%d len=%d err=%v", total, len(page), err)
 	}
+	if page[0].Name != "Proxy 07" || page[0].EncryptedProxyURL != "encrypted-7" || page[0].ID == 0 || page[0].CreatedAt.IsZero() || page[0].UpdatedAt.IsZero() {
+		t.Fatalf("first page item was not fully scanned: %#v", page[0])
+	}
 	matches, total, err := repository.ListEgressProxyProfiles(ctx, repositorypkg.PageQuery{Limit: 20, Search: " needle "})
 	if err != nil || total != 3 || len(matches) != 3 {
 		t.Fatalf("search total=%d len=%d err=%v", total, len(matches), err)
