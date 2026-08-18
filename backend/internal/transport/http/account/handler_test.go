@@ -3,8 +3,12 @@ package account
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -16,8 +20,49 @@ import (
 	accountsyncapp "github.com/chenyme/grok2api/backend/internal/application/accountsync"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	cliprovider "github.com/chenyme/grok2api/backend/internal/infra/provider/cli"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/gin-gonic/gin"
 )
+
+type refreshTokenImportHTTPAdapter struct {
+	parser provider.CredentialCodecAdapter
+}
+
+func (refreshTokenImportHTTPAdapter) Provider() accountdomain.Provider {
+	return accountdomain.ProviderBuild
+}
+
+func (refreshTokenImportHTTPAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider:       accountdomain.ProviderBuild,
+		ModelNamespace: accountdomain.ProviderBuild.ModelNamespace(),
+		Credential: provider.CredentialSurface{
+			AuthType: accountdomain.AuthTypeOAuth,
+			Import:   true,
+			Refresh:  true,
+		},
+	}
+}
+
+func (a refreshTokenImportHTTPAdapter) ParseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
+	return a.parser.ParseImportedCredentials(data)
+}
+
+func (refreshTokenImportHTTPAdapter) MarshalCredentials([]provider.CredentialSeed) ([]byte, error) {
+	return nil, nil
+}
+
+func (refreshTokenImportHTTPAdapter) PrepareImportedCredential(_ context.Context, seed provider.CredentialSeed) (provider.CredentialSeed, error) {
+	if seed.RefreshToken == "invalid-rt" {
+		return provider.CredentialSeed{}, errors.New("invalid_grant")
+	}
+	seed.AccessToken = "fresh-access"
+	seed.RefreshToken = "rotated-rt"
+	seed.ExpiresAt = time.Now().UTC().Add(time.Hour)
+	return seed, nil
+}
 
 func TestNewAccountResponseExposesBuildBotFlagOnlyForBuild(t *testing.T) {
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
@@ -283,6 +328,80 @@ func TestReadAccountImportDocumentsAcceptsMultipleFiles(t *testing.T) {
 	documents, ok := readAccountImportDocuments(ctx, "账号凭据 JSON")
 	if !ok || len(documents) != 2 {
 		t.Fatalf("documents = %q, status = %d", documents, recorder.Code)
+	}
+}
+
+func TestRefreshTokenImportHTTPReturnsPartialResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "rt-import-http.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := relational.NewAccountRepository(database)
+	adapter := refreshTokenImportHTTPAdapter{parser: cliprovider.NewAdapter(cliprovider.Config{}, cipher)}
+	service := accountapp.NewService(repository, nil, nil, nil, provider.NewRegistry(adapter), cipher, nil)
+	handler := NewHandler(service, nil)
+	router := gin.New()
+	handler.Register(router.Group("/api/admin/v1"))
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("files", "refresh-tokens.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("rt=valid-rt\nrt=valid-rt\nrt=invalid-rt\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/admin/v1/accounts/import", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Accept", "text/event-stream")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	responseData, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody := string(responseData)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.StatusCode, responseBody)
+	}
+	if !strings.Contains(responseBody, "event: complete\n") || !strings.Contains(responseBody, `{"created":1,"updated":0,"skipped":1,"failed":1,"synced":0,"syncFailed":0}`) {
+		t.Fatalf("body = %s", responseBody)
+	}
+	stored, err := repository.ListEnabled(ctx, accountdomain.ProviderBuild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("stored accounts = %#v", stored)
+	}
+	refreshToken, err := cipher.Decrypt(stored[0].EncryptedRefreshToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshToken != "rotated-rt" {
+		t.Fatalf("stored refresh token = %q", refreshToken)
 	}
 }
 

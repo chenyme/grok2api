@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
@@ -107,7 +108,6 @@ func parseImportedCredentialEntries(data []byte) ([]importedCredentialEntry, err
 func parsePlainTextRefreshTokens(value string) ([]importedCredentialEntry, error) {
 	scanner := bufio.NewScanner(strings.NewReader(value))
 	scanner.Buffer(make([]byte, 64*1024), maxImportedRefreshTokenBytes+1)
-	seen := make(map[string]struct{})
 	entries := make([]importedCredentialEntry, 0)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -126,16 +126,12 @@ func parsePlainTextRefreshTokens(value string) ([]importedCredentialEntry, error
 		if len(line) > maxImportedRefreshTokenBytes {
 			return nil, fmt.Errorf("refresh token 长度不能超过 %d 字节", maxImportedRefreshTokenBytes)
 		}
-		if strings.ContainsAny(line, " \t") {
+		if strings.IndexFunc(line, unicode.IsSpace) >= 0 {
 			return nil, fmt.Errorf("refresh token 不能包含空白字符")
-		}
-		if _, exists := seen[line]; exists {
-			continue
 		}
 		if len(entries) >= maxCredentialImportAccounts {
 			return nil, fmt.Errorf("%w: 单次最多导入 %d 个账号", provider.ErrCredentialLimit, maxCredentialImportAccounts)
 		}
-		seen[line] = struct{}{}
 		entries = append(entries, importedCredentialEntry{Provider: credentialImportProvider, RefreshToken: line})
 	}
 	if err := scanner.Err(); err != nil {

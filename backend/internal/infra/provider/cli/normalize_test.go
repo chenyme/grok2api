@@ -369,11 +369,11 @@ func TestParseImportedCredentialsPlainRefreshTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(values) != 2 || values[0].AccessToken != "" || values[0].RefreshToken != "refresh-one" || values[1].RefreshToken != "refresh-two" {
+	if len(values) != 3 || values[0].AccessToken != "" || values[0].RefreshToken != "refresh-one" || values[1].RefreshToken != "refresh-two" || values[2].RefreshToken != "refresh-one" {
 		t.Fatalf("refresh token import = %#v", values)
 	}
-	if values[0].SourceKey == "" || values[0].SourceKey == values[1].SourceKey {
-		t.Fatalf("refresh token source keys = %q, %q", values[0].SourceKey, values[1].SourceKey)
+	if values[0].SourceKey == "" || values[0].SourceKey == values[1].SourceKey || values[0].SourceKey != values[2].SourceKey {
+		t.Fatalf("refresh token source keys = %q, %q, %q", values[0].SourceKey, values[1].SourceKey, values[2].SourceKey)
 	}
 }
 
@@ -384,6 +384,7 @@ func TestParseImportedCredentialsPlainRefreshTokensRejectsUnsafeLines(t *testing
 	}{
 		{name: "empty prefixed token", data: "rt=   \n"},
 		{name: "embedded whitespace", data: "refresh token\n"},
+		{name: "embedded unicode whitespace", data: "refresh\u00a0token\n"},
 		{name: "oversized token", data: strings.Repeat("x", maxImportedRefreshTokenBytes+1)},
 	}
 	for _, test := range tests {
