@@ -1492,8 +1492,8 @@ func TestMarkMissingThinkingCoolsThenDisables(t *testing.T) {
 	}
 	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, 30*time.Second, 30*time.Minute, 500*time.Millisecond)
 	before := time.Now().UTC()
-	if err := selector.MarkMissingThinking(ctx, credential, time.Hour); err != nil {
-		t.Fatal(err)
+	if action, err := selector.markMissingThinking(ctx, credential, time.Hour); err != nil || action != missingThinkingPenaltyCooled {
+		t.Fatalf("first penalty = (%s, %v)", action, err)
 	}
 	first, err := accounts.Get(ctx, credential.ID)
 	if err != nil {
@@ -1505,8 +1505,8 @@ func TestMarkMissingThinkingCoolsThenDisables(t *testing.T) {
 	if wait := first.CooldownUntil.Sub(before); wait < 50*time.Minute || wait > 70*time.Minute {
 		t.Fatalf("first cooldown = %s", wait)
 	}
-	if err := selector.MarkMissingThinking(ctx, first, time.Hour); err != nil {
-		t.Fatal(err)
+	if action, err := selector.markMissingThinking(ctx, first, time.Hour); err != nil || action != missingThinkingPenaltyUnchanged {
+		t.Fatalf("in-cooldown penalty = (%s, %v)", action, err)
 	}
 	stillCooling, err := accounts.Get(ctx, credential.ID)
 	if err != nil {
@@ -1517,8 +1517,8 @@ func TestMarkMissingThinkingCoolsThenDisables(t *testing.T) {
 	}
 	expired := time.Now().UTC().Add(-time.Second)
 	stillCooling.CooldownUntil = &expired
-	if err := selector.MarkMissingThinking(ctx, stillCooling, time.Hour); err != nil {
-		t.Fatal(err)
+	if action, err := selector.markMissingThinking(ctx, stillCooling, time.Hour); err != nil || action != missingThinkingPenaltyDisabled {
+		t.Fatalf("second penalty = (%s, %v)", action, err)
 	}
 	second, err := accounts.Get(ctx, credential.ID)
 	if err != nil {
@@ -1538,8 +1538,8 @@ func TestMarkMissingThinkingCoolsThenDisables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := selector.MarkMissingThinking(ctx, ok, time.Hour); err != nil {
-		t.Fatal(err)
+	if action, err := selector.markMissingThinking(ctx, ok, time.Hour); err != nil || action != missingThinkingPenaltyCooled {
+		t.Fatalf("recovery penalty = (%s, %v)", action, err)
 	}
 	cooled, err := accounts.Get(ctx, ok.ID)
 	if err != nil {

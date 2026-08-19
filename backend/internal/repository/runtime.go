@@ -116,16 +116,19 @@ const (
 )
 
 type InvalidationEvent struct {
-	Kind           InvalidationKind `json:"kind"`
-	Provider       account.Provider `json:"provider,omitempty"`
-	AccountID      uint64           `json:"accountId,omitempty"`
-	ClientKeyID    uint64           `json:"clientKeyId,omitempty"`
-	UpstreamModel  string           `json:"upstreamModel,omitempty"`
-	FailureCount   int              `json:"failureCount,omitempty"`
-	CooldownUntil  *time.Time       `json:"cooldownUntil,omitempty"`
-	Revision       uint64           `json:"revision,omitempty"`
-	SourceInstance string           `json:"sourceInstance,omitempty"`
-	PublishedAt    time.Time        `json:"publishedAt,omitempty"`
+	Kind          InvalidationKind `json:"kind"`
+	Provider      account.Provider `json:"provider,omitempty"`
+	AccountID     uint64           `json:"accountId,omitempty"`
+	ClientKeyID   uint64           `json:"clientKeyId,omitempty"`
+	UpstreamModel string           `json:"upstreamModel,omitempty"`
+	FailureCount  int              `json:"failureCount,omitempty"`
+	CooldownUntil *time.Time       `json:"cooldownUntil,omitempty"`
+	// HealthMarker carries only domain-approved, non-sensitive durable markers.
+	// Arbitrary upstream error text must never be published on the runtime bus.
+	HealthMarker   string    `json:"healthMarker,omitempty"`
+	Revision       uint64    `json:"revision,omitempty"`
+	SourceInstance string    `json:"sourceInstance,omitempty"`
+	PublishedAt    time.Time `json:"publishedAt,omitempty"`
 }
 
 func (e InvalidationEvent) Layer() InvalidationLayer {

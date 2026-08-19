@@ -674,6 +674,16 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	if remaining := time.Until(*emptyAccount.CooldownUntil); remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
 		t.Fatalf("empty stream cooldown = %s, want about 24h", remaining)
 	}
+	noThinkingAccount, err := accountRepo.Get(ctx, credentials[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !noThinkingAccount.Enabled || noThinkingAccount.LastError != lastErrorMissingThinking || noThinkingAccount.CooldownUntil == nil {
+		t.Fatalf("missing-thinking account was not cooled: %#v", noThinkingAccount)
+	}
+	if remaining := time.Until(*noThinkingAccount.CooldownUntil); remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
+		t.Fatalf("missing-thinking cooldown = %s, want about 24h", remaining)
+	}
 	logs, total, err := auditRepo.List(ctx, 0, 20)
 	if err != nil {
 		t.Fatal(err)
@@ -770,6 +780,13 @@ func TestAttemptLoopQualityHoldFailOpenKeepsSingleAccountBody(t *testing.T) {
 	}
 	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != credential.ID {
 		t.Fatalf("single-account pool must not enter a fake retry, attempts=%#v", attempts)
+	}
+	cooled, err := accountRepo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cooled.Enabled || cooled.LastError != lastErrorMissingThinking || cooled.CooldownUntil == nil {
+		t.Fatalf("delivered fail-open response must still cool the no-thinking account: %#v", cooled)
 	}
 }
 

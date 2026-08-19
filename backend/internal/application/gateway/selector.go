@@ -924,6 +924,14 @@ func isMissingThinkingStrike(lastError string) bool {
 	return lastError == lastErrorMissingThinking || lastError == lastErrorMissingThinkingDisabled
 }
 
+type missingThinkingPenaltyResult string
+
+const (
+	missingThinkingPenaltyUnchanged missingThinkingPenaltyResult = "unchanged"
+	missingThinkingPenaltyCooled    missingThinkingPenaltyResult = "cooled"
+	missingThinkingPenaltyDisabled  missingThinkingPenaltyResult = "disabled"
+)
+
 func (s *Selector) markSuccess(ctx context.Context, credential account.Credential, quotaProbe bool) {
 	now := time.Now().UTC()
 	keepThinkingStrike := isMissingThinkingStrike(credential.LastError)
@@ -945,6 +953,7 @@ func (s *Selector) markSuccess(ctx context.Context, credential account.Credentia
 		if err := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, 0, nil, lastError, true); err == nil {
 			s.ApplyInvalidation(repository.InvalidationEvent{
 				Kind: repository.InvalidationAccountHealthChanged, Provider: credential.Provider, AccountID: credential.ID,
+				HealthMarker: account.NormalizeHealthMarker(lastError),
 			})
 		}
 	} else if touchLastUsed {
@@ -1116,9 +1125,9 @@ func (s *Selector) clearQuotaConsumptionAccount(provider account.Provider, accou
 	s.quotaMu.Unlock()
 }
 
-// MarkMissingThinking cools an account for the first no-thinking hit and
+// markMissingThinking cools an account for the first no-thinking hit and
 // disables it if missing thinking appears again after that cooldown.
-func (s *Selector) MarkMissingThinking(ctx context.Context, credential account.Credential, cooldown time.Duration) error {
+func (s *Selector) markMissingThinking(ctx context.Context, credential account.Credential, cooldown time.Duration) (missingThinkingPenaltyResult, error) {
 	if cooldown <= 0 {
 		cooldown = defaultMissingThinkingCooldown
 	}
@@ -1127,9 +1136,9 @@ func (s *Selector) MarkMissingThinking(ctx context.Context, credential account.C
 	if isMissingThinkingStrike(credential.LastError) && !inCooldown {
 		disabled := false
 		if _, err := s.accounts.UpdateMany(ctx, credential.Provider, []uint64{credential.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil {
-			return err
+			return missingThinkingPenaltyUnchanged, err
 		}
-		_ = s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, credential.FailureCount, nil, lastErrorMissingThinkingDisabled, false)
+		healthErr := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, credential.FailureCount, nil, lastErrorMissingThinkingDisabled, false)
 		s.ApplyInvalidation(repository.InvalidationEvent{
 			Kind: repository.InvalidationAccountStateChanged, Provider: credential.Provider, AccountID: credential.ID,
 		})
@@ -1137,21 +1146,21 @@ func (s *Selector) MarkMissingThinking(ctx context.Context, credential account.C
 		if s.sticky != nil {
 			_ = s.sticky.DeleteByAccount(ctx, credential.ID)
 		}
-		return nil
+		return missingThinkingPenaltyDisabled, healthErr
 	}
 	if inCooldown {
-		return nil
+		return missingThinkingPenaltyUnchanged, nil
 	}
 	until := now.Add(cooldown)
 	if err := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, credential.FailureCount, &until, lastErrorMissingThinking, false); err != nil {
-		return err
+		return missingThinkingPenaltyUnchanged, err
 	}
 	s.ApplyInvalidation(repository.InvalidationEvent{
 		Kind: repository.InvalidationAccountHealthChanged, Provider: credential.Provider, AccountID: credential.ID,
-		FailureCount: credential.FailureCount, CooldownUntil: &until,
+		FailureCount: credential.FailureCount, CooldownUntil: &until, HealthMarker: account.LastErrorMissingThinking,
 	})
 	s.evictCandidate(credential.Provider, credential.ID)
-	return nil
+	return missingThinkingPenaltyCooled, nil
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {
@@ -1501,8 +1510,8 @@ func (s *Selector) applyHealthInvalidation(event repository.InvalidationEvent) {
 		value := event.CooldownUntil.UTC()
 		cooldownUntil = &value
 	}
-	overrideLastError := ""
-	if event.FailureCount > 0 || cooldownUntil != nil {
+	overrideLastError := account.NormalizeHealthMarker(event.HealthMarker)
+	if overrideLastError == "" && (event.FailureCount > 0 || cooldownUntil != nil) {
 		overrideLastError = "upstream failure"
 	}
 	value := routingHealthOverride{
