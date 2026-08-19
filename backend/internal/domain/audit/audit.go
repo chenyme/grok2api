@@ -76,6 +76,7 @@ type Record struct {
 	RequestID               string
 	ClientKeyID             uint64
 	ClientKeyName           string
+	ClientIP                string
 	ModelRouteID            uint64
 	ModelPublicID           string
 	ModelUpstreamModel      string

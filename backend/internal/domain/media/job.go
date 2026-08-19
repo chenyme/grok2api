@@ -35,6 +35,7 @@ type Job struct {
 	RequestID       string
 	ClientKeyID     uint64
 	ClientKeyName   string
+	ClientIP        string
 	AccountID       uint64
 	AccountName     string
 	EgressNodeID    *uint64

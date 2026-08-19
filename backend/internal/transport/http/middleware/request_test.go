@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/pkg/perfmetrics"
+	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 	"github.com/gin-gonic/gin"
 )
 
@@ -25,6 +26,40 @@ func TestValidRequestID(t *testing.T) {
 			t.Fatalf("request ID %q should be invalid", value)
 		}
 	}
+}
+
+func TestClientIPIgnoresForwardedHeadersFromUntrustedPeers(t *testing.T) {
+	got := captureClientIP(t, nil, "198.51.100.10:1234", "203.0.113.20")
+	if got != "198.51.100.10" {
+		t.Fatalf("client IP = %q", got)
+	}
+}
+
+func TestClientIPAcceptsForwardedHeadersFromTrustedProxy(t *testing.T) {
+	got := captureClientIP(t, []string{"10.0.0.0/8"}, "10.1.2.3:1234", "203.0.113.20")
+	if got != "203.0.113.20" {
+		t.Fatalf("client IP = %q", got)
+	}
+}
+
+func captureClientIP(t *testing.T, trustedProxies []string, remoteAddr, forwardedFor string) string {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	if err := router.SetTrustedProxies(trustedProxies); err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	router.Use(ClientIP())
+	router.GET("/", func(c *gin.Context) {
+		got = requestmeta.ClientIP(c.Request.Context())
+		c.Status(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = remoteAddr
+	request.Header.Set("X-Forwarded-For", forwardedFor)
+	router.ServeHTTP(httptest.NewRecorder(), request)
+	return got
 }
 
 func TestMaxBodyBytesLimitsAllRequestBodies(t *testing.T) {

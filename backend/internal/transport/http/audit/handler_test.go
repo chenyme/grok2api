@@ -84,8 +84,8 @@ func TestAuditDetailReturnsCompleteTextAndBinaryBodies(t *testing.T) {
 
 func TestAuditResponseDerivesOutputThroughput(t *testing.T) {
 	firstTokenMS := int64(250)
-	response := newAuditResponse(auditdomain.Record{StatusCode: http.StatusOK, Streaming: true, ReasoningEffort: "high", FirstTokenMS: &firstTokenMS, DurationMS: 1250, OutputTokens: 80})
-	if response.ReasoningEffort != "high" || response.FirstTokenMS == nil || *response.FirstTokenMS != 250 || response.OutputTokensPerSecond == nil || *response.OutputTokensPerSecond != 80 {
+	response := newAuditResponse(auditdomain.Record{ClientIP: "203.0.113.8", StatusCode: http.StatusOK, Streaming: true, ReasoningEffort: "high", FirstTokenMS: &firstTokenMS, DurationMS: 1250, OutputTokens: 80})
+	if response.ClientIP != "203.0.113.8" || response.ReasoningEffort != "high" || response.FirstTokenMS == nil || *response.FirstTokenMS != 250 || response.OutputTokensPerSecond == nil || *response.OutputTokensPerSecond != 80 {
 		t.Fatalf("response = %#v", response)
 	}
 

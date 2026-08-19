@@ -32,6 +32,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
+	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -938,6 +939,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	logResponseMediaSummary(s.logger, input.RequestID, mediaSummary)
 	auditBase := audit.Record{
 		EventID: eventID, RequestID: input.RequestID, ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
+		ClientIP:     requestmeta.ClientIP(ctx),
 		ModelRouteID: route.ID, ModelPublicID: publicModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: auditOperation, UsageSource: audit.UsageSourceNone, Streaming: input.Streaming,
 		MediaInputImages: mediaSummary.InputImages,

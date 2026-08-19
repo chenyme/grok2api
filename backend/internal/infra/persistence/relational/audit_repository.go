@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -95,6 +96,9 @@ func validatePreparedAudit(value preparedAudit) error {
 	}
 	if row.ClientKeyID == 0 {
 		return errors.New("client_key_id must be positive")
+	}
+	if row.ClientIP != "" && net.ParseIP(row.ClientIP) == nil {
+		return errors.New("client_ip must be a valid IP address when present")
 	}
 	if row.ModelRouteID == 0 {
 		return errors.New("model_route_id must be positive")
@@ -348,7 +352,7 @@ func toAuditModels(value audit.Record) (requestAuditModel, []requestAuditAttempt
 		eventID = fmt.Sprintf("evt_%x", digest[:18])
 	}
 	row := requestAuditModel{
-		EventID: truncate(eventID, 64), RequestID: truncate(value.RequestID, 64), ClientKeyID: value.ClientKeyID, ClientKeyName: truncate(value.ClientKeyName, 160),
+		EventID: truncate(eventID, 64), RequestID: truncate(value.RequestID, 64), ClientKeyID: value.ClientKeyID, ClientKeyName: truncate(value.ClientKeyName, 160), ClientIP: strings.TrimSpace(value.ClientIP),
 		ModelRouteID: value.ModelRouteID, ModelPublicID: truncate(value.ModelPublicID, 255), ModelUpstreamModel: truncate(value.ModelUpstreamModel, 255),
 		Provider: truncate(provider, 32), Operation: string(operation), UsageSource: string(usageSource),
 		ReasoningEffort: audit.NormalizeReasoningEffort(value.ReasoningEffort),
@@ -1003,7 +1007,7 @@ func degradeBucketCase(buckets []repository.DegradeBucketRange) (string, []any) 
 func applyAuditQuery(query *gorm.DB, search string, start, end time.Time, filter repository.AuditListFilter) *gorm.DB {
 	if value := strings.TrimSpace(search); value != "" {
 		pattern := "%" + strings.ToLower(value) + "%"
-		query = query.Where("LOWER(request_id) LIKE ? OR LOWER(model_public_id) LIKE ? OR LOWER(model_upstream_model) LIKE ? OR LOWER(egress_node_name) LIKE ?", pattern, pattern, pattern, pattern)
+		query = query.Where("LOWER(request_id) LIKE ? OR LOWER(model_public_id) LIKE ? OR LOWER(model_upstream_model) LIKE ? OR LOWER(client_ip) LIKE ? OR LOWER(egress_node_name) LIKE ?", pattern, pattern, pattern, pattern, pattern)
 	}
 	if !start.IsZero() {
 		query = query.Where("created_at >= ?", start)

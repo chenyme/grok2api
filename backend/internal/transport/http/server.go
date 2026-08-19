@@ -40,6 +40,7 @@ type Dependencies struct {
 	Logger             *slog.Logger
 	RequestTimeout     time.Duration
 	MaxBodyBytes       int64
+	TrustedProxies     []string
 	ConcurrencyGate    *middleware.ConcurrencyGate
 	SecureCookies      bool
 	SwaggerEnabled     bool
@@ -115,7 +116,10 @@ func New(deps Dependencies) *gin.Engine {
 		deps.Logger = slog.Default()
 	}
 	router := gin.New()
-	router.Use(gin.Recovery(), middleware.RequestID(), middleware.SecurityHeaders(), middleware.MaxBodyBytes(deps.MaxBodyBytes), middleware.Timeout(deps.RequestTimeout), middleware.AccessLog(deps.Logger))
+	if err := router.SetTrustedProxies(deps.TrustedProxies); err != nil {
+		panic("httpserver: trustedProxies 配置无效: " + err.Error())
+	}
+	router.Use(gin.Recovery(), middleware.RequestID(), middleware.ClientIP(), middleware.SecurityHeaders(), middleware.MaxBodyBytes(deps.MaxBodyBytes), middleware.Timeout(deps.RequestTimeout), middleware.AccessLog(deps.Logger))
 	router.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
 	router.GET("/readyz", func(c *gin.Context) {
 		if deps.Readiness != nil {

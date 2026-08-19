@@ -294,6 +294,7 @@ type requestAuditModel struct {
 	RequestID               string    `gorm:"size:64;not null;check:chk_request_audits_request_id,length(request_id) BETWEEN 1 AND 64"`
 	ClientKeyID             uint64    `gorm:"not null;check:chk_request_audits_client_key_id,client_key_id > 0"`
 	ClientKeyName           string    `gorm:"size:160;check:chk_request_audits_client_key_name,length(client_key_name) <= 160"`
+	ClientIP                string    `gorm:"size:45;not null;default:'';check:chk_request_audits_client_ip,length(client_ip) <= 45"`
 	ModelRouteID            uint64    `gorm:"not null;check:chk_request_audits_model_route_id,model_route_id > 0"`
 	ModelPublicID           string    `gorm:"size:255;check:chk_request_audits_model_public_id,length(model_public_id) <= 255"`
 	ModelUpstreamModel      string    `gorm:"size:255;check:chk_request_audits_model_upstream_model,length(model_upstream_model) <= 255"`
@@ -396,6 +397,7 @@ type mediaJobModel struct {
 	RequestID      string  `gorm:"size:64;not null;check:chk_media_jobs_request_id,length(request_id) BETWEEN 1 AND 64"`
 	ClientKeyID    uint64  `gorm:"not null;check:chk_media_jobs_client_key_id,client_key_id > 0"`
 	ClientKeyName  string  `gorm:"size:160;not null;default:'';check:chk_media_jobs_client_key_name,length(client_key_name) <= 160"`
+	ClientIP       string  `gorm:"size:45;not null;default:'';check:chk_media_jobs_client_ip,length(client_ip) <= 45"`
 	AccountID      *uint64 `gorm:"check:chk_media_jobs_account_id,account_id IS NULL OR account_id > 0"`
 	AccountName    string  `gorm:"size:160;not null;default:'';check:chk_media_jobs_account_name,length(account_name) <= 160"`
 	EgressNodeID   *uint64 `gorm:"check:chk_media_jobs_egress_node_id,egress_node_id IS NULL OR egress_node_id > 0"`

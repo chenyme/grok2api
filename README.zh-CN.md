@@ -425,6 +425,42 @@ GROK2API_DATABASE_URL='postgresql://user:password@host:5432/grok2api?sslmode=req
 
 非空的 `GROK2API_DATABASE_URL` 会覆盖 `database.postgres.dsn` 并自动选择 `postgres`；空值不会覆盖 YAML。支持 `postgres://` 和 `postgresql://`，SQLAlchemy 的 `postgresql+asyncpg://` 会返回格式迁移提示。程序不会隐式读取通用的 `DATABASE_URL`；平台只提供该变量时，可在部署清单中显式映射为 `GROK2API_DATABASE_URL: "${DATABASE_URL}"`。数据库配置优先级为：内置默认值 < `config.yaml` < `GROK2API_DATABASE_URL`。当前 CLI 没有数据库覆盖参数。
 
+### 反向代理后的客户端 IP
+
+请求审计会记录规范化的客户端 IPv4 或 IPv6 地址。客户端直连 grok2api 时无需额外配置；经过 Nginx 等反向代理时，需要同时配置代理和 grok2api：
+
+1. 在 Nginx 中转发标准客户端 IP 请求头：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+2. 在 `config.yaml` 中仅信任 Nginx 的实际地址或隔离网络：
+
+```yaml
+server:
+  trustedProxies:
+    - "127.0.0.1"
+```
+
+使用 Docker 时，grok2api 看到的对端可能是网桥网关或另一个容器，而不是 `127.0.0.1`。配置前可查询 Compose 网络：
+
+```bash
+docker network inspect grok2api_default \
+  --format '{{(index .IPAM.Config 0).Subnet}}'
+```
+
+例如隔离网络返回 `172.20.0.0/16` 时，可以将该 CIDR 配置为可信代理。不要使用 `0.0.0.0/0` 或 `::/0`；grok2api 会拒绝不受限的可信代理范围。未配置 `trustedProxies` 时，所有转发头都会被忽略，审计记录 TCP 直连对端地址，从而避免客户端伪造 `X-Forwarded-For`。
+
+如果 Nginx 前还有 Cloudflare，应先使用 Cloudflare 官方代理网段和 `CF-Connecting-IP` 正确配置 Nginx real-IP 模块，不要信任任意来源提供的 `CF-Connecting-IP`。修改 `server.trustedProxies` 后需要重启 grok2api；修改 Nginx 配置后需要重新加载 Nginx。
+
 重要的可选设置：
 
 - `audit.ledgerMode`：`observe` 仅报告账本故障；`enforce` 可暂停新推理以保护计费准确性。

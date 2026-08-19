@@ -488,7 +488,7 @@ func mediaJobFromDomain(value media.Job) *mediaJobModel {
 		operation = media.VideoOperationGenerate
 	}
 	return &mediaJobModel{
-		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName,
+		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName, ClientIP: value.ClientIP,
 		AccountID: mediaJobAccountID(value.AccountID), AccountName: value.AccountName,
 		EgressNodeID: value.EgressNodeID, EgressNodeName: value.EgressNodeName, EgressScope: value.EgressScope, EgressMode: value.EgressMode,
 		Provider: value.Provider,
@@ -515,7 +515,7 @@ func mediaJobToDomain(row mediaJobModel) media.Job {
 		operation = media.VideoOperationGenerate
 	}
 	return media.Job{
-		ID: row.ID, RequestID: row.RequestID, ClientKeyID: row.ClientKeyID, ClientKeyName: row.ClientKeyName,
+		ID: row.ID, RequestID: row.RequestID, ClientKeyID: row.ClientKeyID, ClientKeyName: row.ClientKeyName, ClientIP: row.ClientIP,
 		AccountID: accountID, AccountName: row.AccountName,
 		EgressNodeID: row.EgressNodeID, EgressNodeName: row.EgressNodeName, EgressScope: row.EgressScope, EgressMode: row.EgressMode,
 		Provider: row.Provider,

@@ -362,7 +362,7 @@ func TestRecoverVideoJobsRecordsFailedAuditWithEgress(t *testing.T) {
 	nodeID := uint64(42)
 	repository := &videoUsageRepository{job: media.Job{
 		ID: "video_failed_recovery", RequestID: "request-failed-recovery",
-		ClientKeyID: 1, ClientKeyName: "client", AccountID: 2, AccountName: "account",
+		ClientKeyID: 1, ClientKeyName: "client", ClientIP: "203.0.113.9", AccountID: 2, AccountName: "account",
 		Provider: "grok_web", Model: "grok-imagine-video", ModelRouteID: 3, UpstreamModel: "video",
 		Seconds: 8, Quality: "720p", Status: media.StatusFailed, ErrorCode: "generation_failed", ErrorMessage: "upstream disconnected",
 		EgressNodeID: &nodeID, EgressNodeName: "warp", EgressScope: "grok_web", EgressMode: "proxy",
@@ -376,7 +376,7 @@ func TestRecoverVideoJobsRecordsFailedAuditWithEgress(t *testing.T) {
 	if repository.job.UsageRecordedAt == nil || recorder.calls != 1 {
 		t.Fatalf("recordedAt = %v, audit calls = %d", repository.job.UsageRecordedAt, recorder.calls)
 	}
-	if recorder.last.StatusCode != 502 || recorder.last.ErrorCode != "generation_failed" || recorder.last.EgressNodeID == nil || *recorder.last.EgressNodeID != nodeID || recorder.last.EgressNodeName != "warp" || recorder.last.EgressMode != audit.EgressModeProxy {
+	if recorder.last.ClientIP != "203.0.113.9" || recorder.last.StatusCode != 502 || recorder.last.ErrorCode != "generation_failed" || recorder.last.EgressNodeID == nil || *recorder.last.EgressNodeID != nodeID || recorder.last.EgressNodeName != "warp" || recorder.last.EgressMode != audit.EgressModeProxy {
 		t.Fatalf("audit = %#v", recorder.last)
 	}
 	if recorder.last.EstimatedCostInUSDTicks != 0 || recorder.last.MediaOutputSeconds != 0 {

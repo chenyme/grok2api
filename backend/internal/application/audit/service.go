@@ -16,6 +16,7 @@ import (
 	auditdomain "github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
 	"github.com/chenyme/grok2api/backend/internal/pkg/perfmetrics"
+	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 	"github.com/chenyme/grok2api/backend/internal/pkg/resultcache"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -260,6 +261,9 @@ func (s *Service) createAcknowledged(ctx context.Context, value auditdomain.Reco
 	startedAt := time.Now()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if value.ClientIP == "" {
+		value.ClientIP = requestmeta.ClientIP(ctx)
 	}
 	if !s.started.Load() || s.stopped.Load() {
 		return ErrWriterUnavailable

@@ -13,6 +13,7 @@ import (
 
 	auditdomain "github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
+	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -45,6 +46,27 @@ func TestServiceCloseFlushesQueuedAudits(t *testing.T) {
 	}
 	if total != 5 || len(values) != 5 {
 		t.Fatalf("total = %d, values = %d", total, len(values))
+	}
+}
+
+func TestCreateCapturesClientIPFromRequestContext(t *testing.T) {
+	repo := newGatedAuditRepository()
+	close(repo.release)
+	service := NewService(repo, slog.Default(), 8, 4, time.Hour)
+	service.Start()
+	t.Cleanup(func() { closeAuditService(t, service) })
+
+	ctx := requestmeta.WithClientIP(context.Background(), "2001:db8::10")
+	if err := service.Create(ctx, auditdomain.Record{EventID: "evt_client_ip_context", RequestID: "client-ip", ClientKeyID: 1, ModelRouteID: 1, StatusCode: 200}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case values := <-repo.started:
+		if len(values) != 1 || values[0].ClientIP != "2001:db8::10" {
+			t.Fatalf("audit values = %#v", values)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("audit batch was not written")
 	}
 }
 
