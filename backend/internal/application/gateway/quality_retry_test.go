@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
+	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
 func TestClassifyQualityHold(t *testing.T) {
@@ -34,9 +36,12 @@ func TestClassifyQualityHold(t *testing.T) {
 		{name: "visible 32 no think withhold", sig: QualityStreamSignals{VisibleTokens: 32, Terminal: true}, want: QualityWithhold},
 		{name: "output 40 no think withhold", sig: QualityStreamSignals{OutputTokens: 40, Terminal: true}, want: QualityWithhold},
 		{name: "short no think delivers", sig: QualityStreamSignals{VisibleTokens: 10, Terminal: true}, want: QualityDeliver},
+		{name: "empty terminal waits for transport handling", sig: QualityStreamSignals{Terminal: true}, want: QualityWait},
 		{name: "midstream enough content withhold", sig: QualityStreamSignals{VisibleTokens: 64}, want: QualityWithhold},
 		{name: "wait for more", sig: QualityStreamSignals{VisibleTokens: 8}, want: QualityWait},
 		{name: "hold expired short delivers", sig: QualityStreamSignals{VisibleTokens: 8, HoldExpired: true}, want: QualityDeliver},
+		{name: "hold expired empty waits", sig: QualityStreamSignals{HoldExpired: true}, want: QualityWait},
+		{name: "hold expired zero tokens waits", sig: QualityStreamSignals{VisibleTokens: 0, OutputTokens: 0, HoldExpired: true}, want: QualityWait},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -422,51 +427,90 @@ func TestPeekQualityStreamHoldTimeoutInterruptsBlockedReadAndPreservesRemainder(
 	}
 }
 
-func TestPeekQualityStreamHoldTimeoutCoversBlockedFirstByte(t *testing.T) {
+func TestPeekQualityStreamHoldTimeoutEmptyDoesNotFailOpen(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
 	reader, writer := io.Pipe()
-	continueWrite := make(chan struct{})
-	writeErr := make(chan error, 1)
+	defer writer.Close()
+	done := make(chan struct{})
+	var verdict QualityVerdict
+	var peekErr error
 	go func() {
-		select {
-		case <-continueWrite:
-		case <-time.After(500 * time.Millisecond):
-		}
-		_, err := io.WriteString(writer, sse(
-			`data: {"choices":[{"delta":{"content":"late first byte"}}]}`,
-			"data: [DONE]",
-		))
-		if closeErr := writer.Close(); err == nil {
-			err = closeErr
-		}
-		writeErr <- err
+		defer close(done)
+		_, verdict, _, _, peekErr = peekQualityStream(ctx, reader, qualityProtocolChat, QualityRetryRuntime{
+			MinOutputTokens: 32,
+			HoldTimeout:     20 * time.Millisecond,
+		})
 	}()
+	select {
+	case <-done:
+		t.Fatal("empty hold timeout must keep reading, not fail-open")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel(neterrorpkg.ErrUpstreamStreamIdleTimeout)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("peekQualityStream did not return after idle cancel")
+	}
+	if !neterrorpkg.IsUpstreamStreamIdleTimeout(peekErr) {
+		t.Fatalf("peekErr = %v, want idle timeout", peekErr)
+	}
+	if verdict != QualityWait {
+		t.Fatalf("verdict=%s, want wait so the loop does not fail-open", verdict)
+	}
+}
 
-	started := time.Now()
-	replay, verdict, _, _, err := peekQualityStream(context.Background(), reader, qualityProtocolChat, QualityRetryRuntime{
-		MinOutputTokens: 32,
-		HoldTimeout:     30 * time.Millisecond,
-	})
+func TestPeekQualityStreamEmptyEOFRequestsAnotherAccount(t *testing.T) {
+	t.Parallel()
+	replay, verdict, _, _, err := peekQualityStream(
+		context.Background(),
+		io.NopCloser(strings.NewReader("")),
+		qualityProtocolResponses,
+		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: time.Second},
+	)
+	if replay != nil {
+		defer replay.Close()
+	}
+	if !errors.Is(err, errQualityEmptyStream) {
+		t.Fatalf("peek error = %v, want empty stream", err)
+	}
+	if verdict != QualityWait {
+		t.Fatalf("verdict = %s, want wait", verdict)
+	}
+}
+
+func TestPeekQualityStreamProcessesUnterminatedFinalEvent(t *testing.T) {
+	t.Parallel()
+	body := io.NopCloser(strings.NewReader(`data: {"type":"response.output_text.delta","delta":"ok"}`))
+	replay, verdict, _, _, err := peekQualityStream(
+		context.Background(), body, qualityProtocolResponses,
+		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: time.Second},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer replay.Close()
-	close(continueWrite)
-	if elapsed := time.Since(started); elapsed < 20*time.Millisecond || elapsed > 200*time.Millisecond {
-		t.Fatalf("first-byte hold returned after %s, want the 30ms timeout", elapsed)
-	}
 	if verdict != QualityDeliver {
-		t.Fatalf("empty timed-out prefix verdict = %s", verdict)
+		t.Fatalf("verdict = %s, want deliver for a real short response", verdict)
 	}
-	body, err := io.ReadAll(replay)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestQualityPeekAbortErrorPrefersIdleCause(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(neterrorpkg.ErrUpstreamStreamIdleTimeout)
+	got := qualityPeekAbortError(ctx, context.Canceled)
+	if !neterrorpkg.IsUpstreamStreamIdleTimeout(got) {
+		t.Fatalf("abort error = %v, want idle timeout", got)
 	}
-	if err := <-writeErr; err != nil {
-		t.Fatal(err)
+	if isClientRequestCancel(ctx, got) {
+		t.Fatal("idle timeout must not look like a client cancel")
 	}
-	if !strings.Contains(string(body), "late first byte") {
-		t.Fatalf("replay lost post-timeout first byte: %q", body)
+	plain, plainCancel := context.WithCancel(context.Background())
+	plainCancel()
+	if !isClientRequestCancel(plain, context.Canceled) {
+		t.Fatal("plain cancel must still be a client cancel")
 	}
 }
 
@@ -551,8 +595,8 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	responseRepo := relational.NewResponseRepository(database)
 	keyRepo := relational.NewClientKeyRepository(database)
 
-	credentials := make([]accountdomain.Credential, 0, 2)
-	for index, name := range []string{"quality-a", "quality-b"} {
+	credentials := make([]accountdomain.Credential, 0, 3)
+	for index, name := range []string{"quality-empty", "quality-no-think", "quality-thinking"} {
 		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, accountdomain.Credential{
 			Provider: accountdomain.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
 			EncryptedRefreshToken: "refresh-" + name, ExpiresAt: time.Now().Add(time.Hour),
@@ -591,15 +635,16 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 		"data: [DONE]",
 	)
 	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
-		credentials[0].ID: {{status: http.StatusOK, body: noThink}},
-		credentials[1].ID: {{status: http.StatusOK, body: thinking}},
+		credentials[0].ID: {{status: http.StatusOK, body: ""}},
+		credentials[1].ID: {{status: http.StatusOK, body: noThink}},
+		credentials[2].ID: {{status: http.StatusOK, body: thinking}},
 	}}
 	registry := provider.NewRegistry(adapter)
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
 	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
-	service.UpdateQualityRetry(QualityRetryRuntime{Enabled: true, MaxAttempts: 2, MinOutputTokens: 32, OnExhausted: qualityRetryFailOpen, HoldTimeout: time.Second})
+	service.UpdateQualityRetry(QualityRetryRuntime{Enabled: true, MaxAttempts: 3, MinOutputTokens: 32, OnExhausted: qualityRetryFailOpen, HoldTimeout: time.Second})
 
 	result, err := service.CreateChatCompletion(ctx, Input{
 		RequestID: "req-quality-hold", ClientKey: clientKey, PublicModel: "grok-4.6", Streaming: true,
@@ -621,8 +666,28 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 		t.Fatal("first no-think body must not be delivered")
 	}
 	attempts := adapter.Attempts()
-	if len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
-		t.Fatalf("expected account exclude+retry, attempts=%#v want [%d %d]", attempts, credentials[0].ID, credentials[1].ID)
+	if len(attempts) != 3 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID || attempts[2] != credentials[2].ID {
+		t.Fatalf("expected empty+no-think account exclusion and retry, attempts=%#v", attempts)
+	}
+	emptyAccount, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emptyAccount.FailureCount != 1 || emptyAccount.CooldownUntil == nil {
+		t.Fatalf("empty stream account was not cooled: %#v", emptyAccount)
+	}
+	if remaining := time.Until(*emptyAccount.CooldownUntil); remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
+		t.Fatalf("empty stream cooldown = %s, want about 24h", remaining)
+	}
+	noThinkingAccount, err := accountRepo.Get(ctx, credentials[1].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !noThinkingAccount.Enabled || noThinkingAccount.LastError != lastErrorMissingThinking || noThinkingAccount.CooldownUntil == nil {
+		t.Fatalf("missing-thinking account was not cooled: %#v", noThinkingAccount)
+	}
+	if remaining := time.Until(*noThinkingAccount.CooldownUntil); remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
+		t.Fatalf("missing-thinking cooldown = %s, want about 24h", remaining)
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 20)
 	if err != nil {
@@ -630,7 +695,7 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	}
 	var degraded, delivered bool
 	for _, rec := range logs {
-		if rec.ErrorCode == ErrorQualityDegraded && rec.AccountID != nil && *rec.AccountID == credentials[0].ID {
+		if rec.ErrorCode == ErrorQualityDegraded && rec.AccountID != nil && *rec.AccountID == credentials[1].ID {
 			degraded = true
 		}
 		if rec.RequestID == "req-quality-hold" && rec.ErrorCode == "" && rec.StatusCode == http.StatusOK {
@@ -720,6 +785,13 @@ func TestAttemptLoopQualityHoldFailOpenKeepsSingleAccountBody(t *testing.T) {
 	}
 	if attempts := adapter.Attempts(); len(attempts) != 1 || attempts[0] != credential.ID {
 		t.Fatalf("single-account pool must not enter a fake retry, attempts=%#v", attempts)
+	}
+	cooled, err := accountRepo.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cooled.Enabled || cooled.LastError != lastErrorMissingThinking || cooled.CooldownUntil == nil {
+		t.Fatalf("delivered fail-open response must still cool the no-thinking account: %#v", cooled)
 	}
 }
 
@@ -822,7 +894,7 @@ func TestAttemptLoopQualityFailOpenFallbackAndTotalAttemptCap(t *testing.T) {
 func TestNormalizeQualityRetryDefaults(t *testing.T) {
 	t.Parallel()
 	got := normalizeQualityRetry(QualityRetryRuntime{Enabled: true})
-	if !got.Enabled || got.MaxAttempts != 6 || got.MinOutputTokens != 32 || got.OnExhausted != qualityRetryFailClosed || got.HoldTimeout != 3*time.Second {
+	if !got.Enabled || got.MaxAttempts != 6 || got.MinOutputTokens != 32 || got.OnExhausted != qualityRetryFailClosed || got.HoldTimeout != 3*time.Second || got.AccountCooldown != 24*time.Hour {
 		t.Fatalf("defaults = %#v", got)
 	}
 }

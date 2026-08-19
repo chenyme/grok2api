@@ -2120,7 +2120,7 @@ func (r *AccountRepository) UpdateHealth(ctx context.Context, id uint64, provide
 	}
 	r.notifyInvalidation(ctx, repository.InvalidationEvent{
 		Kind: repository.InvalidationAccountHealthChanged, Provider: provider, AccountID: id,
-		FailureCount: failureCount, CooldownUntil: cooldownUntil,
+		FailureCount: failureCount, CooldownUntil: cooldownUntil, HealthMarker: account.NormalizeHealthMarker(lastError),
 	})
 	return nil
 }

@@ -1,9 +1,11 @@
 package audit
 
 const (
-	DegradeClassBurst = "buffered_burst"
-	DegradeClassSoft  = "soft_tps"
-	DegradeClassHard  = "hard_tps"
+	DegradeClassBurst    = "buffered_burst"
+	DegradeClassSoft     = "soft_tps"
+	DegradeClassHard     = "hard_tps"
+	DegradeClassThinking = "missing_thinking"
+	ErrorQualityDegraded = "quality_degraded"
 )
 
 const (

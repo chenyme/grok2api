@@ -215,7 +215,7 @@ qualityGuard:
 		t.Fatalf("qualityGuard = %#v", value.QualityGuard)
 	}
 	retry := value.QualityGuard.RequestRetry
-	if retry.Enabled || retry.MaxAttempts != 6 || retry.HoldTimeout.Value() != 3*time.Second || retry.MinOutputTokens != 32 || retry.OnExhausted != "fail_closed" {
+	if retry.Enabled || retry.MaxAttempts != 6 || retry.HoldTimeout.Value() != 3*time.Second || retry.MinOutputTokens != 32 || retry.OnExhausted != "fail_closed" || retry.AccountCooldown.Value() != 24*time.Hour {
 		t.Fatalf("loaded requestRetry defaults = %#v", retry)
 	}
 }
@@ -223,8 +223,32 @@ qualityGuard:
 func TestDefaultQualityGuardRequestRetryContract(t *testing.T) {
 	t.Parallel()
 	got := defaultConfig().QualityGuard.RequestRetry
-	if got.Enabled || got.MaxAttempts != 6 || got.HoldTimeout.Value() != 3*time.Second || got.MinOutputTokens != 32 || got.OnExhausted != "fail_closed" {
+	if got.Enabled || got.MaxAttempts != 6 || got.HoldTimeout.Value() != 3*time.Second || got.MinOutputTokens != 32 || got.OnExhausted != "fail_closed" || got.AccountCooldown.Value() != 24*time.Hour {
 		t.Fatalf("requestRetry defaults = %#v", got)
+	}
+}
+
+func TestQualityGuardRequestRetryAccountCooldownBounds(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name    string
+		value   time.Duration
+		wantErr bool
+	}{
+		{name: "default", value: 0},
+		{name: "minimum", value: time.Minute},
+		{name: "maximum", value: 168 * time.Hour},
+		{name: "below minimum", value: time.Minute - time.Millisecond, wantErr: true},
+		{name: "above maximum", value: 168*time.Hour + time.Millisecond, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateQualityGuardRequestRetry(QualityGuardRequestRetryConfig{
+				Enabled: true, AccountCooldown: Duration(test.value),
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validate cooldown %s: err=%v, wantErr=%t", test.value, err, test.wantErr)
+			}
+		})
 	}
 }
 

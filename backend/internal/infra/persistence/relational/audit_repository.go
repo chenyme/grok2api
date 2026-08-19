@@ -694,6 +694,7 @@ type degradeTotalsRow struct {
 	Hard         int64   `gorm:"column:hard"`
 	Soft         int64   `gorm:"column:soft"`
 	Burst        int64   `gorm:"column:burst"`
+	Thinking     int64   `gorm:"column:thinking"`
 	MaxTPS       float64 `gorm:"column:max_tps"`
 }
 
@@ -706,6 +707,7 @@ type degradeAccountRow struct {
 	Burst              int64            `gorm:"column:burst"`
 	Soft               int64            `gorm:"column:soft"`
 	Hard               int64            `gorm:"column:hard"`
+	Thinking           int64            `gorm:"column:thinking"`
 	Last               degradeTimestamp `gorm:"column:last_seen"`
 	Enabled            bool             `gorm:"column:enabled"`
 	Found              bool             `gorm:"column:found"`
@@ -809,6 +811,7 @@ func (r *AuditRepository) SummarizeDegrade(ctx context.Context, input repository
 				COALESCE(SUM(CASE WHEN d.degrade_class = 'hard_tps' THEN 1 ELSE 0 END), 0) AS hard,
 				COALESCE(SUM(CASE WHEN d.degrade_class = 'soft_tps' THEN 1 ELSE 0 END), 0) AS soft,
 				COALESCE(SUM(CASE WHEN d.degrade_class = 'buffered_burst' THEN 1 ELSE 0 END), 0) AS burst,
+				COALESCE(SUM(CASE WHEN d.degrade_class = 'missing_thinking' THEN 1 ELSE 0 END), 0) AS thinking,
 				COALESCE(MAX(d.tps), 0) AS max_tps`).
 			Joins("LEFT JOIN provider_accounts p ON p.id = d.account_id").
 			Scan(&totals).Error; err != nil {
@@ -817,7 +820,7 @@ func (r *AuditRepository) SummarizeDegrade(ctx context.Context, input repository
 		result.Totals = repository.DegradeTotals{
 			Hits: totals.Hits, Accounts: totals.Accounts, StillEnabled: totals.StillEnabled,
 			Disabled: totals.Disabled, Deleted: totals.Deleted, Hard: totals.Hard, Soft: totals.Soft,
-			Burst: totals.Burst, MaxTPS: totals.MaxTPS,
+			Burst: totals.Burst, Thinking: totals.Thinking, MaxTPS: totals.MaxTPS,
 		}
 
 		accountQuery := r.degradeAccountAggregate(tx, classified, input)
@@ -840,7 +843,7 @@ func (r *AuditRepository) SummarizeDegrade(ctx context.Context, input repository
 		for _, row := range accountRows {
 			result.Accounts = append(result.Accounts, repository.DegradeAccount{
 				ID: row.ID, Name: row.Name, Email: row.Email, Hits: row.Hits, MaxTPS: row.MaxTPS,
-				Burst: row.Burst, Soft: row.Soft, Hard: row.Hard, Last: time.Time(row.Last), Enabled: row.Enabled,
+				Burst: row.Burst, Soft: row.Soft, Hard: row.Hard, Thinking: row.Thinking, Last: time.Time(row.Last), Enabled: row.Enabled,
 				Found: row.Found, BuildBotFlagSource: row.BuildBotFlagSource,
 			})
 			accountIDs = append(accountIDs, row.ID)
@@ -878,7 +881,7 @@ func (r *AuditRepository) SummarizeDegrade(ctx context.Context, input repository
 			bucketed := tx.Table("(?) AS d", classified).Select(caseSQL+" AS bucket_index, d.degrade_class", caseArgs...)
 			var bucketRows []degradeBucketRow
 			if err := tx.Table("(?) AS b", bucketed).
-				Select("b.bucket_index, COUNT(*) AS count, COALESCE(SUM(CASE WHEN b.degrade_class IN ('hard_tps', 'buffered_burst') THEN 1 ELSE 0 END), 0) AS severe").
+				Select("b.bucket_index, COUNT(*) AS count, COALESCE(SUM(CASE WHEN b.degrade_class IN ('hard_tps', 'buffered_burst', 'missing_thinking') THEN 1 ELSE 0 END), 0) AS severe").
 				Where("b.bucket_index >= 0").Group("b.bucket_index").Order("b.bucket_index ASC").Scan(&bucketRows).Error; err != nil {
 				return err
 			}
@@ -916,14 +919,22 @@ func (r *AuditRepository) degradeClassifiedQuery(tx *gorm.DB, input repository.D
 	// NULLIF keeps PostgreSQL safe even if its planner evaluates the throughput
 	// expression before the duration guard in the WHERE clause.
 	tpsExpression := fmt.Sprintf("(CAST(a.output_tokens AS %s) * 1000.0 / NULLIF(%s, 0))", castType, generationExpression)
-	classExpression := fmt.Sprintf("CASE WHEN ? AND %s < ? THEN ? WHEN %s >= ? THEN ? ELSE ? END", generationExpression, tpsExpression)
+	selectTPS := fmt.Sprintf("CASE WHEN a.error_code = ? THEN 0 ELSE %s END", tpsExpression)
+	classExpression := fmt.Sprintf("CASE WHEN a.error_code = ? THEN ? WHEN ? AND %s < ? THEN ? WHEN %s >= ? THEN ? ELSE ? END", generationExpression, tpsExpression)
+	speedPredicate := fmt.Sprintf(
+		"a.streaming = ? AND %s AND a.output_tokens >= ? AND a.first_token_ms IS NOT NULL AND a.duration_ms > a.first_token_ms AND %s >= ?",
+		auditSuccessPredicate, tpsExpression,
+	)
+	thinkingPredicate := "a.streaming = ? AND a.error_code = ? AND a.status_code >= 200 AND a.status_code < 300"
 	query := tx.Table("request_audits AS a").
-		Select("a.id, a.request_id, a.account_id, a.account_name, a.egress_node_id, a.egress_node_name, a.output_tokens, a.created_at, a.model_upstream_model, "+tpsExpression+" AS tps, "+classExpression+" AS degrade_class",
-			input.FailClosed, input.MinGenerationMS, audit.DegradeClassBurst, input.HardTPS, audit.DegradeClassHard, audit.DegradeClassSoft).
-		Where("a.provider = ?", "grok_build").Where("a.streaming = ?", true).
-		Where(auditSuccessPredicate).Where("a.output_tokens >= ?", input.MinOutputTokens).
-		Where("a.first_token_ms IS NOT NULL").Where("a.duration_ms > a.first_token_ms").
-		Where("a.request_id NOT LIKE ?", "quality_%").Where(tpsExpression+" >= ?", input.SoftTPS)
+		Select("a.id, a.request_id, a.account_id, a.account_name, a.egress_node_id, a.egress_node_name, a.output_tokens, a.created_at, a.model_upstream_model, "+selectTPS+" AS tps, "+classExpression+" AS degrade_class",
+			audit.ErrorQualityDegraded,
+			audit.ErrorQualityDegraded, audit.DegradeClassThinking, input.FailClosed, input.MinGenerationMS, audit.DegradeClassBurst, input.HardTPS, audit.DegradeClassHard, audit.DegradeClassSoft).
+		Where("a.provider = ?", "grok_build").
+		Where("a.request_id NOT LIKE ?", "quality_%").
+		Where("(("+speedPredicate+") OR ("+thinkingPredicate+"))",
+			true, input.MinOutputTokens, input.SoftTPS,
+			true, audit.ErrorQualityDegraded)
 	if !input.Start.IsZero() {
 		query = query.Where("a.created_at >= ?", input.Start)
 	}
@@ -943,6 +954,7 @@ func (r *AuditRepository) degradeAccountAggregate(tx *gorm.DB, classified *gorm.
 			COALESCE(SUM(CASE WHEN d.degrade_class = 'buffered_burst' THEN 1 ELSE 0 END), 0) AS burst,
 			COALESCE(SUM(CASE WHEN d.degrade_class = 'soft_tps' THEN 1 ELSE 0 END), 0) AS soft,
 			COALESCE(SUM(CASE WHEN d.degrade_class = 'hard_tps' THEN 1 ELSE 0 END), 0) AS hard,
+			COALESCE(SUM(CASE WHEN d.degrade_class = 'missing_thinking' THEN 1 ELSE 0 END), 0) AS thinking,
 			MAX(d.created_at) AS last_seen,
 			COALESCE(p.enabled, FALSE) AS enabled,
 			CASE WHEN p.id IS NULL THEN FALSE ELSE TRUE END AS found,
