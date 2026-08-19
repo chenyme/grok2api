@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,6 +36,7 @@ func TestClassifyQualityHold(t *testing.T) {
 		{name: "visible 32 no think withhold", sig: QualityStreamSignals{VisibleTokens: 32, Terminal: true}, want: QualityWithhold},
 		{name: "output 40 no think withhold", sig: QualityStreamSignals{OutputTokens: 40, Terminal: true}, want: QualityWithhold},
 		{name: "short no think delivers", sig: QualityStreamSignals{VisibleTokens: 10, Terminal: true}, want: QualityDeliver},
+		{name: "empty terminal waits for transport handling", sig: QualityStreamSignals{Terminal: true}, want: QualityWait},
 		{name: "midstream enough content withhold", sig: QualityStreamSignals{VisibleTokens: 64}, want: QualityWithhold},
 		{name: "wait for more", sig: QualityStreamSignals{VisibleTokens: 8}, want: QualityWait},
 		{name: "hold expired short delivers", sig: QualityStreamSignals{VisibleTokens: 8, HoldExpired: true}, want: QualityDeliver},
@@ -459,6 +461,41 @@ func TestPeekQualityStreamHoldTimeoutEmptyDoesNotFailOpen(t *testing.T) {
 	}
 }
 
+func TestPeekQualityStreamEmptyEOFRequestsAnotherAccount(t *testing.T) {
+	t.Parallel()
+	replay, verdict, _, _, err := peekQualityStream(
+		context.Background(),
+		io.NopCloser(strings.NewReader("")),
+		qualityProtocolResponses,
+		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: time.Second},
+	)
+	if replay != nil {
+		defer replay.Close()
+	}
+	if !errors.Is(err, errQualityEmptyStream) {
+		t.Fatalf("peek error = %v, want empty stream", err)
+	}
+	if verdict != QualityWait {
+		t.Fatalf("verdict = %s, want wait", verdict)
+	}
+}
+
+func TestPeekQualityStreamProcessesUnterminatedFinalEvent(t *testing.T) {
+	t.Parallel()
+	body := io.NopCloser(strings.NewReader(`data: {"type":"response.output_text.delta","delta":"ok"}`))
+	replay, verdict, _, _, err := peekQualityStream(
+		context.Background(), body, qualityProtocolResponses,
+		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: time.Second},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Close()
+	if verdict != QualityDeliver {
+		t.Fatalf("verdict = %s, want deliver for a real short response", verdict)
+	}
+}
+
 func TestQualityPeekAbortErrorPrefersIdleCause(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancelCause(context.Background())
@@ -545,8 +582,8 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	responseRepo := relational.NewResponseRepository(database)
 	keyRepo := relational.NewClientKeyRepository(database)
 
-	credentials := make([]accountdomain.Credential, 0, 2)
-	for index, name := range []string{"quality-a", "quality-b"} {
+	credentials := make([]accountdomain.Credential, 0, 3)
+	for index, name := range []string{"quality-empty", "quality-no-think", "quality-thinking"} {
 		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, accountdomain.Credential{
 			Provider: accountdomain.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
 			EncryptedRefreshToken: "refresh-" + name, ExpiresAt: time.Now().Add(time.Hour),
@@ -585,15 +622,16 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 		"data: [DONE]",
 	)
 	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
-		credentials[0].ID: {{status: http.StatusOK, body: noThink}},
-		credentials[1].ID: {{status: http.StatusOK, body: thinking}},
+		credentials[0].ID: {{status: http.StatusOK, body: ""}},
+		credentials[1].ID: {{status: http.StatusOK, body: noThink}},
+		credentials[2].ID: {{status: http.StatusOK, body: thinking}},
 	}}
 	registry := provider.NewRegistry(adapter)
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
 	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
-	service.UpdateQualityRetry(QualityRetryRuntime{Enabled: true, MaxAttempts: 2, MinOutputTokens: 32, OnExhausted: qualityRetryFailOpen, HoldTimeout: time.Second})
+	service.UpdateQualityRetry(QualityRetryRuntime{Enabled: true, MaxAttempts: 3, MinOutputTokens: 32, OnExhausted: qualityRetryFailOpen, HoldTimeout: time.Second})
 
 	result, err := service.CreateChatCompletion(ctx, Input{
 		RequestID: "req-quality-hold", ClientKey: clientKey, PublicModel: "grok-4.6", Streaming: true,
@@ -615,8 +653,18 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 		t.Fatal("first no-think body must not be delivered")
 	}
 	attempts := adapter.Attempts()
-	if len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
-		t.Fatalf("expected account exclude+retry, attempts=%#v want [%d %d]", attempts, credentials[0].ID, credentials[1].ID)
+	if len(attempts) != 3 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID || attempts[2] != credentials[2].ID {
+		t.Fatalf("expected empty+no-think account exclusion and retry, attempts=%#v", attempts)
+	}
+	emptyAccount, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if emptyAccount.FailureCount != 1 || emptyAccount.CooldownUntil == nil {
+		t.Fatalf("empty stream account was not cooled: %#v", emptyAccount)
+	}
+	if remaining := time.Until(*emptyAccount.CooldownUntil); remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
+		t.Fatalf("empty stream cooldown = %s, want about 24h", remaining)
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 20)
 	if err != nil {
@@ -624,7 +672,7 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	}
 	var degraded, delivered bool
 	for _, rec := range logs {
-		if rec.ErrorCode == ErrorQualityDegraded && rec.AccountID != nil && *rec.AccountID == credentials[0].ID {
+		if rec.ErrorCode == ErrorQualityDegraded && rec.AccountID != nil && *rec.AccountID == credentials[1].ID {
 			degraded = true
 		}
 		if rec.RequestID == "req-quality-hold" && rec.ErrorCode == "" && rec.StatusCode == http.StatusOK {

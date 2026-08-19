@@ -23,9 +23,15 @@ const (
 	defaultQualityMaxAttempts = 6
 	defaultQualityHoldTimeout = 3 * time.Second
 	defaultQualityMinOutput   = int64(32)
+	// An empty stream that idles while held is treated as an account-quality
+	// failure: the request can still rotate before any bytes reach the client.
+	qualityIdleAccountCooldown = 24 * time.Hour
 )
 
-var errQualityDegraded = errors.New("上游响应缺少推理")
+var (
+	errQualityDegraded    = errors.New("上游响应缺少推理")
+	errQualityEmptyStream = errors.New("上游流式响应为空")
+)
 
 // QualityRetryRuntime is the isolated request-path withhold/retry policy.
 // Zero Enabled leaves production behavior unchanged.
@@ -115,6 +121,9 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 	}
 	enough := output >= minOutput
 	if sig.Terminal {
+		if output <= 0 {
+			return QualityWait
+		}
 		if enough {
 			return QualityWithhold
 		}

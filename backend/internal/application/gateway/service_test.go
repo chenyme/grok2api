@@ -379,7 +379,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	selector.accounts = healthBlocker
 	finalized := make(chan struct{})
 	go func() {
-		interrupted.Finalize(Usage{}, "", "upstream_stream_incomplete")
+		interrupted.Finalize(Usage{}, "", "upstream_stream_idle_timeout")
 		close(finalized)
 	}()
 	select {
@@ -402,8 +402,12 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 	_ = interrupted.Body.Close()
 	interruptedAccount, err := accountRepo.Get(ctx, adapter.attempts[0])
-	if err != nil || interruptedAccount.FailureCount != 0 || interruptedAccount.CooldownUntil == nil {
+	if err != nil || interruptedAccount.FailureCount != 1 || interruptedAccount.CooldownUntil == nil {
 		t.Fatalf("interrupted account health = %#v, err=%v", interruptedAccount, err)
+	}
+	remaining := time.Until(*interruptedAccount.CooldownUntil)
+	if remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
+		t.Fatalf("idle stream cooldown = %s, want about 24h", remaining)
 	}
 }
 
@@ -4296,5 +4300,23 @@ func TestIsUpstreamStreamFailureIncludesIdleTimeout(t *testing.T) {
 	}
 	if isUpstreamStreamFailure("") || isUpstreamStreamFailure("quality_degraded") {
 		t.Fatal("non-stream codes must not look like mid-stream failures")
+	}
+}
+
+func TestStreamFailureHealthPenaltyOnlyLongCoolsTrulyEmptyIdle(t *testing.T) {
+	t.Parallel()
+	status, cooldown := streamFailureHealthPenalty("upstream_stream_idle_timeout", Usage{})
+	if status != http.StatusGatewayTimeout || cooldown != qualityIdleAccountCooldown {
+		t.Fatalf("empty idle penalty = (%d, %s)", status, cooldown)
+	}
+	for _, usage := range []Usage{
+		{OutputObserved: true},
+		{OutputTokens: 1},
+		{ReasoningTokens: 1},
+	} {
+		status, cooldown = streamFailureHealthPenalty("upstream_stream_idle_timeout", usage)
+		if status != 0 || cooldown != 0 {
+			t.Fatalf("non-empty idle usage %#v received long penalty (%d, %s)", usage, status, cooldown)
+		}
 	}
 }

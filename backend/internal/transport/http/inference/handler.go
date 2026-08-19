@@ -1291,15 +1291,30 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 	markerFilter := internalSSEMarkerFilter{enabled: protocol == streamProtocolChat}
 	var compat responsesCompatState
 	buffer := make([]byte, responseCopyBufferBytes)
+	received := 0
 	transferred := 0
 	for {
 		n, readErr := source.Read(buffer)
 		if n > 0 {
+			if received+n > maxStreamResponseTransferBytes {
+				return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
+			}
+			received += n
 			chunk := buffer[:n]
-			inspector.Inspect(chunk)
+			if protocol == streamProtocolChat {
+				// The internal reasoning marker is intentionally removed before
+				// forwarding, but still counts as generation start.
+				inspector.Inspect(chunk)
+			}
 			chunk = markerFilter.Filter(chunk, false)
 			if protocol == streamProtocolResponses {
 				chunk = rewriteResponsesStreamChunk(chunk, &compat)
+			}
+			if protocol != streamProtocolChat {
+				// Inspect the actual downstream representation so compatibility
+				// fields such as generated item IDs participate in timing and
+				// output-observed classification.
+				inspector.Inspect(chunk)
 			}
 			if transferred+len(chunk) > maxStreamResponseTransferBytes {
 				return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
@@ -1330,33 +1345,58 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 				writer.Flush()
 				transferred += len(tail)
 			}
-			inspector.markFirstTokenForwarded()
-			if errors.Is(readErr, io.EOF) {
-				inspector.Finish()
-				return inspector.Metadata(), inspector.TerminalError()
-			}
-			if inspector.terminalSuccess {
-				return inspector.Metadata(), nil
-			}
-			compat.rememberFromMeta(inspector.Metadata())
-			if trailer := streamAbortTrailer(protocol, readErr, inspector.Metadata(), &compat); len(trailer) > 0 {
-				if transferred+len(trailer) <= maxStreamResponseTransferBytes {
-					if err := setResponseWriteDeadline(writer); err == nil {
-						if _, err := writer.Write(trailer); err == nil {
-							writer.Flush()
-						}
+			if protocol == streamProtocolResponses {
+				if tail := flushResponsesStreamTail(&compat); len(tail) > 0 {
+					inspector.Inspect(tail)
+					if transferred+len(tail) > maxStreamResponseTransferBytes {
+						return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
 					}
+					if err := setResponseWriteDeadline(writer); err != nil {
+						return inspector.Metadata(), err
+					}
+					if _, err := writer.Write(tail); err != nil {
+						return inspector.Metadata(), err
+					}
+					writer.Flush()
+					transferred += len(tail)
 				}
 			}
+			inspector.Finish()
+			inspector.markFirstTokenForwarded()
+			terminalErr := inspector.TerminalError()
+			if terminalErr == nil || errors.Is(terminalErr, errUpstreamStreamFailed) {
+				return inspector.Metadata(), terminalErr
+			}
+			if errors.Is(readErr, io.EOF) {
+				writeStreamAbortTrailer(writer, protocol, terminalErr, inspector.Metadata(), &compat, transferred)
+				return inspector.Metadata(), terminalErr
+			}
+			writeStreamAbortTrailer(writer, protocol, readErr, inspector.Metadata(), &compat, transferred)
 			return inspector.Metadata(), fmt.Errorf("%w: %w", errUpstreamStreamRead, readErr)
 		}
 	}
 }
 
+func writeStreamAbortTrailer(writer gin.ResponseWriter, protocol streamProtocol, cause error, meta responseMetadata, compat *responsesCompatState, transferred int) {
+	trailer := streamAbortTrailer(protocol, cause, meta, compat)
+	if len(trailer) == 0 || transferred+len(trailer) > maxStreamResponseTransferBytes {
+		return
+	}
+	if err := setResponseWriteDeadline(writer); err != nil {
+		return
+	}
+	if _, err := writer.Write(trailer); err == nil {
+		writer.Flush()
+	}
+}
+
 func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetadata, compat *responsesCompatState) []byte {
 	code, message := "upstream_stream_interrupted", "上游流式响应中断"
-	if errors.Is(cause, neterror.ErrUpstreamStreamIdleTimeout) {
+	switch {
+	case errors.Is(cause, neterror.ErrUpstreamStreamIdleTimeout):
 		code, message = "upstream_stream_idle_timeout", "上游流式响应长时间无数据"
+	case errors.Is(cause, errUpstreamStreamIncomplete):
+		code, message = "upstream_stream_incomplete", "上游流式响应未完整结束"
 	}
 	switch protocol {
 	case streamProtocolChat:
@@ -1513,6 +1553,13 @@ func (i *responseInspector) Inspect(chunk []byte) {
 		index := bytes.IndexByte(i.pending, '\n')
 		if index < 0 {
 			if len(i.pending) > maxStreamEventInspectionBytes {
+				// The line has already been forwarded by copyStream. Treat an
+				// oversized SSE data line as observed output conservatively so a
+				// later idle timeout cannot misclassify a non-empty response and
+				// apply the long empty-stream cooldown.
+				if bytes.HasPrefix(bytes.TrimSpace(i.pending), []byte("data:")) {
+					i.metadata.Usage.OutputObserved = true
+				}
 				i.pending = nil
 			}
 			return
@@ -1525,6 +1572,9 @@ func (i *responseInspector) Inspect(chunk []byte) {
 		}
 		if bytes.HasPrefix(line, []byte("data:")) {
 			value := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			if containsGeneratedDelta(value, i.protocol) {
+				i.metadata.Usage.OutputObserved = true
+			}
 			i.observeFirstToken(value)
 			i.observeTerminal(value)
 			if !bytes.Equal(value, []byte("[DONE]")) {

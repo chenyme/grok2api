@@ -117,7 +117,10 @@ type Usage struct {
 	// zero value used when a response fails before usage is available. Token
 	// counts may legitimately all be zero, so the numeric fields cannot carry
 	// this presence information by themselves.
-	Reported               bool
+	Reported bool
+	// OutputObserved records that the transport actually forwarded generated
+	// content even when an interrupted upstream never emitted final usage.
+	OutputObserved         bool
 	InputTokens            int64
 	CachedInputTokens      int64
 	OutputTokens           int64
@@ -1038,11 +1041,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				lease.completeSelectorObservation(successful)
 				budget := newFinalizationBudget(string(operation), string(route.Provider))
 				if isUpstreamStreamFailure(errorCode) {
-					status, retryAfter := 0, time.Duration(0)
-					if errorCode == "upstream_stream_idle_timeout" && usage.OutputTokens == 0 && usage.ReasoningTokens == 0 {
-						status = http.StatusGatewayTimeout
-						retryAfter = 24 * time.Hour
-					}
+					status, retryAfter := streamFailureHealthPenalty(errorCode, usage)
 					if err := budget.run("account_health", finalizationHealthBudget, func(stageCtx context.Context) error {
 						return s.selector.MarkFailureAfterSuccess(stageCtx, credential, status, retryAfter)
 					}); err != nil {
@@ -1513,12 +1512,16 @@ attemptLoop:
 						break
 					}
 					lastFailure = newTransportUpstreamFailure(peekErr, credential.ID, credential.Name)
-					if neterrorpkg.IsUpstreamStreamIdleTimeout(peekErr) || neterrorpkg.IsUpstreamStreamIdleTimeout(context.Cause(ctx)) {
+					if neterrorpkg.IsUpstreamStreamIdleTimeout(peekErr) || neterrorpkg.IsUpstreamStreamIdleTimeout(context.Cause(ctx)) || errors.Is(peekErr, errQualityEmptyStream) {
+						logPrefix := "quality_peek_idle"
+						if errors.Is(peekErr, errQualityEmptyStream) {
+							logPrefix = "quality_peek_empty"
+						}
 						writeCtx, writeCancel := context.WithTimeout(context.WithoutCancel(ctx), finalizationTimeout)
-						if markErr := s.selector.MarkFailureAfterSuccess(writeCtx, credential, http.StatusGatewayTimeout, 24*time.Hour); markErr != nil {
-							s.logger.Warn("quality_peek_idle_cooldown_failed", "request_id", input.RequestID, "account_id", credential.ID, "error", markErr)
+						if markErr := s.selector.MarkFailureAfterSuccess(writeCtx, credential, http.StatusGatewayTimeout, qualityIdleAccountCooldown); markErr != nil {
+							s.logger.Warn(logPrefix+"_cooldown_failed", "request_id", input.RequestID, "account_id", credential.ID, "error", markErr)
 						} else {
-							s.logger.Warn("quality_peek_idle_retry", "request_id", input.RequestID, "account_id", credential.ID, "cooldown", "24h0m0s")
+							s.logger.Warn(logPrefix+"_retry", "request_id", input.RequestID, "account_id", credential.ID, "cooldown", qualityIdleAccountCooldown)
 						}
 						writeCancel()
 					}
@@ -1658,6 +1661,13 @@ func isUpstreamStreamFailure(errorCode string) bool {
 	default:
 		return false
 	}
+}
+
+func streamFailureHealthPenalty(errorCode string, usage Usage) (int, time.Duration) {
+	if errorCode == "upstream_stream_idle_timeout" && !usage.OutputObserved && usage.OutputTokens == 0 && usage.ReasoningTokens == 0 {
+		return http.StatusGatewayTimeout, qualityIdleAccountCooldown
+	}
+	return 0, 0
 }
 
 // auditRequestSucceeded keeps transport truth (the HTTP status) separate from
@@ -1956,7 +1966,7 @@ func shouldStopForNonAccountFingerprint(fingerprints map[string]int, failure *Up
 	}
 	fingerprints[failure.Fingerprint]++
 	limit := nonAccountFailureFingerprintLimit
-	if failure.Code == "upstream_stream_idle_timeout" || failure.Fingerprint == "upstream_stream_idle_timeout" {
+	if failure.Code == "upstream_stream_idle_timeout" || failure.Fingerprint == "upstream_stream_idle_timeout" || failure.Code == "upstream_stream_empty" || failure.Fingerprint == "upstream_stream_empty" {
 		limit = streamIdleFailureFingerprintLimit
 	}
 	return fingerprints[failure.Fingerprint] >= limit
