@@ -1282,20 +1282,40 @@ type responseMetadata struct {
 	cacheCreationInputTokens int64
 	ResponseID               string
 	Model                    string
+	SequenceNumber           int64
 	StreamFailure            *gateway.StreamFailureDiagnostic
 }
 
 func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol, onFirstToken func()) (responseMetadata, error) {
 	inspector := &responseInspector{protocol: protocol, onFirstToken: onFirstToken}
 	markerFilter := internalSSEMarkerFilter{enabled: protocol == streamProtocolChat}
+	var compat responsesCompatState
 	buffer := make([]byte, responseCopyBufferBytes)
+	received := 0
 	transferred := 0
 	for {
 		n, readErr := source.Read(buffer)
 		if n > 0 {
+			if received+n > maxStreamResponseTransferBytes {
+				return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
+			}
+			received += n
 			chunk := buffer[:n]
-			inspector.Inspect(chunk)
+			if protocol == streamProtocolChat {
+				// The internal reasoning marker is intentionally removed before
+				// forwarding, but still counts as generation start.
+				inspector.Inspect(chunk)
+			}
 			chunk = markerFilter.Filter(chunk, false)
+			if protocol == streamProtocolResponses {
+				chunk = rewriteResponsesStreamChunk(chunk, &compat)
+			}
+			if protocol != streamProtocolChat {
+				// Inspect the actual downstream representation so compatibility
+				// fields such as generated item IDs participate in timing and
+				// output-observed classification.
+				inspector.Inspect(chunk)
+			}
 			if transferred+len(chunk) > maxStreamResponseTransferBytes {
 				return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
 			}
@@ -1325,16 +1345,115 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 				writer.Flush()
 				transferred += len(tail)
 			}
+			if protocol == streamProtocolResponses {
+				if tail := flushResponsesStreamTail(&compat); len(tail) > 0 {
+					inspector.Inspect(tail)
+					if transferred+len(tail) > maxStreamResponseTransferBytes {
+						return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
+					}
+					if err := setResponseWriteDeadline(writer); err != nil {
+						return inspector.Metadata(), err
+					}
+					if _, err := writer.Write(tail); err != nil {
+						return inspector.Metadata(), err
+					}
+					writer.Flush()
+					transferred += len(tail)
+				}
+			}
+			inspector.Finish()
 			inspector.markFirstTokenForwarded()
+			terminalErr := inspector.TerminalError()
+			if terminalErr == nil || errors.Is(terminalErr, errUpstreamStreamFailed) {
+				return inspector.Metadata(), terminalErr
+			}
 			if errors.Is(readErr, io.EOF) {
-				inspector.Finish()
-				return inspector.Metadata(), inspector.TerminalError()
+				writeStreamAbortTrailer(writer, protocol, terminalErr, inspector.Metadata(), &compat, transferred)
+				return inspector.Metadata(), terminalErr
 			}
-			if inspector.terminalSuccess {
-				return inspector.Metadata(), nil
-			}
+			writeStreamAbortTrailer(writer, protocol, readErr, inspector.Metadata(), &compat, transferred)
 			return inspector.Metadata(), fmt.Errorf("%w: %w", errUpstreamStreamRead, readErr)
 		}
+	}
+}
+
+func writeStreamAbortTrailer(writer gin.ResponseWriter, protocol streamProtocol, cause error, meta responseMetadata, compat *responsesCompatState, transferred int) {
+	trailer := streamAbortTrailer(protocol, cause, meta, compat)
+	if len(trailer) == 0 || transferred+len(trailer) > maxStreamResponseTransferBytes {
+		return
+	}
+	if err := setResponseWriteDeadline(writer); err != nil {
+		return
+	}
+	if _, err := writer.Write(trailer); err == nil {
+		writer.Flush()
+	}
+}
+
+func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetadata, compat *responsesCompatState) []byte {
+	code, message := "upstream_stream_interrupted", "上游流式响应中断"
+	switch {
+	case errors.Is(cause, neterror.ErrUpstreamStreamIdleTimeout):
+		code, message = "upstream_stream_idle_timeout", "上游流式响应长时间无数据"
+	case errors.Is(cause, errUpstreamStreamIncomplete):
+		code, message = "upstream_stream_incomplete", "上游流式响应未完整结束"
+	}
+	switch protocol {
+	case streamProtocolChat:
+		payload, err := json.Marshal(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"code":    code,
+				"message": message,
+				"type":    "server_error",
+			},
+		})
+		if err != nil {
+			return []byte("data: [DONE]\n\n")
+		}
+		return []byte("data: " + string(payload) + "\n\ndata: [DONE]\n\n")
+	case streamProtocolResponses:
+		if compat == nil {
+			compat = &responsesCompatState{}
+		}
+		compat.rememberFromMeta(meta)
+		id := compat.ensureID()
+		response := map[string]any{
+			"id":                 id,
+			"object":             "response",
+			"created_at":         compat.createdAt,
+			"completed_at":       compat.createdAt,
+			"status":             "incomplete",
+			"output":             []any{},
+			"error":              nil,
+			"incomplete_details": map[string]any{"reason": code},
+		}
+		if model := strings.TrimSpace(meta.Model); model != "" {
+			response["model"] = model
+		}
+		event := map[string]any{
+			"type":            "response.incomplete",
+			"id":              id,
+			"sequence_number": meta.SequenceNumber + 1,
+			"response":        response,
+		}
+		sanitizeResponsesEvent(event, compat)
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return nil
+		}
+		return []byte("event: response.incomplete\ndata: " + string(payload) + "\n\n")
+	case streamProtocolAnthropic:
+		payload, err := json.Marshal(map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": "api_error", "message": message},
+		})
+		if err != nil {
+			return nil
+		}
+		return []byte("event: error\ndata: " + string(payload) + "\n\n")
+	default:
+		return nil
 	}
 }
 
@@ -1434,6 +1553,13 @@ func (i *responseInspector) Inspect(chunk []byte) {
 		index := bytes.IndexByte(i.pending, '\n')
 		if index < 0 {
 			if len(i.pending) > maxStreamEventInspectionBytes {
+				// The line has already been forwarded by copyStream. Treat an
+				// oversized SSE data line as observed output conservatively so a
+				// later idle timeout cannot misclassify a non-empty response and
+				// apply the long empty-stream cooldown.
+				if bytes.HasPrefix(bytes.TrimSpace(i.pending), []byte("data:")) {
+					i.metadata.Usage.OutputObserved = true
+				}
 				i.pending = nil
 			}
 			return
@@ -1446,6 +1572,9 @@ func (i *responseInspector) Inspect(chunk []byte) {
 		}
 		if bytes.HasPrefix(line, []byte("data:")) {
 			value := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+			if containsGeneratedDelta(value, i.protocol) {
+				i.metadata.Usage.OutputObserved = true
+			}
 			i.observeFirstToken(value)
 			i.observeTerminal(value)
 			if !bytes.Equal(value, []byte("[DONE]")) {
@@ -1458,6 +1587,9 @@ func (i *responseInspector) Inspect(chunk []byte) {
 				}
 				if metadata.ResponseID != "" {
 					i.metadata.ResponseID = metadata.ResponseID
+				}
+				if metadata.SequenceNumber > i.metadata.SequenceNumber {
+					i.metadata.SequenceNumber = metadata.SequenceNumber
 				}
 				if metadata.Model != "" {
 					i.metadata.Model = metadata.Model
@@ -1784,7 +1916,7 @@ func extractMetadata(data []byte) responseMetadata {
 	if json.Unmarshal(data, &root) != nil {
 		return responseMetadata{}
 	}
-	metadata := responseMetadata{ResponseID: root.ID, Model: root.Model}
+	metadata := responseMetadata{ResponseID: root.ID, Model: root.Model, SequenceNumber: root.SequenceNumber}
 	usage := root.Usage
 	if root.Response != nil {
 		if metadata.ResponseID == "" {
@@ -1792,6 +1924,9 @@ func extractMetadata(data []byte) responseMetadata {
 		}
 		if metadata.Model == "" {
 			metadata.Model = root.Response.Model
+		}
+		if metadata.SequenceNumber == 0 {
+			metadata.SequenceNumber = root.Response.SequenceNumber
 		}
 		if usage == nil {
 			usage = root.Response.Usage
@@ -1806,10 +1941,11 @@ func extractMetadata(data []byte) responseMetadata {
 }
 
 type responsePayloadDTO struct {
-	ID       string              `json:"id"`
-	Model    string              `json:"model"`
-	Usage    *responseUsageDTO   `json:"usage"`
-	Response *responsePayloadDTO `json:"response"`
+	ID             string              `json:"id"`
+	Model          string              `json:"model"`
+	SequenceNumber int64               `json:"sequence_number"`
+	Usage          *responseUsageDTO   `json:"usage"`
+	Response       *responsePayloadDTO `json:"response"`
 }
 
 type responseUsageDTO struct {
