@@ -25,6 +25,8 @@ var (
 	ErrProbeStale              = errors.New("代理配置在探测期间已更新，请重新测试")
 	ErrQualityProbeUnavailable = errors.New("出口质量探测不可用")
 	ErrQualityProbeNoAccount   = errors.New("质量检测暂无可调度账号")
+	ErrQualityLeaseUnavailable = errors.New("租约级质量隔离不可用")
+	ErrQualityLeaseConflict    = errors.New("租约状态已变化")
 	ErrClearanceUnavailable    = errors.New("Clearance 刷新不可用")
 	ErrProxyProfileUnavailable = errors.New("共享代理配置功能不可用")
 	ErrProxyProfileInUse       = errors.New("共享代理配置仍被节点使用")
@@ -42,6 +44,7 @@ const (
 
 type QualityProbeInput struct {
 	ClientKeyID     uint64
+	AccountID       uint64
 	Model           string
 	Prompt          string
 	Expected        string
@@ -116,6 +119,7 @@ type Service struct {
 	repository                  ServiceRepository
 	proxyProfiles               repository.EgressProxyProfileRepository
 	accounts                    AccountBindingRepository
+	qualityLeases               QualityLeaseRepository
 	operations                  OperationsRepository
 	cipher                      *security.Cipher
 	mu                          sync.RWMutex
@@ -129,6 +133,25 @@ type Service struct {
 	assignmentRunning           bool
 	autoAssignMaxNodeShare      float64
 	autoAssignMaxMigrationShare float64
+}
+
+// QualityLeaseRepository is optional and deliberately separate from account
+// binding administration. It exposes only the state required to isolate one
+// account-bound proxy lease.
+type QualityLeaseRepository interface {
+	Get(context.Context, uint64) (accountdomain.Credential, error)
+	ListEgressLeaseBlocks(context.Context, int, *accountdomain.EgressLeaseBlockCursor) ([]accountdomain.EgressLeaseBlock, error)
+	UpsertEgressLeaseBlock(context.Context, accountdomain.EgressLeaseBlock) (accountdomain.EgressLeaseBlock, error)
+	DeleteEgressLeaseBlock(context.Context, uint64, uint64, string) (bool, error)
+	DeleteEgressLeaseBlocksByNodes(context.Context, []uint64) (int64, error)
+	PruneInvalidEgressLeaseBlocks(context.Context, int) (int64, error)
+}
+
+type QualityLeaseInput struct {
+	AccountID         uint64
+	NodeID            uint64
+	Reason            string
+	QuarantineSeconds int
 }
 
 func (s *Service) SetQualityProber(value QualityProber) {
@@ -173,6 +196,15 @@ func (s *Service) ProbeQuality(ctx context.Context, nodeID uint64, input Quality
 	}
 	if node.Scope != domain.ScopeBuild || strings.TrimSpace(node.EncryptedProxyURL) == "" {
 		return QualityProbeResult{}, fmt.Errorf("%w: 质量探测仅支持已配置代理的 grok_build 节点", ErrInvalidInput)
+	}
+	if input.AccountID != 0 {
+		if !s.accountBoundProxy(node) || s.qualityLeases == nil {
+			return QualityProbeResult{}, fmt.Errorf("%w: 账号定向探测仅支持按账号派生代理的节点", ErrInvalidInput)
+		}
+		credential, loadErr := s.qualityLeases.Get(ctx, input.AccountID)
+		if loadErr != nil || credential.Provider != accountdomain.ProviderBuild || !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || credential.EgressNodeID != nodeID {
+			return QualityProbeResult{}, ErrQualityProbeNoAccount
+		}
 	}
 	s.mu.RLock()
 	prober := s.qualityProber
@@ -241,8 +273,109 @@ func NewService(storage ServiceRepository, cipher *security.Cipher, browserUA st
 	}
 	if len(accounts) > 0 {
 		service.accounts = accounts[0]
+		if leases, ok := accounts[0].(QualityLeaseRepository); ok {
+			service.qualityLeases = leases
+		}
 	}
 	return service
+}
+
+func (s *Service) ListQualityLeases(ctx context.Context, limit int, cursor *accountdomain.EgressLeaseBlockCursor) ([]accountdomain.EgressLeaseBlock, error) {
+	if s.qualityLeases == nil {
+		return nil, ErrQualityLeaseUnavailable
+	}
+	if limit < 1 || limit > 1001 {
+		return nil, ErrInvalidInput
+	}
+	if cursor == nil {
+		for range 10 {
+			pruned, err := s.qualityLeases.PruneInvalidEgressLeaseBlocks(ctx, 1000)
+			if err != nil {
+				return nil, err
+			}
+			if pruned < 1000 {
+				break
+			}
+		}
+		nodes, err := s.repository.ListEgressNodes(ctx, domain.ScopeBuild, repository.SortQuery{})
+		if err != nil {
+			return nil, err
+		}
+		staleNodeIDs := make([]uint64, 0)
+		for _, node := range nodes {
+			if !node.Enabled || !s.accountBoundProxy(node) {
+				staleNodeIDs = append(staleNodeIDs, node.ID)
+			}
+		}
+		if _, err := s.qualityLeases.DeleteEgressLeaseBlocksByNodes(ctx, staleNodeIDs); err != nil {
+			return nil, err
+		}
+	}
+	return s.qualityLeases.ListEgressLeaseBlocks(ctx, limit, cursor)
+}
+
+func (s *Service) QuarantineQualityLease(ctx context.Context, input QualityLeaseInput) (accountdomain.EgressLeaseBlock, error) {
+	input.Reason = strings.TrimSpace(input.Reason)
+	if input.AccountID == 0 || input.NodeID == 0 || input.QuarantineSeconds < 30 || input.QuarantineSeconds > 86400 || !qualityLeaseReasonAllowed(input.Reason) {
+		return accountdomain.EgressLeaseBlock{}, ErrInvalidInput
+	}
+	if s.qualityLeases == nil {
+		return accountdomain.EgressLeaseBlock{}, ErrQualityLeaseUnavailable
+	}
+	node, err := s.repository.GetEgressNode(ctx, input.NodeID)
+	if errors.Is(err, repository.ErrNotFound) {
+		return accountdomain.EgressLeaseBlock{}, ErrNotFound
+	}
+	if err != nil {
+		return accountdomain.EgressLeaseBlock{}, err
+	}
+	if !node.Enabled || node.Scope != domain.ScopeBuild || !s.accountBoundProxy(node) {
+		return accountdomain.EgressLeaseBlock{}, ErrInvalidInput
+	}
+	credential, err := s.qualityLeases.Get(ctx, input.AccountID)
+	if err != nil || credential.Provider != accountdomain.ProviderBuild || !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || credential.EgressNodeID != input.NodeID {
+		return accountdomain.EgressLeaseBlock{}, ErrQualityLeaseConflict
+	}
+	version, err := security.NewOpaqueToken(18)
+	if err != nil {
+		return accountdomain.EgressLeaseBlock{}, err
+	}
+	now := time.Now().UTC()
+	value, err := s.qualityLeases.UpsertEgressLeaseBlock(ctx, accountdomain.EgressLeaseBlock{
+		AccountID: input.AccountID, NodeID: input.NodeID, Reason: input.Reason, Version: version,
+		CooldownUntil: now.Add(time.Duration(input.QuarantineSeconds) * time.Second), UpdatedAt: now,
+	})
+	if errors.Is(err, repository.ErrConflict) || errors.Is(err, repository.ErrNotFound) {
+		return accountdomain.EgressLeaseBlock{}, ErrQualityLeaseConflict
+	}
+	return value, err
+}
+
+func (s *Service) RestoreQualityLease(ctx context.Context, accountID, nodeID uint64, version string) (bool, error) {
+	version = strings.TrimSpace(version)
+	if accountID == 0 || nodeID == 0 || version == "" || len(version) > 64 {
+		return false, ErrInvalidInput
+	}
+	if s.qualityLeases == nil {
+		return false, ErrQualityLeaseUnavailable
+	}
+	restored, err := s.qualityLeases.DeleteEgressLeaseBlock(ctx, accountID, nodeID, version)
+	if err != nil {
+		return false, err
+	}
+	if !restored {
+		return false, ErrQualityLeaseConflict
+	}
+	return true, nil
+}
+
+func qualityLeaseReasonAllowed(value string) bool {
+	switch value {
+	case "hard_tps", "soft_tps", "buffered_burst", "missing_thinking", "expected_marker_missing", "insufficient_output_tokens", "insufficient_generation_window", "probe_errors", "recovery_probe_error", "rotation_error":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) UpdateDefaults(browserUA string) {
@@ -368,6 +501,7 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 		return domain.PublicNode{}, err
 	}
 	previousScope := value.Scope
+	previousProxyURL := value.EncryptedProxyURL
 	value, err = s.applyInput(value, input, false)
 	if err != nil {
 		return domain.PublicNode{}, err
@@ -386,6 +520,11 @@ func (s *Service) Update(ctx context.Context, id uint64, input Input) (domain.Pu
 	}
 	if err == nil {
 		s.forgetClearance(updated.ID)
+		if !updated.Enabled || previousScope != updated.Scope || previousProxyURL != updated.EncryptedProxyURL {
+			if clearErr := s.clearQualityLeasesForNodes(ctx, []uint64{updated.ID}); clearErr != nil {
+				return s.publicNode(updated), clearErr
+			}
+		}
 	}
 	return s.publicNode(updated), err
 }
@@ -503,6 +642,9 @@ func (s *Service) UpdateProxyProfile(ctx context.Context, id uint64, input Proxy
 	}
 	if proxyChanged {
 		s.forgetClearances(nodeIDs)
+		if err := s.clearQualityLeasesForNodes(ctx, nodeIDs); err != nil {
+			return s.publicProxyProfile(updated), err
+		}
 	}
 	return s.publicProxyProfile(updated), nil
 }
@@ -695,6 +837,11 @@ func (s *Service) UpdateManyEnabled(ctx context.Context, nodeIDs []uint64, enabl
 		}
 		if updated > 0 {
 			s.forgetClearances(ids)
+			if !enabled {
+				if clearErr := s.clearQualityLeasesForNodes(ctx, ids); clearErr != nil {
+					return updated, clearErr
+				}
+			}
 		}
 		return updated, nil
 	}
@@ -718,7 +865,20 @@ func (s *Service) UpdateManyEnabled(ctx context.Context, nodeIDs []uint64, enabl
 		s.forgetClearance(id)
 		updated++
 	}
+	if !enabled && updated > 0 {
+		if err := s.clearQualityLeasesForNodes(ctx, ids); err != nil {
+			return updated, err
+		}
+	}
 	return updated, nil
+}
+
+func (s *Service) clearQualityLeasesForNodes(ctx context.Context, nodeIDs []uint64) error {
+	if s.qualityLeases == nil || len(nodeIDs) == 0 {
+		return nil
+	}
+	_, err := s.qualityLeases.DeleteEgressLeaseBlocksByNodes(ctx, uniqueIDs(nodeIDs))
+	return err
 }
 
 func (s *Service) Delete(ctx context.Context, id uint64) error {
