@@ -391,6 +391,12 @@ func peekQualityStream(ctx context.Context, body io.ReadCloser, protocol string,
 		if verdict := ClassifyQualityHold(sig, cfg.MinOutputTokens); verdict != QualityWait {
 			return newPrefixReplay(&held, pump), verdict, state.usage, state.responseID, nil
 		}
+		// A completed empty stream must rotate immediately. Waiting for idle
+		// timeout after response.completed / [DONE] surfaces HTTP 200 with 0
+		// tokens and makes Grok TUI retry for 50–120s.
+		if sig.Terminal {
+			return finishQualityPeek(&held, pump, &state, cfg)
+		}
 
 		select {
 		case <-ctx.Done():

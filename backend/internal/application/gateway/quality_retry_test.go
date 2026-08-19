@@ -548,6 +548,48 @@ func TestPeekQualityStreamHoldTimeoutEmptyDoesNotFailOpen(t *testing.T) {
 	}
 }
 
+func TestPeekQualityStreamEmptyCompletedRetriesWithoutIdle(t *testing.T) {
+	t.Parallel()
+	started := time.Now()
+	replay, verdict, _, _, err := peekQualityStream(
+		context.Background(),
+		io.NopCloser(strings.NewReader(sse(
+			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":0}}}`,
+		))),
+		qualityProtocolResponses,
+		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: 2 * time.Second},
+	)
+	if replay != nil {
+		defer replay.Close()
+	}
+	if !errors.Is(err, errQualityEmptyStream) {
+		t.Fatalf("peek error = %v, want empty stream", err)
+	}
+	if verdict != QualityWait {
+		t.Fatalf("verdict = %s, want wait so the attempt loop retries as transport", verdict)
+	}
+	if time.Since(started) > 500*time.Millisecond {
+		t.Fatalf("empty completed stream waited %s, want immediate retry", time.Since(started))
+	}
+
+	started = time.Now()
+	replay, verdict, _, _, err = peekQualityStream(
+		context.Background(),
+		io.NopCloser(strings.NewReader(sse("data: [DONE]"))),
+		qualityProtocolChat,
+		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: 2 * time.Second},
+	)
+	if replay != nil {
+		defer replay.Close()
+	}
+	if !errors.Is(err, errQualityEmptyStream) {
+		t.Fatalf("chat empty [DONE] peek error = %v, want empty stream", err)
+	}
+	if time.Since(started) > 500*time.Millisecond {
+		t.Fatalf("empty chat [DONE] waited %s, want immediate retry", time.Since(started))
+	}
+}
+
 func TestPeekQualityStreamEmptyEOFRequestsAnotherAccount(t *testing.T) {
 	t.Parallel()
 	replay, verdict, _, _, err := peekQualityStream(
