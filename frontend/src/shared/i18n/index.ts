@@ -853,9 +853,10 @@ const resources = {
       audits: {
         title: "请求审计",
         description: "成功请求仅记录元数据；失败请求保留经过脱敏和裁剪的诊断快照。",
-        search: "搜索请求 ID、模型或出口节点",
+        search: "搜索请求 ID、模型、客户端 IP 或出口节点",
         request: "请求",
         requestId: "请求 ID",
+        clientIp: "客户端 IP",
         channelProtocol: "渠道 · 协议",
         route: "路由",
         status: "状态",
@@ -1605,9 +1606,10 @@ const resources = {
       audits: {
         title: "Request audits",
         description: "Successful requests store metadata only. Failed requests retain a redacted and size-limited diagnostic snapshot.",
-        search: "Search request ID, model, or egress node",
+        search: "Search request ID, model, client IP, or egress node",
         request: "Request",
         requestId: "Request ID",
+        clientIp: "Client IP",
         channelProtocol: "Channel · Protocol",
         route: "Route",
         status: "Status",

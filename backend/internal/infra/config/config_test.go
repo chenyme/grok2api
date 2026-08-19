@@ -425,6 +425,29 @@ func TestValidateRejectsInvalidAutoAssignShareConfig(t *testing.T) {
 	}
 }
 
+func TestValidateTrustedProxies(t *testing.T) {
+	for _, values := range [][]string{nil, {"127.0.0.1", "10.0.0.0/8", "2001:db8::/32"}} {
+		cfg := defaultConfig()
+		cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+		cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+		cfg.BootstrapAdmin.Password = "password123"
+		cfg.Server.TrustedProxies = values
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("trusted proxies %v: %v", values, err)
+		}
+	}
+	for _, value := range []string{"", " proxy.internal", "proxy.internal", "10.0.0.0/99", "0.0.0.0/0", "::/0"} {
+		cfg := defaultConfig()
+		cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+		cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+		cfg.BootstrapAdmin.Password = "password123"
+		cfg.Server.TrustedProxies = []string{value}
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("trusted proxy %q should be rejected", value)
+		}
+	}
+}
+
 func TestValidateRejectsInvalidSegmentedSelectorConfig(t *testing.T) {
 	tests := []func(*RoutingConfig){
 		func(value *RoutingConfig) { value.SegmentedMinCandidates = 99 },

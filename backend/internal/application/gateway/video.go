@@ -22,6 +22,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
+	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 )
 
 const (
@@ -179,6 +180,7 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	job := media.Job{
 		ID: "video_" + token, RequestID: input.RequestID,
 		ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
+		ClientIP:  requestmeta.ClientIP(ctx),
 		AccountID: accountID, AccountName: lease.Credential.Name,
 		Provider: string(route.Provider), Model: externalModel, ModelRouteID: route.ID, UpstreamModel: model.DisplayUpstreamModel(route.Provider, route.UpstreamModel), Operation: operation, Prompt: input.Prompt,
 		Seconds: input.Duration, Size: input.AspectRatio, Quality: input.Resolution,
@@ -985,6 +987,7 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 	statusCode := resolveVideoAuditStatusCode(job, upstreamStatus, attempts)
 	record := audit.Record{
 		EventID: "video_usage_" + job.ID, RequestID: job.RequestID, ClientKeyID: job.ClientKeyID, ClientKeyName: job.ClientKeyName,
+		ClientIP:     job.ClientIP,
 		ModelRouteID: job.ModelRouteID, ModelPublicID: job.Model, ModelUpstreamModel: job.UpstreamModel,
 		Provider: job.Provider, Operation: audit.OperationVideo, UsageSource: audit.UsageSourceNone,
 		AccountID: accountID, AccountName: job.AccountName, StatusCode: statusCode, ErrorCode: job.ErrorCode,

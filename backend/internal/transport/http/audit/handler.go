@@ -88,6 +88,7 @@ type auditResponse struct {
 	RequestID               string                    `json:"requestId"`
 	ClientKeyID             uint64                    `json:"clientKeyId,string"`
 	ClientKeyName           string                    `json:"clientKeyName,omitempty"`
+	ClientIP                string                    `json:"clientIp,omitempty"`
 	ModelRouteID            uint64                    `json:"modelRouteId,string"`
 	ModelPublicID           string                    `json:"modelPublicId,omitempty"`
 	ModelUpstreamModel      string                    `json:"modelUpstreamModel,omitempty"`
@@ -473,7 +474,7 @@ func newListFilter(c *gin.Context) auditapp.ListFilter {
 
 func newAuditResponse(value auditdomain.Record) auditResponse {
 	return auditResponse{
-		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName,
+		ID: value.ID, RequestID: value.RequestID, ClientKeyID: value.ClientKeyID, ClientKeyName: value.ClientKeyName, ClientIP: value.ClientIP,
 		ModelRouteID: value.ModelRouteID, ModelPublicID: value.ModelPublicID, ModelUpstreamModel: value.ModelUpstreamModel,
 		Provider: value.Provider, Operation: string(value.Operation), UsageSource: string(value.UsageSource),
 		ReasoningEffort: value.ReasoningEffort,

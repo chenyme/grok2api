@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,6 +28,15 @@ func RequestID() gin.HandlerFunc {
 		}
 		c.Set(RequestIDKey, requestID)
 		c.Header("X-Request-ID", requestID)
+		c.Next()
+	}
+}
+
+// ClientIP captures Gin's trusted-proxy-aware caller address once at ingress.
+// The server config controls which reverse proxies may supply forwarding headers.
+func ClientIP() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request = c.Request.WithContext(requestmeta.WithClientIP(c.Request.Context(), c.ClientIP()))
 		c.Next()
 	}
 }

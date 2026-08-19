@@ -422,6 +422,7 @@ func assertMediaJobSQLLacksNewInputLimit(t *testing.T, database *Database) {
 
 func assertMediaJobSQLContainsBuild(t *testing.T, database *Database) {
 	t.Helper()
+	assertTableColumns(t, database, "media_jobs", []string{"client_ip"}, nil)
 	sql := mediaJobsTableSQL(t, database)
 	if !strings.Contains(sql, "grok_build") {
 		t.Fatalf("media_jobs was not upgraded with grok_build: %s", sql)

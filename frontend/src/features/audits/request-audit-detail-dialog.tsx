@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Braces, FileText, KeyRound, Network, Server, TriangleAlert } from "lucide-react";
+import { Braces, FileText, Globe2, KeyRound, Network, Server, TriangleAlert } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -43,6 +43,7 @@ export function RequestAuditDetailDialog({ audit, open, onOpenChange }: { audit:
           <DialogTitle>{t("audits.detailTitle")}</DialogTitle>
           <DialogDescription className="flex min-w-0 flex-wrap gap-x-4 gap-y-0.5">
             <span className="truncate" title={audit?.requestId}>{audit?.requestId}</span>
+            {audit?.clientIp ? <Badge variant="outline"><Globe2 className="mr-1 size-3" />{t("audits.clientIp")}: {audit.clientIp}</Badge> : null}
             {audit?.reasoningEffort ? <Badge variant="secondary">{t("audits.reasoningEffort")}: {audit.reasoningEffort}</Badge> : null}
             {audit ? <span>{formatDateTime(audit.createdAt, i18n.language)}</span> : null}
           </DialogDescription>

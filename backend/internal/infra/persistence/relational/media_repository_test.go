@@ -43,6 +43,7 @@ func TestMediaJobRepositoryListMediaJobsPaginatesAndFilters(t *testing.T) {
 		testMediaJob("media_job_completed_new", accountValue.ID, key.ID, mediadomain.StatusCompleted, now.Add(-time.Hour)),
 	}
 	jobs[0].Prompt = "A quiet harbor"
+	jobs[0].ClientIP = "2001:db8::20"
 	jobs[0].ResultAssetID = "vid_media_list_00000001"
 	jobs[1].Prompt = "Northern lights"
 	jobs[2].Prompt = "Desert sunrise"
@@ -51,6 +52,13 @@ func TestMediaJobRepositoryListMediaJobsPaginatesAndFilters(t *testing.T) {
 		if err := jobRepo.CreateMediaJob(ctx, job); err != nil {
 			t.Fatal(err)
 		}
+	}
+	stored, err := jobRepo.GetMediaJob(ctx, jobs[0].ID, key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ClientIP != "2001:db8::20" {
+		t.Fatalf("stored client IP = %q", stored.ClientIP)
 	}
 
 	firstPage, total, err := jobRepo.ListMediaJobs(ctx, repository.MediaJobListQuery{

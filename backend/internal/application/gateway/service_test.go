@@ -29,6 +29,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -2422,7 +2423,8 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 	service.UpdateMaxAttempts(3)
 	attemptsBeforeFailure := len(adapter.Attempts())
 	adapter.FailWithEgress(infraegress.NewManager(relational.NewEgressRepository(database), testCipher(t)))
-	if _, err := service.GenerateImage(ctx, ImageGenerationInput{
+	failureCtx := requestmeta.WithClientIP(ctx, "203.0.113.51")
+	if _, err := service.GenerateImage(failureCtx, ImageGenerationInput{
 		RequestID: "req-image-failed", ClientKey: key, PublicModel: "grok-imagine-image",
 		Prompt: "test", Count: 1, Resolution: "1k", ResponseFormat: "url",
 	}); err == nil {
@@ -2436,7 +2438,7 @@ func TestImageStreamPropagatesWithoutTouchingChatQuota(t *testing.T) {
 		t.Fatalf("failure audit logs=%#v total=%d err=%v", logs, total, err)
 	}
 	failureAudit := logs[0]
-	if failureAudit.RequestID != "req-image-failed" || failureAudit.StatusCode != http.StatusBadGateway || failureAudit.ErrorCode != "upstream_unavailable" || failureAudit.MediaOutputImages != 0 || failureAudit.EstimatedCostInUSDTicks != 0 || failureAudit.EgressMode != audit.EgressModeDirect || failureAudit.EgressScope != string(egressdomain.ScopeWeb) || failureAudit.EgressNodeName != "direct" {
+	if failureAudit.ClientIP != "203.0.113.51" || failureAudit.RequestID != "req-image-failed" || failureAudit.StatusCode != http.StatusBadGateway || failureAudit.ErrorCode != "upstream_unavailable" || failureAudit.MediaOutputImages != 0 || failureAudit.EstimatedCostInUSDTicks != 0 || failureAudit.EgressMode != audit.EgressModeDirect || failureAudit.EgressScope != string(egressdomain.ScopeWeb) || failureAudit.EgressNodeName != "direct" {
 		t.Fatalf("failure audit = %#v", failureAudit)
 	}
 	updatedKey, err := keyRepo.Get(ctx, key.ID)
@@ -3348,7 +3350,8 @@ func TestGatewayExhausted429PreservesLastBodyInFailure(t *testing.T) {
 	audits := &attemptCapturingAudit{inner: auditRepo}
 	service := NewService(modelRepo, audits, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 2)
 
-	_, err = service.CreateResponse(ctx, Input{
+	requestCtx := requestmeta.WithClientIP(ctx, "2001:db8::42")
+	_, err = service.CreateResponse(requestCtx, Input{
 		RequestID: "req-body-429", ClientKey: clientKey, PublicModel: "grok-body",
 		Body: []byte(`{"model":"grok-body","input":"hello"}`),
 	})
@@ -3358,6 +3361,9 @@ func TestGatewayExhausted429PreservesLastBodyInFailure(t *testing.T) {
 	}
 	if upstreamFailure.HTTPStatus != http.StatusTooManyRequests {
 		t.Fatalf("status = %d", upstreamFailure.HTTPStatus)
+	}
+	if audits.last.ClientIP != "2001:db8::42" {
+		t.Fatalf("client IP = %q", audits.last.ClientIP)
 	}
 	if len(audits.last.Attempts) < 2 {
 		t.Fatalf("attempts = %#v", audits.last.Attempts)

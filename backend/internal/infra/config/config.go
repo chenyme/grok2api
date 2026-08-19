@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -75,6 +76,7 @@ type ServerConfig struct {
 	Listen                string   `yaml:"listen"`
 	MaxBodyBytes          int64    `yaml:"maxBodyBytes"`
 	MaxConcurrentRequests int      `yaml:"maxConcurrentRequests"`
+	TrustedProxies        []string `yaml:"trustedProxies"`
 	ReadTimeout           Duration `yaml:"readTimeout"`
 	RequestTimeout        Duration `yaml:"requestTimeout"`
 	SwaggerEnabled        bool     `yaml:"swaggerEnabled"`
@@ -459,6 +461,25 @@ func (c Config) Validate() error {
 	}
 	if c.Server.MaxConcurrentRequests < 1 || c.Server.MaxConcurrentRequests > 100000 {
 		return errors.New("server.maxConcurrentRequests 必须在 1 到 100000 之间")
+	}
+	for _, value := range c.Server.TrustedProxies {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return errors.New("server.trustedProxies 不能包含空值")
+		}
+		if trimmed != value {
+			return fmt.Errorf("server.trustedProxies %q 不能包含首尾空白", value)
+		}
+		if net.ParseIP(trimmed) != nil {
+			continue
+		}
+		_, network, err := net.ParseCIDR(trimmed)
+		if err != nil {
+			return fmt.Errorf("server.trustedProxies %q 必须是 IP 或 CIDR", value)
+		}
+		if ones, _ := network.Mask.Size(); ones == 0 {
+			return fmt.Errorf("server.trustedProxies %q 不能信任整个互联网", value)
+		}
 	}
 	for _, item := range []struct {
 		name  string
