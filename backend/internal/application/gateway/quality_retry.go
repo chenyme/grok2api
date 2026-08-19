@@ -287,10 +287,11 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// Retrying a tool-capable request can repeat external side effects. Tool
-	// requests remain outside this feature until they have their own replay
-	// safety contract.
-	if qualityRequestUsesTools(input.Body) {
+	// Retrying an in-flight tool *result* can repeat external side effects.
+	// Grok TUI always declares a tools schema even on the first thinking
+	// turn; skipping that schema would disable the hold for every agent
+	// request. Only skip when the body already contains tool output.
+	if qualityRequestHasInFlightToolResults(input.Body) {
 		return false
 	}
 	// Aliases are rewritten before this gate, so inspect the effective request
@@ -306,11 +307,43 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 }
 
 func qualityRequestUsesTools(body []byte) bool {
-	var payload map[string]json.RawMessage
+	return qualityRequestHasInFlightToolResults(body)
+}
+
+func qualityRequestHasInFlightToolResults(body []byte) bool {
+	var payload any
 	if json.Unmarshal(body, &payload) != nil {
 		return false
 	}
-	return nonEmptyJSONCollection(payload["tools"]) || nonEmptyJSONCollection(payload["functions"])
+	return jsonTreeHasInFlightToolResult(payload)
+}
+
+func jsonTreeHasInFlightToolResult(node any) bool {
+	switch typed := node.(type) {
+	case map[string]any:
+		role := jsonNodeString(typed["role"])
+		typ := jsonNodeString(typed["type"])
+		if role == "tool" || typ == "function_call_output" || typ == "tool_result" || typ == "tool_use_output" {
+			return true
+		}
+		for _, child := range typed {
+			if jsonTreeHasInFlightToolResult(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if jsonTreeHasInFlightToolResult(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func jsonNodeString(value any) string {
+	text, _ := value.(string)
+	return strings.ToLower(strings.TrimSpace(text))
 }
 
 func qualityRequestDisablesReasoning(body []byte) bool {

@@ -647,14 +647,44 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		{name: "responses reasoning none", body: `{"reasoning":{"effort":"none"}}`},
 		{name: "messages thinking disabled", body: `{"thinking":{"type":"disabled"}}`},
 		{name: "messages zero thinking budget", body: `{"thinking":{"type":"enabled","budget_tokens":0}}`},
-		{name: "client tools", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
-		{name: "legacy functions", body: `{"functions":[{"name":"charge"}]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := input
 			request.Body = []byte(test.body)
 			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
-				t.Fatal("explicitly disabled reasoning and tool requests must not be held")
+				t.Fatal("explicitly disabled reasoning must not be held")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "client tools schema", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
+		{name: "legacy functions schema", body: `{"functions":[{"name":"charge"}]}`},
+		{name: "tui tools schema plus user input", body: `{"model":"grok-4.6","tools":[{"type":"function","name":"read_file"}],"input":[{"role":"user","content":"hello"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := input
+			request.Body = []byte(test.body)
+			if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("tools schema alone must still hold so TUI thinking turns are classified")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "function_call_output", body: `{"input":[{"type":"function_call_output","call_id":"call_1","output":"done"}]}`},
+		{name: "tool_result", body: `{"input":[{"type":"tool_result","tool_use_id":"tool_1","content":"done"}]}`},
+		{name: "role tool", body: `{"messages":[{"role":"tool","content":"done"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := input
+			request.Body = []byte(test.body)
+			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("in-flight tool results must not be held")
 			}
 		})
 	}
