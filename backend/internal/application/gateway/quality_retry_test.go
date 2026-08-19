@@ -533,24 +533,24 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		t.Fatal("forced egress must not hold")
 	}
 	owned := inferencedomain.ResponseOwnership{ResponseID: "r1", AccountID: 1}
-	if shouldHoldQualityStream(input, &owned, route, audit.OperationChat, cfg) {
-		t.Fatal("pinned response must not hold")
+	if !shouldHoldQualityStream(input, &owned, route, audit.OperationChat, cfg) {
+		t.Fatal("pinned previous_response_id must still hold on missing thinking")
 	}
 	if shouldHoldQualityStream(input, nil, route, audit.OperationImage, cfg) {
 		t.Fatal("image must not hold")
 	}
-	if shouldHoldQualityStream(input, nil, route, audit.OperationCompaction, cfg) {
-		t.Fatal("codex compaction operation must not hold")
+	if !shouldHoldQualityStream(input, nil, route, audit.OperationCompaction, cfg) {
+		t.Fatal("compaction with no reasoning must hold")
 	}
 	classified := input
 	classified.skipQualityHold = true
 	if shouldHoldQualityStream(classified, nil, route, audit.OperationResponses, cfg) {
-		t.Fatal("gateway-classified compaction must not hold")
+		t.Fatal("explicit skipQualityHold must not hold")
 	}
 	tui := input
 	tui.Body = []byte(`{"input":[{"role":"user","content":"` + tuiCompactionPrompt + `"}]}`)
-	if shouldHoldQualityStream(tui, nil, route, audit.OperationResponses, cfg) {
-		t.Fatal("tui compaction prompt must not hold even when tagged responses")
+	if !shouldHoldQualityStream(tui, nil, route, audit.OperationResponses, cfg) {
+		t.Fatal("tui compaction prompt with no reasoning must hold")
 	}
 	for _, test := range []struct {
 		name string
@@ -560,14 +560,30 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		{name: "responses reasoning none", body: `{"reasoning":{"effort":"none"}}`},
 		{name: "messages thinking disabled", body: `{"thinking":{"type":"disabled"}}`},
 		{name: "messages zero thinking budget", body: `{"thinking":{"type":"enabled","budget_tokens":0}}`},
-		{name: "client tools", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
-		{name: "legacy functions", body: `{"functions":[{"name":"charge"}]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := input
 			request.Body = []byte(test.body)
 			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
-				t.Fatal("explicitly disabled reasoning and tool requests must not be held")
+				t.Fatal("explicitly disabled reasoning must not be held")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "client tools schema", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
+		{name: "legacy functions schema", body: `{"functions":[{"name":"charge"}]}`},
+		{name: "function call output", body: `{"input":[{"type":"function_call_output","call_id":"c1","output":"ok"}]}`},
+		{name: "tool role", body: `{"messages":[{"role":"tool","content":"ok"}]}`},
+		{name: "history tools plus new user", body: `{"input":[{"type":"function_call","call_id":"c1","name":"grep"},{"type":"function_call_output","call_id":"c1","output":"ok"},{"role":"user","content":"look at this"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := input
+			request.Body = []byte(test.body)
+			if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("declaring tools must not skip missing-thinking hold")
 			}
 		})
 	}

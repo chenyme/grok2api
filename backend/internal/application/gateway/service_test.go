@@ -273,9 +273,8 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("compaction response ownership err = %v", err)
 	}
 
-	// Grok TUI compaction is a normal Responses request on the wire. It skips
-	// the quality hold and is labeled compaction only in the audit record, so
-	// Provider routing and stored-response ownership must remain intact.
+	// Grok TUI compaction is a normal Responses request on the wire.
+	// Missing-thinking hold still applies; routing and ownership stay Responses.
 	service.UpdateQualityRetry(QualityRetryRuntime{
 		Enabled: true, MaxAttempts: 2, MinOutputTokens: 32,
 		OnExhausted: qualityRetryFailClosed, HoldTimeout: time.Second,

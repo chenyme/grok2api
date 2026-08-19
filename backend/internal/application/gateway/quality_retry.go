@@ -253,32 +253,22 @@ func CommitQualityHold(verdict QualityVerdict, qualityAttempt, maxAttempts int, 
 }
 
 func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwnership, route modeldomain.Route, operation audit.Operation, cfg QualityRetryRuntime) bool {
-	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || ownership != nil || input.skipQualityHold {
+	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || input.skipQualityHold {
 		return false
 	}
 	switch operation {
-	case audit.OperationChat, audit.OperationResponses, audit.OperationMessages, "":
+	case audit.OperationChat, audit.OperationResponses, audit.OperationMessages, audit.OperationCompaction, "":
 	default:
-		return false
-	}
-	// TUI compaction is a normal /v1/responses body (no compaction_trigger).
-	// Keep this defensive body check in addition to skipQualityHold so a caller
-	// that bypasses CreateResponse cannot withhold a 100s+ summary as missing-thinking.
-	if isResponsesCompactionRequest(input.Body) {
 		return false
 	}
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// Retrying a tool-capable request can repeat external side effects. Tool
-	// requests remain outside this feature until they have their own replay
-	// safety contract.
-	if qualityRequestUsesTools(input.Body) {
-		return false
-	}
-	// Aliases are rewritten before this gate, so inspect the effective request
-	// body instead of only the reasoning-capable base model. In particular,
-	// grok-4.3-none becomes grok-4.3 plus an explicit disabled setting.
+	// TUI tool rounds (function_call_output / role=tool) must still hold.
+	// Those turns are where missing-thinking shows up as HTTP 200 with
+	// high effort and 0 reasoning tokens. Local tools already ran;
+	// withhold/retry/unpin is safer than delivering a no-thinking
+	// continuation. Skip only when the request explicitly disables reasoning.
 	if qualityRequestDisablesReasoning(input.Body) {
 		return false
 	}
@@ -286,14 +276,6 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return true
 	}
 	return modeldomain.SupportsReasoningForProvider(route.Provider, route.UpstreamModel)
-}
-
-func qualityRequestUsesTools(body []byte) bool {
-	var payload map[string]json.RawMessage
-	if json.Unmarshal(body, &payload) != nil {
-		return false
-	}
-	return nonEmptyJSONCollection(payload["tools"]) || nonEmptyJSONCollection(payload["functions"])
 }
 
 func qualityRequestDisablesReasoning(body []byte) bool {

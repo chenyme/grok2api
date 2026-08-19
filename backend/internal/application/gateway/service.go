@@ -111,7 +111,8 @@ type Input struct {
 	// auditOperation may classify a normal protocol request differently for
 	// operator visibility without changing routing or Provider semantics.
 	auditOperation audit.Operation
-	// skipQualityHold is set only by trusted gateway-side request classifiers.
+	// skipQualityHold is a generic escape hatch. TUI compaction must not set it:
+	// a compact turn with no reasoning is missing-thinking and should rotate.
 	skipQualityHold bool
 	// ForcedEgressNodeID is an internal-only administrator probe constraint.
 	// Public inference handlers never populate it.
@@ -502,11 +503,10 @@ func (s *Service) CreateResponse(ctx context.Context, input Input) (*Result, err
 	case responsesCompactionTrigger:
 		input.Operation = audit.OperationCompaction
 	case responsesCompactionTUI:
-		// Grok TUI compaction is still a normal Responses request. Keep its
-		// routing, Provider normalization, and stored-response behavior intact;
-		// only its audit classification and quality-hold policy differ.
+		// Grok TUI compaction stays a normal Responses request on the wire.
+		// Audit it as compaction, but do not skip missing-thinking hold:
+		// a high-effort summary with 0 reasoning tokens must rotate.
 		input.auditOperation = audit.OperationCompaction
-		input.skipQualityHold = true
 	}
 	return s.createResponseAt(ctx, input, "/responses")
 }
@@ -1003,9 +1003,6 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	}
 	attemptPolicy := newRoutingAttemptPolicy(int(s.maxAttempts.Load()))
 	idempotencyID, _ := security.NewOpaqueToken(18)
-	if ownership != nil {
-		attemptPolicy = newRoutingAttemptPolicy(1)
-	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
 	if err := s.checkLedgerReady(); err != nil {
 		return nil, err
@@ -1020,6 +1017,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	authRecoveryAttempted := make(map[uint64]bool)
 	holdCfg := s.qualityRetryConfig()
 	qualityHoldEnabled := shouldHoldQualityStream(input, ownership, route, operation, holdCfg)
+	if ownership != nil && !qualityHoldEnabled {
+		attemptPolicy = newRoutingAttemptPolicy(1)
+	}
 	// Count accounts that actually reached the upstream. Credential-only skips
 	// do not consume the quality retry budget; refreshes stay on the same account.
 	qualityAccountAttempts := 0
@@ -1197,7 +1197,7 @@ attemptLoop:
 		var lease *accountLease
 		var err error
 		selectionStarted := time.Now()
-		if ownership != nil {
+		if ownership != nil && qualityAccountAttempts == 0 {
 			lease, err = s.selector.AcquirePinnedForKey(ctx, route.Provider, ownership.AccountID, route.ID, route.UpstreamModel, quotaMode, true, accountScope)
 		} else if input.ForcedEgressNodeID != 0 {
 			lease, err = s.selector.AcquireForKeyOnEgressNode(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, affinityKey, excluded, !quotaProbeAttempted, accountScope, input.ForcedEgressNodeID)
@@ -1549,8 +1549,12 @@ attemptLoop:
 					continue
 				}
 				response.Body = replay
-				hasNextAccount := attemptPolicy.hasNext(attempt) && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
-				hasNextAccount = hasNextAccount && qualityAccountAttempts < holdCfg.MaxAttempts
+				hasNextAccount := attemptPolicy.hasNext(attempt) && qualityAccountAttempts < holdCfg.MaxAttempts
+				if selection != nil {
+					hasNextAccount = hasNextAccount && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
+				} else if ownership == nil {
+					hasNextAccount = false
+				}
 				commit := CommitQualityHold(verdict, qualityAccountAttempts-1, holdCfg.MaxAttempts, hasNextAccount, holdCfg.OnExhausted)
 				if verdict == QualityWithhold {
 					s.applyMissingThinkingPenalty(ctx, input.RequestID, credential, holdCfg.AccountCooldown)
