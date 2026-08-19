@@ -107,6 +107,11 @@ type Input struct {
 	// GrokTurnIndex forwards only the turn supplied by a real Grok Shell client; the server never infers or increments it.
 	GrokTurnIndex string
 	Operation     audit.Operation
+	// auditOperation may classify a normal protocol request differently for
+	// operator visibility without changing routing or Provider semantics.
+	auditOperation audit.Operation
+	// skipQualityHold is set only by trusted gateway-side request classifiers.
+	skipQualityHold bool
 	// ForcedEgressNodeID is an internal-only administrator probe constraint.
 	// Public inference handlers never populate it.
 	ForcedEgressNodeID uint64
@@ -487,8 +492,15 @@ func (s *Service) checkLedgerReady() error {
 
 func (s *Service) CreateResponse(ctx context.Context, input Input) (*Result, error) {
 	input.Operation = audit.OperationResponses
-	if isResponsesCompactionRequest(input.Body) {
+	switch classifyResponsesCompactionRequest(input.Body) {
+	case responsesCompactionTrigger:
 		input.Operation = audit.OperationCompaction
+	case responsesCompactionTUI:
+		// Grok TUI compaction is still a normal Responses request. Keep its
+		// routing, Provider normalization, and stored-response behavior intact;
+		// only its audit classification and quality-hold policy differ.
+		input.auditOperation = audit.OperationCompaction
+		input.skipQualityHold = true
 	}
 	return s.createResponseAt(ctx, input, "/responses")
 }
@@ -821,6 +833,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	if operation == "" {
 		operation = audit.OperationResponses
 	}
+	auditOperation := operation
+	if input.auditOperation != "" {
+		auditOperation = input.auditOperation
+	}
 	routes, aliasEffort, err := s.resolvePublicModelRoutes(ctx, input.PublicModel, input.ClientKey.AllowModelAliases)
 	if err != nil {
 		return nil, ErrModelNotFound
@@ -918,7 +934,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	auditBase := audit.Record{
 		EventID: eventID, RequestID: input.RequestID, ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
 		ModelRouteID: route.ID, ModelPublicID: publicModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
-		Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone, Streaming: input.Streaming,
+		Provider: string(route.Provider), Operation: auditOperation, UsageSource: audit.UsageSourceNone, Streaming: input.Streaming,
 		MediaInputImages: mediaSummary.InputImages,
 	}
 	if errors.Is(routeErr, clientkeyapp.ErrModelNotAllowed) {
