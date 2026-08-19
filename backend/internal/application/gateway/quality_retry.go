@@ -45,6 +45,9 @@ type QualityRetryRuntime struct {
 	MinOutputTokens int64
 	OnExhausted     string
 	AccountCooldown time.Duration
+	// IdleAccountCooldown is applied to truly empty upstream streams
+	// (idle timeout / empty peek). Missing-thinking still uses AccountCooldown.
+	IdleAccountCooldown time.Duration
 }
 
 // QualityStreamSignals is the hold classifier input. Tests drive this
@@ -89,6 +92,9 @@ func normalizeQualityRetry(cfg QualityRetryRuntime) QualityRetryRuntime {
 	}
 	if cfg.AccountCooldown <= 0 {
 		cfg.AccountCooldown = defaultMissingThinkingCooldown
+	}
+	if cfg.IdleAccountCooldown <= 0 {
+		cfg.IdleAccountCooldown = qualityIdleAccountCooldown
 	}
 	cfg.OnExhausted = normalizeQualityExhaustionPolicy(cfg.OnExhausted)
 	return cfg

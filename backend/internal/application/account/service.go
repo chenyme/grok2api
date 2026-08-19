@@ -2279,6 +2279,27 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	return s.Get(ctx, updated.ID)
 }
 
+// ClearCooldown resets request-path health so a cooled account can be
+// scheduled again. UpdateHealth publishes InvalidationAccountHealthChanged,
+// which overwrites the selector memory overlay (runtimeStore=memory).
+func (s *Service) ClearCooldown(ctx context.Context, id uint64) (View, error) {
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return View{}, mapRepositoryError(err)
+	}
+	if err := s.accounts.UpdateHealth(ctx, value.ID, value.Provider, 0, nil, "", false); err != nil {
+		return View{}, mapRepositoryError(err)
+	}
+	updated, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return View{}, mapRepositoryError(err)
+	}
+	return View{
+		Credential: updated,
+		Quota:      QuotaView{Type: QuotaTypeUnknown, Source: "unknown", Status: QuotaStatusActive},
+	}, nil
+}
+
 // MarkBuildAPIFallback 幂等写入 Build 账号 XAI 推理回退标记；失败不吞掉，调用方可重试。
 func (s *Service) MarkBuildAPIFallback(ctx context.Context, id uint64, enabled bool) error {
 	return mapRepositoryError(s.accounts.MarkBuildAPIFallback(ctx, id, enabled))
