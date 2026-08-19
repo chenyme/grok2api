@@ -159,3 +159,7 @@ qualityGuard:
     # First missing-thinking hit cools the account; a later hit after the
     # cooldown expires disables it.
     accountCooldown: 24h
+    # Empty SSE / idle-timeout penalty. Independent of accountCooldown.
+    # Single-account pools should set this lower; toggling enabled does not
+    # clear cooldown — use POST /api/admin/v1/accounts/:id/clear-cooldown.
+    idleAccountCooldown: 24h

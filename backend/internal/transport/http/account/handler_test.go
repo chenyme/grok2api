@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -221,6 +222,66 @@ func TestLinkedDeleteMissingAccountReturnsNotFound(t *testing.T) {
 
 	if recorder.Code != 404 || !strings.Contains(recorder.Body.String(), `"code":"accountNotFound"`) {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestClearCooldownResetsHealthAndSelectorCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "clear-cooldown.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := relational.NewAccountRepository(database)
+	until := time.Now().UTC().Add(24 * time.Hour)
+	created, _, err := repo.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "cooled", SourceKey: "cooled",
+		EncryptedAccessToken: "token", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+		Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateHealth(ctx, created.ID, created.Provider, 3, &until, "upstream status 504", false); err != nil {
+		t.Fatal(err)
+	}
+	service := accountapp.NewService(repo, nil, nil, nil, nil, nil, nil)
+	handler := NewHandler(service, nil)
+
+	recorder := httptest.NewRecorder()
+	ginContext, _ := gin.CreateTestContext(recorder)
+	ginContext.Params = []gin.Param{{Key: "id", Value: strconv.FormatUint(created.ID, 10)}}
+	ginContext.Request = httptest.NewRequest("POST", "/api/admin/v1/accounts/"+strconv.FormatUint(created.ID, 10)+"/clear-cooldown", nil)
+	handler.clearCooldown(ginContext)
+	if recorder.Code != 200 {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), `"cooldownUntil"`) || strings.Contains(recorder.Body.String(), `"failureCount":3`) {
+		t.Fatalf("cooldown still present: %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"failureCount":0`) {
+		t.Fatalf("failureCount not reset: %s", recorder.Body.String())
+	}
+
+	stored, err := repo.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.FailureCount != 0 || stored.CooldownUntil != nil || stored.LastError != "" {
+		t.Fatalf("persisted health = failure=%d cooldown=%v last=%q", stored.FailureCount, stored.CooldownUntil, stored.LastError)
+	}
+
+	missing := httptest.NewRecorder()
+	missingCtx, _ := gin.CreateTestContext(missing)
+	missingCtx.Params = []gin.Param{{Key: "id", Value: "999999"}}
+	missingCtx.Request = httptest.NewRequest("POST", "/api/admin/v1/accounts/999999/clear-cooldown", nil)
+	handler.clearCooldown(missingCtx)
+	if missing.Code != 404 {
+		t.Fatalf("missing status = %d, body = %s", missing.Code, missing.Body.String())
 	}
 }
 

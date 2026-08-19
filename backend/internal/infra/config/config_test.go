@@ -223,7 +223,7 @@ qualityGuard:
 func TestDefaultQualityGuardRequestRetryContract(t *testing.T) {
 	t.Parallel()
 	got := defaultConfig().QualityGuard.RequestRetry
-	if got.Enabled || got.MaxAttempts != 6 || got.HoldTimeout.Value() != 3*time.Second || got.MinOutputTokens != 32 || got.OnExhausted != "fail_closed" || got.AccountCooldown.Value() != 24*time.Hour {
+	if got.Enabled || got.MaxAttempts != 6 || got.HoldTimeout.Value() != 3*time.Second || got.MinOutputTokens != 32 || got.OnExhausted != "fail_closed" || got.AccountCooldown.Value() != 24*time.Hour || got.IdleAccountCooldown.Value() != 24*time.Hour {
 		t.Fatalf("requestRetry defaults = %#v", got)
 	}
 }
@@ -247,6 +247,12 @@ func TestQualityGuardRequestRetryAccountCooldownBounds(t *testing.T) {
 			})
 			if (err != nil) != test.wantErr {
 				t.Fatalf("validate cooldown %s: err=%v, wantErr=%t", test.value, err, test.wantErr)
+			}
+			err = validateQualityGuardRequestRetry(QualityGuardRequestRetryConfig{
+				Enabled: true, IdleAccountCooldown: Duration(test.value),
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validate idle cooldown %s: err=%v, wantErr=%t", test.value, err, test.wantErr)
 			}
 		})
 	}
