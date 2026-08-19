@@ -220,7 +220,7 @@ export function updateQualityGuardPolicy(policy: QualityGuardPolicy): Promise<{ 
 }
 
 export type DegradeWindow = "1h" | "6h" | "24h" | "7d";
-export type DegradeClass = "buffered_burst" | "soft_tps" | "hard_tps";
+export type DegradeClass = "buffered_burst" | "soft_tps" | "hard_tps" | "missing_thinking";
 
 export type DegradeAccountDTO = {
   id: string;
@@ -253,7 +253,7 @@ export type DegradeSummaryDTO = {
   window: DegradeWindow;
   generatedAt: string;
   thresholds: { softTPS: number; hardTPS: number; minGenMs: number; minOutputTokens: number };
-  totals: { hits: number; accounts: number; stillEnabled: number; disabled: number; deleted: number; hard: number; soft: number; burst: number; maxTPS: number };
+  totals: { hits: number; accounts: number; stillEnabled: number; disabled: number; deleted: number; hard: number; soft: number; burst: number; thinking: number; maxTPS: number };
   series: { label: string; count: number; severe: number }[];
   nodes: { name: string; hits: number; accounts: number; maxTPS: number }[];
   accounts: DegradeAccountDTO[];
@@ -261,13 +261,13 @@ export type DegradeSummaryDTO = {
   events: DegradeEventDTO[];
 };
 
-const degradeClassValidator = isOneOf("buffered_burst", "soft_tps", "hard_tps");
+const degradeClassValidator = isOneOf("buffered_burst", "soft_tps", "hard_tps", "missing_thinking");
 
 const decodeDegradeSummary = createObjectDecoder<DegradeSummaryDTO>("degrade accounts", {
   window: isOneOf("1h", "6h", "24h", "7d"),
   generatedAt: isString,
   thresholds: hasShape({ softTPS: isNumber, hardTPS: isNumber, minGenMs: isNumber, minOutputTokens: isNumber }),
-  totals: hasShape({ hits: isNumber, accounts: isNumber, stillEnabled: isNumber, disabled: isNumber, deleted: isNumber, hard: isNumber, soft: isNumber, burst: isNumber, maxTPS: isNumber }),
+  totals: hasShape({ hits: isNumber, accounts: isNumber, stillEnabled: isNumber, disabled: isNumber, deleted: isNumber, hard: isNumber, soft: isNumber, burst: isNumber, thinking: isNumber, maxTPS: isNumber }),
   series: isArrayOf(hasShape({ label: isString, count: isNumber, severe: isNumber })),
   nodes: isArrayOf(hasShape({ name: isString, hits: isNumber, accounts: isNumber, maxTPS: isNumber })),
   accounts: isArrayOf(hasShape({

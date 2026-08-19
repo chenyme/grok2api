@@ -291,6 +291,7 @@ type QualityGuardRequestRetryConfig struct {
 	HoldTimeout     Duration `yaml:"holdTimeout"`
 	MinOutputTokens int      `yaml:"minOutputTokens"`
 	OnExhausted     string   `yaml:"onExhausted"`
+	AccountCooldown Duration `yaml:"accountCooldown"`
 }
 
 type ClientKeyDefaultsConfig struct {
@@ -774,6 +775,9 @@ func validateQualityGuardRequestRetry(value QualityGuardRequestRetryConfig) erro
 	default:
 		return errors.New("qualityGuard.requestRetry.onExhausted 必须是 fail_open 或 fail_closed")
 	}
+	if d := value.AccountCooldown.Value(); d != 0 && (d < time.Minute || d > 168*time.Hour) {
+		return errors.New("qualityGuard.requestRetry.accountCooldown 必须在 1m 到 168h 之间")
+	}
 	return nil
 }
 
@@ -907,6 +911,7 @@ func defaultConfig() Config {
 			MinimumGenerationWindow: Duration(time.Second), RotationTimeout: Duration(45 * time.Second),
 			RequestRetry: QualityGuardRequestRetryConfig{
 				MaxAttempts: 6, HoldTimeout: Duration(3 * time.Second), MinOutputTokens: 32, OnExhausted: "fail_closed",
+				AccountCooldown: Duration(24 * time.Hour),
 			},
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},

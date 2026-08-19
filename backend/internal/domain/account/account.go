@@ -110,6 +110,24 @@ const (
 	AuthStatusReauthRequired AuthStatus = "reauthRequired"
 )
 
+// LastErrorMissingThinking values are durable, non-sensitive quality strike
+// markers. Unlike arbitrary upstream errors, they may be propagated through
+// runtime invalidation events so every gateway instance preserves the strike.
+const (
+	LastErrorMissingThinking         = "missing_thinking"
+	LastErrorMissingThinkingDisabled = "missing_thinking_disabled"
+)
+
+// NormalizeHealthMarker admits only durable non-sensitive health markers.
+func NormalizeHealthMarker(value string) string {
+	switch value {
+	case LastErrorMissingThinking, LastErrorMissingThinkingDisabled:
+		return value
+	default:
+		return ""
+	}
+}
+
 // EgressAssignmentMode 表示账号出口节点的维护方式。手工绑定绝不会被
 // 自动均衡任务迁移，自动绑定才允许在健康或容量变化时重新分配。
 type EgressAssignmentMode string

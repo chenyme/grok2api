@@ -108,7 +108,7 @@ func (r *layeredAccountRepository) UpdateHealth(_ context.Context, id uint64, _ 
 	}
 	r.healthUpdates = append(r.healthUpdates, repository.InvalidationEvent{
 		Kind: repository.InvalidationAccountHealthChanged, Provider: provider, AccountID: id,
-		FailureCount: failureCount, CooldownUntil: cooldownUntil,
+		FailureCount: failureCount, CooldownUntil: cooldownUntil, HealthMarker: account.NormalizeHealthMarker(lastError),
 	})
 	return nil
 }
@@ -192,8 +192,12 @@ func TestSelectorHealthInvalidationDoesNotRebuildProviderSnapshots(t *testing.T)
 	cooldownUntil := now.Add(time.Minute)
 	selector.ApplyInvalidation(repository.InvalidationEvent{
 		Kind: repository.InvalidationAccountHealthChanged, Provider: account.ProviderBuild, AccountID: 1,
-		FailureCount: 1, CooldownUntil: &cooldownUntil, PublishedAt: now,
+		FailureCount: 1, CooldownUntil: &cooldownUntil, HealthMarker: account.LastErrorMissingThinking, PublishedAt: now,
 	})
+	marked := selector.applyRoutingHealth(account.Credential{ID: 1, Provider: account.ProviderBuild}, now)
+	if marked.LastError != account.LastErrorMissingThinking {
+		t.Fatalf("durable health marker was lost in the runtime overlay: %#v", marked)
+	}
 	_, err := selector.beginSelectionSession(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
 	var unavailable *SelectionUnavailableError
 	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionCooling {

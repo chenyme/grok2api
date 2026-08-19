@@ -17,12 +17,15 @@ import (
 )
 
 const (
-	ErrorQualityDegraded      = "quality_degraded"
-	qualityRetryFailOpen      = "fail_open"
-	qualityRetryFailClosed    = "fail_closed"
-	defaultQualityMaxAttempts = 6
-	defaultQualityHoldTimeout = 3 * time.Second
-	defaultQualityMinOutput   = int64(32)
+	ErrorQualityDegraded             = "quality_degraded"
+	qualityRetryFailOpen             = "fail_open"
+	qualityRetryFailClosed           = "fail_closed"
+	defaultQualityMaxAttempts        = 6
+	defaultQualityHoldTimeout        = 3 * time.Second
+	defaultQualityMinOutput          = int64(32)
+	defaultMissingThinkingCooldown   = 24 * time.Hour
+	lastErrorMissingThinking         = accountdomain.LastErrorMissingThinking
+	lastErrorMissingThinkingDisabled = accountdomain.LastErrorMissingThinkingDisabled
 	// An empty stream that idles while held is treated as an account-quality
 	// failure: the request can still rotate before any bytes reach the client.
 	qualityIdleAccountCooldown = 24 * time.Hour
@@ -41,6 +44,7 @@ type QualityRetryRuntime struct {
 	HoldTimeout     time.Duration
 	MinOutputTokens int64
 	OnExhausted     string
+	AccountCooldown time.Duration
 }
 
 // QualityStreamSignals is the hold classifier input. Tests drive this
@@ -82,6 +86,9 @@ func normalizeQualityRetry(cfg QualityRetryRuntime) QualityRetryRuntime {
 	}
 	if cfg.MinOutputTokens <= 0 {
 		cfg.MinOutputTokens = defaultQualityMinOutput
+	}
+	if cfg.AccountCooldown <= 0 {
+		cfg.AccountCooldown = defaultMissingThinkingCooldown
 	}
 	cfg.OnExhausted = normalizeQualityExhaustionPolicy(cfg.OnExhausted)
 	return cfg
@@ -254,6 +261,12 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	default:
 		return false
 	}
+	// TUI compaction is a normal /v1/responses body (no compaction_trigger).
+	// CreateResponse retags it to OperationCompaction; also skip here so a
+	// missed tag cannot withhold a 100s+ summary as missing-thinking.
+	if isResponsesCompactionRequest(input.Body) {
+		return false
+	}
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
@@ -320,6 +333,22 @@ func jsonStringEquals(raw json.RawMessage, want string) bool {
 	return json.Unmarshal(raw, &value) == nil && strings.EqualFold(strings.TrimSpace(value), want)
 }
 
+func (s *Service) applyMissingThinkingPenalty(ctx context.Context, requestID string, credential accountdomain.Credential, cooldown time.Duration) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finalizationTimeout)
+	defer cancel()
+	action, err := s.selector.markMissingThinking(writeCtx, credential, cooldown)
+	if err != nil {
+		s.logger.Error("quality_degraded_penalty_failed", "request_id", requestID, "account_id", credential.ID, "action", action, "error", err)
+		return
+	}
+	switch action {
+	case missingThinkingPenaltyDisabled:
+		s.logger.Info("quality_degraded_disabled", "request_id", requestID, "account_id", credential.ID)
+	case missingThinkingPenaltyCooled:
+		s.logger.Info("quality_degraded_cooldown", "request_id", requestID, "account_id", credential.ID, "cooldown", cooldown.String())
+	}
+}
+
 func (s *Service) recordQualityDegraded(ctx context.Context, base audit.Record, credential accountdomain.Credential, usage Usage, startedAt time.Time, trace *infraegress.Trace, provider accountdomain.Provider) {
 	record := base
 	record.EventID = newAuditEventID()
@@ -338,7 +367,9 @@ func (s *Service) recordQualityDegraded(ctx context.Context, base audit.Record, 
 	record.DurationMS = time.Since(startedAt).Milliseconds()
 	record.CreatedAt = time.Now().UTC()
 	applyAuditEgress(&record, trace, provider)
-	if err := s.audits.Create(ctx, record); err != nil {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finalizationTimeout)
+	defer cancel()
+	if err := s.audits.Create(writeCtx, record); err != nil {
 		s.logger.Error("quality_degraded_audit_failed", "event_id", record.EventID, "request_id", record.RequestID, "error", err)
 	}
 }

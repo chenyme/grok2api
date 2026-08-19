@@ -61,6 +61,7 @@ type DegradeTotals struct {
 	Hard         int64
 	Soft         int64
 	Burst        int64
+	Thinking     int64
 	MaxTPS       float64
 }
 
@@ -73,6 +74,7 @@ type DegradeAccount struct {
 	Burst              int64
 	Soft               int64
 	Hard               int64
+	Thinking           int64
 	Last               time.Time
 	Enabled            bool
 	Found              bool

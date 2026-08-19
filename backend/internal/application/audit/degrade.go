@@ -59,6 +59,7 @@ type DegradeTotals struct {
 	Hard         int64
 	Soft         int64
 	Burst        int64
+	Thinking     int64
 	MaxTPS       float64
 }
 
@@ -184,7 +185,7 @@ func normalizeDegradeAccountFilter(value DegradeAccountFilter) DegradeAccountFil
 	if value.Status != "enabled" && value.Status != "disabled" && value.Status != "deleted" {
 		value.Status = ""
 	}
-	if value.Class != auditdomain.DegradeClassBurst && value.Class != auditdomain.DegradeClassSoft && value.Class != auditdomain.DegradeClassHard {
+	if value.Class != auditdomain.DegradeClassBurst && value.Class != auditdomain.DegradeClassSoft && value.Class != auditdomain.DegradeClassHard && value.Class != auditdomain.DegradeClassThinking {
 		value.Class = ""
 	}
 	if value.MinHits < 1 {
@@ -205,9 +206,10 @@ func buildDegradeSummary(window string, now time.Time, thresholds DegradeThresho
 		accounts = append(accounts, DegradeAccount{
 			ID: value.ID, Name: value.Name, Email: value.Email, Hits: value.Hits, MaxTPS: round(value.MaxTPS, 1),
 			Classes: map[string]int64{
-				auditdomain.DegradeClassBurst: value.Burst,
-				auditdomain.DegradeClassSoft:  value.Soft,
-				auditdomain.DegradeClassHard:  value.Hard,
+				auditdomain.DegradeClassBurst:    value.Burst,
+				auditdomain.DegradeClassSoft:     value.Soft,
+				auditdomain.DegradeClassHard:     value.Hard,
+				auditdomain.DegradeClassThinking: value.Thinking,
 			},
 			Nodes: value.Nodes, Last: value.Last, Enabled: value.Enabled, Found: value.Found, BFS: value.BuildBotFlagSource,
 		})
@@ -243,7 +245,7 @@ func buildDegradeSummary(window string, now time.Time, thresholds DegradeThresho
 		Totals: DegradeTotals{
 			Hits: data.Totals.Hits, Accounts: data.Totals.Accounts, StillEnabled: data.Totals.StillEnabled,
 			Disabled: data.Totals.Disabled, Deleted: data.Totals.Deleted, Hard: data.Totals.Hard,
-			Soft: data.Totals.Soft, Burst: data.Totals.Burst, MaxTPS: round(data.Totals.MaxTPS, 2),
+			Soft: data.Totals.Soft, Burst: data.Totals.Burst, Thinking: data.Totals.Thinking, MaxTPS: round(data.Totals.MaxTPS, 2),
 		},
 		Series: series, Nodes: nodes, Accounts: accounts,
 		AccountPage: DegradeAccountPage{
