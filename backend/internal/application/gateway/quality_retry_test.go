@@ -542,6 +542,11 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 	if shouldHoldQualityStream(input, nil, route, audit.OperationCompaction, cfg) {
 		t.Fatal("codex compaction operation must not hold")
 	}
+	classified := input
+	classified.skipQualityHold = true
+	if shouldHoldQualityStream(classified, nil, route, audit.OperationResponses, cfg) {
+		t.Fatal("gateway-classified compaction must not hold")
+	}
 	tui := input
 	tui.Body = []byte(`{"input":[{"role":"user","content":"` + tuiCompactionPrompt + `"}]}`)
 	if shouldHoldQualityStream(tui, nil, route, audit.OperationResponses, cfg) {

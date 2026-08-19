@@ -253,7 +253,7 @@ func CommitQualityHold(verdict QualityVerdict, qualityAttempt, maxAttempts int, 
 }
 
 func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwnership, route modeldomain.Route, operation audit.Operation, cfg QualityRetryRuntime) bool {
-	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || ownership != nil {
+	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || ownership != nil || input.skipQualityHold {
 		return false
 	}
 	switch operation {
@@ -262,8 +262,8 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return false
 	}
 	// TUI compaction is a normal /v1/responses body (no compaction_trigger).
-	// CreateResponse retags it to OperationCompaction; also skip here so a
-	// missed tag cannot withhold a 100s+ summary as missing-thinking.
+	// Keep this defensive body check in addition to skipQualityHold so a caller
+	// that bypasses CreateResponse cannot withhold a 100s+ summary as missing-thinking.
 	if isResponsesCompactionRequest(input.Body) {
 		return false
 	}

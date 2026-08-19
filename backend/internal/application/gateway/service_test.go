@@ -272,6 +272,42 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("compaction response ownership err = %v", err)
 	}
 
+	// Grok TUI compaction is a normal Responses request on the wire. It skips
+	// the quality hold and is labeled compaction only in the audit record, so
+	// Provider routing and stored-response ownership must remain intact.
+	service.UpdateQualityRetry(QualityRetryRuntime{
+		Enabled: true, MaxAttempts: 2, MinOutputTokens: 32,
+		OnExhausted: qualityRetryFailClosed, HoldTimeout: time.Second,
+	})
+	adapter.resetAttempts()
+	tuiCompacted, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-tui-compact", ClientKey: clientKey, PublicModel: "grok-test", PromptCacheSeed: "tui-session",
+		Body: []byte(`{"model":"grok-test","stream":true,"input":[{"role":"user","content":"` + tuiCompactionPrompt + `"}]}`), Streaming: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tuiBody, err := io.ReadAll(tuiCompacted.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(tuiBody) != "ok" {
+		t.Fatalf("TUI compaction body = %q", tuiBody)
+	}
+	tuiCompacted.MarkFirstToken()
+	tuiCompacted.Finalize(Usage{}, "resp-tui-compact", "")
+	_ = tuiCompacted.Body.Close()
+	if len(adapter.attempts) != 1 || adapter.lastOperation != string(audit.OperationResponses) {
+		t.Fatalf("TUI compaction attempts = %#v, Provider operation = %q", adapter.attempts, adapter.lastOperation)
+	}
+	logs, total, err = auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 3 || logs[0].Operation != audit.OperationCompaction {
+		t.Fatalf("TUI compaction audit = %#v, total=%d, err=%v", logs, total, err)
+	}
+	if ownership, err := responseRepo.Get(ctx, "resp-tui-compact", clientKey.ID, time.Now().UTC()); err != nil || ownership.AccountID != second.ID {
+		t.Fatalf("TUI compaction ownership = %#v, err=%v", ownership, err)
+	}
+
 	adapter.resetAttempts()
 	continued, err := service.CreateResponse(ctx, Input{RequestID: "req-2", ClientKey: clientKey, PublicModel: "grok-test", PreviousResponseID: "resp-test", Body: []byte(`{"model":"grok-test","previous_response_id":"resp-test"}`)})
 	if err != nil {
@@ -2602,6 +2638,7 @@ type failoverAdapter struct {
 	lastPromptCacheKey     string
 	lastReasoningReplayKey string
 	lastGrokTurnIndex      string
+	lastOperation          string
 	reasoningEffort        string
 	forwardedModels        []string
 	resourceStatus         int
@@ -4164,6 +4201,7 @@ func (a *failoverAdapter) ForwardResponse(_ context.Context, request provider.Re
 	a.lastPromptCacheKey = request.PromptCacheKey
 	a.lastReasoningReplayKey = request.ReasoningReplayKey
 	a.lastGrokTurnIndex = request.GrokTurnIndex
+	a.lastOperation = request.Operation
 	resourceStatus := a.resourceStatus
 	transportErr := a.transportErrorIDs[request.Credential.ID]
 	a.mu.Unlock()
@@ -4204,6 +4242,7 @@ func (a *failoverAdapter) resetAttempts() {
 	a.lastPromptCacheKey = ""
 	a.lastReasoningReplayKey = ""
 	a.lastGrokTurnIndex = ""
+	a.lastOperation = ""
 }
 
 func (a *failoverAdapter) ForwardedModels() []string {
