@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -21,15 +22,16 @@ const (
 )
 
 type qualityScanState struct {
-	protocol        string
-	pending         []byte
-	hasThinking     bool
-	visibleRunes    int
-	reasoningTokens int64
-	outputTokens    int64
-	usage           Usage
-	responseID      string
-	terminal        bool
+	protocol         string
+	pending          []byte
+	hasThinking      bool
+	reasoningStarted bool
+	visibleRunes     int
+	reasoningTokens  int64
+	outputTokens     int64
+	usage            Usage
+	responseID       string
+	terminal         bool
 }
 
 type qualityReadResult struct {
@@ -135,12 +137,16 @@ func (s *qualityScanState) signals() QualityStreamSignals {
 	if s.usage.Reported && s.usage.OutputTokens > output {
 		output = s.usage.OutputTokens
 	}
+	// Usage.reasoning_tokens is not proof of thinking. 降智 accounts report
+	// hundreds of reasoning tokens on completed while the stream never sent
+	// reasoning_text / reasoning_summary deltas (TUI shows no thoughts).
 	return QualityStreamSignals{
-		HasThinking:     s.hasThinking || s.reasoningTokens > 0 || s.usage.ReasoningTokens > 0,
-		VisibleTokens:   visible,
-		ReasoningTokens: max(s.reasoningTokens, s.usage.ReasoningTokens),
-		OutputTokens:    output,
-		Terminal:        s.terminal,
+		HasThinking:      s.hasThinking,
+		ReasoningStarted: s.reasoningStarted || s.hasThinking,
+		VisibleTokens:    visible,
+		ReasoningTokens:  max(s.reasoningTokens, s.usage.ReasoningTokens),
+		OutputTokens:     output,
+		Terminal:         s.terminal,
 	}
 }
 
@@ -165,7 +171,8 @@ func ObserveQualityChunk(state *qualityScanState, chunk []byte) {
 			continue
 		}
 		if bytes.Equal(line, []byte(qualityReasoningSSEComment)) {
-			state.hasThinking = true
+			// Timing stub only. 降智 still emits this, then usage.reasoning_tokens=0.
+			state.reasoningStarted = true
 			continue
 		}
 		if !bytes.HasPrefix(line, []byte("data:")) {
@@ -228,9 +235,6 @@ func observeQualityChat(state *qualityScanState, payload []byte) {
 		state.usage.ResponseModel = event.Model
 		state.outputTokens = event.Usage.CompletionTokens
 		state.reasoningTokens = event.Usage.CompletionTokensDetails.ReasoningTokens
-		if state.reasoningTokens > 0 {
-			state.hasThinking = true
-		}
 	}
 	for _, choice := range event.Choices {
 		delta := choice.Delta
@@ -246,17 +250,33 @@ func observeQualityChat(state *qualityScanState, payload []byte) {
 	}
 }
 
+type qualityReasoningItem struct {
+	ID               string `json:"id"`
+	Type             string `json:"type"`
+	EncryptedContent string `json:"encrypted_content"`
+}
+
+func noteResponsesReasoningItem(state *qualityScanState, item qualityReasoningItem) {
+	if !strings.EqualFold(strings.TrimSpace(item.Type), "reasoning") {
+		return
+	}
+	if strings.TrimSpace(item.ID) != "" {
+		state.reasoningStarted = true
+	}
+	if strings.TrimSpace(item.EncryptedContent) != "" {
+		state.hasThinking = true
+	}
+}
+
 func observeQualityResponses(state *qualityScanState, payload []byte) {
 	var event struct {
 		Type  string `json:"type"`
 		Delta string `json:"delta"`
-		Item  struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
-		} `json:"item"`
+		Item  qualityReasoningItem
 		Response *struct {
-			ID    string `json:"id"`
-			Model string `json:"model"`
+			ID     string                 `json:"id"`
+			Model  string                 `json:"model"`
+			Output []qualityReasoningItem `json:"output"`
 			Usage *struct {
 				OutputTokens        int64 `json:"output_tokens"`
 				InputTokens         int64 `json:"input_tokens"`
@@ -277,10 +297,8 @@ func observeQualityResponses(state *qualityScanState, payload []byte) {
 		if event.Delta != "" {
 			state.hasThinking = true
 		}
-	case "response.output_item.added":
-		if event.Item.Type == "reasoning" && event.Item.ID != "" {
-			state.hasThinking = true
-		}
+	case "response.output_item.added", "response.output_item.done":
+		noteResponsesReasoningItem(state, event.Item)
 	case "response.output_text.delta":
 		if event.Delta != "" {
 			noteVisibleContent(state, event.Delta)
@@ -289,6 +307,9 @@ func observeQualityResponses(state *qualityScanState, payload []byte) {
 	if event.Response != nil {
 		if state.responseID == "" {
 			state.responseID = event.Response.ID
+		}
+		for _, item := range event.Response.Output {
+			noteResponsesReasoningItem(state, item)
 		}
 		if event.Response.Usage != nil {
 			state.usage.Reported = true
@@ -299,9 +320,6 @@ func observeQualityResponses(state *qualityScanState, payload []byte) {
 			state.usage.ResponseModel = event.Response.Model
 			state.outputTokens = event.Response.Usage.OutputTokens
 			state.reasoningTokens = event.Response.Usage.OutputTokensDetails.ReasoningTokens
-			if state.reasoningTokens > 0 {
-				state.hasThinking = true
-			}
 		}
 	}
 }
@@ -332,7 +350,7 @@ func observeQualityAnthropic(state *qualityScanState, payload []byte) {
 		state.terminal = true
 	case "content_block_start":
 		if event.ContentBlock.Type == "thinking" {
-			state.hasThinking = true
+			state.reasoningStarted = true
 		}
 	case "content_block_delta":
 		if event.Delta.Type == "thinking_delta" && event.Delta.Thinking != "" {
@@ -348,9 +366,6 @@ func observeQualityAnthropic(state *qualityScanState, payload []byte) {
 		state.usage.ReasoningTokens = event.Usage.OutputTokensDetails.ThinkingTokens
 		state.outputTokens = event.Usage.OutputTokens
 		state.reasoningTokens = event.Usage.OutputTokensDetails.ThinkingTokens
-		if state.reasoningTokens > 0 {
-			state.hasThinking = true
-		}
 	}
 }
 
