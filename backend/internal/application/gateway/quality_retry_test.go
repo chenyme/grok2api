@@ -32,12 +32,14 @@ func TestClassifyQualityHold(t *testing.T) {
 		want QualityVerdict
 	}{
 		{name: "thinking delivers", sig: QualityStreamSignals{HasThinking: true, VisibleTokens: 10}, want: QualityDeliver},
-		{name: "reasoning tokens deliver", sig: QualityStreamSignals{ReasoningTokens: 40, VisibleTokens: 80, Terminal: true}, want: QualityDeliver},
+		{name: "usage reasoning tokens alone withhold", sig: QualityStreamSignals{ReasoningTokens: 40, VisibleTokens: 80, Terminal: true}, want: QualityWithhold},
 		{name: "visible 32 no think withhold", sig: QualityStreamSignals{VisibleTokens: 32, Terminal: true}, want: QualityWithhold},
 		{name: "output 40 no think withhold", sig: QualityStreamSignals{OutputTokens: 40, Terminal: true}, want: QualityWithhold},
 		{name: "short no think delivers", sig: QualityStreamSignals{VisibleTokens: 10, Terminal: true}, want: QualityDeliver},
 		{name: "empty terminal waits for transport handling", sig: QualityStreamSignals{Terminal: true}, want: QualityWait},
 		{name: "midstream enough content withhold", sig: QualityStreamSignals{VisibleTokens: 64}, want: QualityWithhold},
+		{name: "stub midstream waits even with enough visible", sig: QualityStreamSignals{ReasoningStarted: true, VisibleTokens: 64}, want: QualityWait},
+		{name: "stub terminal enough withhold", sig: QualityStreamSignals{ReasoningStarted: true, VisibleTokens: 64, Terminal: true}, want: QualityWithhold},
 		{name: "wait for more", sig: QualityStreamSignals{VisibleTokens: 8}, want: QualityWait},
 		{name: "hold expired short delivers", sig: QualityStreamSignals{VisibleTokens: 8, HoldExpired: true}, want: QualityDeliver},
 		{name: "hold expired empty waits", sig: QualityStreamSignals{HoldExpired: true}, want: QualityWait},
@@ -265,14 +267,99 @@ func TestObserveQualityChunkShortNoThink(t *testing.T) {
 
 func TestObserveQualityChunkResponsesReasoningItem(t *testing.T) {
 	t.Parallel()
-	state := qualityScanState{protocol: qualityProtocolResponses}
-	ObserveQualityChunk(&state, []byte(sse(
+	fake := qualityScanState{protocol: qualityProtocolResponses}
+	ObserveQualityChunk(&fake, []byte(sse(
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
+		`data: {"type":"response.output_text.delta","delta":"hello hello hello hello hello hello hello hello"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
+	)))
+	fakeSig := fake.signals()
+	if fakeSig.HasThinking {
+		t.Fatalf("usage-only reasoning tokens must not count as thinking: %#v", fakeSig)
+	}
+	if !fakeSig.ReasoningStarted || fakeSig.ReasoningTokens != 60 {
+		t.Fatalf("usage-only signals = %#v", fakeSig)
+	}
+	if ClassifyQualityHold(fakeSig, 32) != QualityWithhold {
+		t.Fatalf("usage-only reasoning with no deltas must withhold: %#v", fakeSig)
+	}
+
+	real := qualityScanState{protocol: qualityProtocolResponses}
+	ObserveQualityChunk(&real, []byte(sse(
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"plan the fix"}`,
 		`data: {"type":"response.output_text.delta","delta":"hello"}`,
 		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
 	)))
-	if ClassifyQualityHold(state.signals(), 32) != QualityDeliver {
-		t.Fatalf("responses reasoning item should deliver: %#v", state.signals())
+	realSig := real.signals()
+	if !realSig.HasThinking || realSig.ReasoningTokens != 60 {
+		t.Fatalf("streamed summary must count as thinking: %#v", realSig)
+	}
+	if ClassifyQualityHold(realSig, 32) != QualityDeliver {
+		t.Fatalf("streamed reasoning summary should deliver: %#v", realSig)
+	}
+
+	encrypted := qualityScanState{protocol: qualityProtocolResponses}
+	ObserveQualityChunk(&encrypted, []byte(sse(
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"gAAAA-cipher"}}`,
+		`data: {"type":"response.output_text.delta","delta":"hello hello hello hello hello hello hello hello"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
+	)))
+	encSig := encrypted.signals()
+	if !encSig.HasThinking || encSig.ReasoningTokens != 60 {
+		t.Fatalf("encrypted reasoning item must count as thinking: %#v", encSig)
+	}
+	if ClassifyQualityHold(encSig, 32) != QualityDeliver {
+		t.Fatalf("encrypted thinking should deliver: %#v", encSig)
+	}
+}
+
+func TestObserveQualityChunkEmptyReasoningStubIsNotThinking(t *testing.T) {
+	t.Parallel()
+	content := strings.Repeat("word ", 40)
+	chat := qualityScanState{protocol: qualityProtocolChat}
+	ObserveQualityChunk(&chat, []byte(sse(
+		": grok2api-reasoning-start",
+		`data: {"choices":[{"delta":{"content":"`+content+`"}}]}`,
+		`data: {"usage":{"completion_tokens":45,"completion_tokens_details":{"reasoning_tokens":0}}}`,
+		"data: [DONE]",
+	)))
+	chatSig := chat.signals()
+	if chatSig.HasThinking {
+		t.Fatalf("chat SSE stub must not count as thinking: %#v", chatSig)
+	}
+	if !chatSig.ReasoningStarted || !chatSig.Terminal || chatSig.ReasoningTokens != 0 {
+		t.Fatalf("chat stub signals = %#v", chatSig)
+	}
+	if ClassifyQualityHold(chatSig, 32) != QualityWithhold {
+		t.Fatalf("chat stub + 0 reasoning must withhold, got %s (%#v)", ClassifyQualityHold(chatSig, 32), chatSig)
+	}
+
+	mid := qualityScanState{protocol: qualityProtocolChat}
+	ObserveQualityChunk(&mid, []byte(sse(
+		": grok2api-reasoning-start",
+		`data: {"choices":[{"delta":{"content":"`+content+`"}}]}`,
+	)))
+	midSig := mid.signals()
+	if midSig.HasThinking || !midSig.ReasoningStarted || midSig.Terminal {
+		t.Fatalf("midstream stub signals = %#v", midSig)
+	}
+	if ClassifyQualityHold(midSig, 32) != QualityWait {
+		t.Fatalf("midstream stub must wait for usage, got %s (%#v)", ClassifyQualityHold(midSig, 32), midSig)
+	}
+
+	responses := qualityScanState{protocol: qualityProtocolResponses}
+	ObserveQualityChunk(&responses, []byte(sse(
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
+		`data: {"type":"response.output_text.delta","delta":"`+content+`"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":45,"output_tokens_details":{"reasoning_tokens":0}}}}`,
+	)))
+	respSig := responses.signals()
+	if respSig.HasThinking {
+		t.Fatalf("empty responses reasoning item must not count as thinking: %#v", respSig)
+	}
+	if ClassifyQualityHold(respSig, 32) != QualityWithhold {
+		t.Fatalf("empty reasoning item + 0 tokens must withhold, got %s (%#v)", ClassifyQualityHold(respSig, 32), respSig)
 	}
 }
 
