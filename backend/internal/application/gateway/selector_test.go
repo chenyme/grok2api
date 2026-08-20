@@ -1388,6 +1388,40 @@ func TestMarkFailureSoftNetworkCooldown(t *testing.T) {
 	}
 }
 
+func TestMarkFailureCapsRetryAfterAtCooldownMax(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "retry-after-cap.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "retry-after", SourceKey: "retry-after", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Minute, time.Minute, 500*time.Millisecond)
+	before := time.Now().UTC()
+	selector.MarkFailure(ctx, credential, http.StatusGatewayTimeout, 24*time.Hour)
+	updated, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CooldownUntil == nil {
+		t.Fatal("expected cooldown")
+	}
+	cooldown := updated.CooldownUntil.Sub(before)
+	if cooldown < 50*time.Second || cooldown > 70*time.Second {
+		t.Fatalf("retry-after cooldown = %s, want ~1m cap", cooldown)
+	}
+}
+
 type batchConcurrencyLimiter struct {
 	values       map[string]int
 	batchCalls   int
