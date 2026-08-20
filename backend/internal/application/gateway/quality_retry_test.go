@@ -739,16 +739,93 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		{name: "responses reasoning none", body: `{"reasoning":{"effort":"none"}}`},
 		{name: "messages thinking disabled", body: `{"thinking":{"type":"disabled"}}`},
 		{name: "messages zero thinking budget", body: `{"thinking":{"type":"enabled","budget_tokens":0}}`},
-		{name: "client tools", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
-		{name: "legacy functions", body: `{"functions":[{"name":"charge"}]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := input
 			request.Body = []byte(test.body)
 			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
-				t.Fatal("explicitly disabled reasoning and tool requests must not be held")
+				t.Fatal("explicitly disabled reasoning must not be held")
 			}
 		})
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "client tools schema", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
+		{name: "legacy functions schema", body: `{"functions":[{"name":"charge"}]}`},
+		{name: "tui tools schema plus user input", body: `{"model":"grok-4.6","tools":[{"type":"function","name":"read_file"}],"input":[{"role":"user","content":"hello"}]}`},
+		{name: "local shell declaration", body: `{"tools":[{"type":"local_shell"}]}`},
+		{name: "local environment shell declaration", body: `{"tools":[{"type":"shell","environment":{"type":"local"}}]}`},
+		{name: "apply patch declaration", body: `{"tools":[{"type":"apply_patch"}]}`},
+		{name: "client namespace", body: `{"tools":[{"type":"namespace","name":"local","tools":[{"type":"function","name":"read_file"}]}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := input
+			request.Body = []byte(test.body)
+			if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("tools schema alone must still hold so TUI thinking turns are classified")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "function_call_output", body: `{"input":[{"type":"function_call_output","call_id":"call_1","output":"done"}]}`},
+		{name: "tool_result", body: `{"input":[{"type":"tool_result","tool_use_id":"tool_1","content":"done"}]}`},
+		{name: "role tool", body: `{"messages":[{"role":"tool","content":"done"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := input
+			request.Body = []byte(test.body)
+			if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("in-flight tool results must still be held so 0-thinking agent turns are classified")
+			}
+		})
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "responses web search", body: `{"tools":[{"type":"web_search"}]}`},
+		{name: "versioned web search", body: `{"tools":[{"type":"web_search_2025_08_26"}]}`},
+		{name: "x search", body: `{"tools":[{"type":"x_search"}]}`},
+		{name: "image generation", body: `{"tools":[{"type":"image_generation"}]}`},
+		{name: "file search", body: `{"tools":[{"type":"file_search"}]}`},
+		{name: "collections search", body: `{"tools":[{"type":"collections_search"}]}`},
+		{name: "code execution", body: `{"tools":[{"type":"code_execution"}]}`},
+		{name: "code interpreter", body: `{"tools":[{"type":"code_interpreter"}]}`},
+		{name: "hosted shell", body: `{"tools":[{"type":"shell","environment":{"type":"container_auto"}}]}`},
+		{name: "future native tool skips replay", body: `{"tools":[{"type":"future_server_tool"}]}`},
+		{name: "remote mcp", body: `{"tools":[{"type":"mcp","server_url":"https://example.com"}]}`},
+		{name: "mixed client and hosted", body: `{"tools":[{"type":"function","name":"read_file"},{"type":"web_search"}]}`},
+		{name: "chat web search options", body: `{"web_search_options":{}}`},
+		{name: "messages web search", body: `{"tools":[{"type":"web_search_20250305","name":"web_search"}]}`},
+		{name: "messages mcp servers", body: `{"mcp_servers":[{"type":"url","url":"https://example.com"}]}`},
+		{name: "deferred hosted tool", body: `{"input":[{"type":"additional_tools","tools":[{"type":"mcp","server_url":"https://example.com"}]}]}`},
+		{name: "nested hosted tool", body: `{"tools":[{"type":"namespace","name":"remote","tools":[{"type":"web_search"}]}]}`},
+		{name: "after local tool with hosted declaration", body: `{"tools":[{"type":"web_search"}],"input":[{"type":"function_call_output","call_id":"call_1","output":"done"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := input
+			request.Body = []byte(test.body)
+			if !qualityRequestHasReplayUnsafeHostedTools(request.Body) {
+				t.Fatal("fixture must be classified as replay-unsafe hosted tooling")
+			}
+			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("hosted tools must not be held because account retry can execute them again")
+			}
+		})
+	}
+	for _, body := range []string{
+		`{"tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{"tools":{"type":"array"}}}}]}`,
+		`{"mcp_servers":[]}`,
+		`{"web_search_options":null}`,
+	} {
+		if qualityRequestHasReplayUnsafeHostedTools([]byte(body)) {
+			t.Fatalf("safe or empty tool metadata classified as hosted: %s", body)
+		}
 	}
 	toolCache := input
 	toolCache.Body = []byte(`{"messages":[{"role":"user","content":"hello"}]}`)

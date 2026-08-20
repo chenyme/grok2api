@@ -291,10 +291,12 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// Retrying a tool-capable request can repeat external side effects. Tool
-	// requests remain outside this feature until they have their own replay
-	// safety contract.
-	if qualityRequestUsesTools(input.Body) {
+	// Client-executed tools are safe to hold: their calls have not reached the
+	// client yet, and completed results in the next request are immutable input.
+	// Hosted tools are different. Retrying them can repeat an upstream search,
+	// sandbox run, image job, or remote MCP call, so retain the old no-replay
+	// safety boundary for any request that declares one.
+	if qualityRequestHasReplayUnsafeHostedTools(input.Body) {
 		return false
 	}
 	// Aliases are rewritten before this gate, so inspect the effective request
@@ -309,12 +311,76 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	return modeldomain.SupportsReasoningForProvider(route.Provider, route.UpstreamModel)
 }
 
-func qualityRequestUsesTools(body []byte) bool {
-	var payload map[string]json.RawMessage
-	if json.Unmarshal(body, &payload) != nil {
+func qualityRequestHasReplayUnsafeHostedTools(body []byte) bool {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil || payload == nil {
 		return false
 	}
-	return nonEmptyJSONCollection(payload["tools"]) || nonEmptyJSONCollection(payload["functions"])
+	if raw, exists := payload["web_search_options"]; exists && raw != nil {
+		return true
+	}
+	if raw, exists := payload["mcp_servers"]; exists && raw != nil {
+		servers, ok := raw.([]any)
+		if !ok || len(servers) > 0 {
+			return true
+		}
+	}
+	if qualityToolListHasReplayUnsafeHostedTool(payload["tools"]) {
+		return true
+	}
+	// Responses Tool Search can load declarations later in the request. Only
+	// inspect additional_tools items; arbitrary user/schema objects may also
+	// contain a field named "tools" and must not affect the retry policy.
+	items, _ := payload["input"].([]any)
+	for _, rawItem := range items {
+		item, ok := rawItem.(map[string]any)
+		if !ok || jsonNodeString(item["type"]) != "additional_tools" {
+			continue
+		}
+		if qualityToolListHasReplayUnsafeHostedTool(item["tools"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func qualityToolListHasReplayUnsafeHostedTool(value any) bool {
+	tools, ok := value.([]any)
+	if !ok {
+		return false
+	}
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind := jsonNodeString(tool["type"])
+		switch kind {
+		case "", "function", "custom", "local_shell", "apply_patch", "tool_search":
+			// These declarations only ask the model to return a call. Execution
+			// happens in the client after the held response is committed.
+			continue
+		case "shell":
+			environment, _ := tool["environment"].(map[string]any)
+			if jsonNodeString(environment["type"]) != "local" {
+				return true
+			}
+		case "namespace":
+			if qualityToolListHasReplayUnsafeHostedTool(tool["tools"]) {
+				return true
+			}
+		default:
+			// Default to no replay for every server/native tool, including types
+			// added by future protocol versions that this gateway does not know yet.
+			return true
+		}
+	}
+	return false
+}
+
+func jsonNodeString(value any) string {
+	text, _ := value.(string)
+	return strings.ToLower(strings.TrimSpace(text))
 }
 
 func qualityRequestDisablesReasoning(body []byte) bool {
@@ -339,14 +405,6 @@ func qualityRequestDisablesReasoning(body []byte) bool {
 		}
 	}
 	return jsonStringEquals(payload["thinking"], "disabled")
-}
-
-func nonEmptyJSONCollection(raw json.RawMessage) bool {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" || trimmed == "[]" || trimmed == "{}" {
-		return false
-	}
-	return strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")
 }
 
 func jsonStringEquals(raw json.RawMessage, want string) bool {
