@@ -20,6 +20,7 @@ import (
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
@@ -35,6 +36,7 @@ func TestClassifyQualityHold(t *testing.T) {
 		{name: "usage reasoning tokens alone withhold", sig: QualityStreamSignals{ReasoningTokens: 40, VisibleTokens: 80, Terminal: true}, want: QualityWithhold},
 		{name: "visible 32 no think withhold", sig: QualityStreamSignals{VisibleTokens: 32, Terminal: true}, want: QualityWithhold},
 		{name: "output 40 no think withhold", sig: QualityStreamSignals{OutputTokens: 40, Terminal: true}, want: QualityWithhold},
+		{name: "short visible output ignores inflated total", sig: QualityStreamSignals{VisibleTokens: 1, OutputTokens: 80, Terminal: true}, want: QualityDeliver},
 		{name: "short no think delivers", sig: QualityStreamSignals{VisibleTokens: 10, Terminal: true}, want: QualityDeliver},
 		{name: "empty terminal waits for transport handling", sig: QualityStreamSignals{Terminal: true}, want: QualityWait},
 		{name: "midstream enough content withhold", sig: QualityStreamSignals{VisibleTokens: 64}, want: QualityWithhold},
@@ -267,12 +269,102 @@ func TestObserveQualityChunkShortNoThink(t *testing.T) {
 	}
 }
 
+func TestObserveQualityChunkShortNoThinkIgnoresFakeReasoningUsage(t *testing.T) {
+	t.Parallel()
+	state := qualityScanState{protocol: qualityProtocolChat}
+	ObserveQualityChunk(&state, []byte(sse(
+		": grok2api-reasoning-start",
+		`data: {"choices":[{"delta":{"content":"OK"}}]}`,
+		`data: {"usage":{"completion_tokens":80,"completion_tokens_details":{"reasoning_tokens":79}}}`,
+		"data: [DONE]",
+	)))
+	sig := state.signals()
+	if sig.VisibleTokens >= 32 || sig.OutputTokens != 80 || sig.ReasoningTokens != 79 {
+		t.Fatalf("fake-usage short reply signals = %#v", sig)
+	}
+	if got := ClassifyQualityHold(sig, 32); got != QualityDeliver {
+		t.Fatalf("short visible reply must not be withheld by inflated usage: %s (%#v)", got, sig)
+	}
+}
+
+func TestObserveQualityConvertedEncryptedThinking(t *testing.T) {
+	t.Parallel()
+	source := sse(
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"gAAAA-cipher"}}`,
+		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
+	)
+	tests := []struct {
+		name      string
+		operation string
+		protocol  string
+		options   conversation.ResponseOptions
+	}{
+		{name: "chat", operation: conversation.OperationChat, protocol: qualityProtocolChat},
+		{name: "messages", operation: conversation.OperationMessages, protocol: qualityProtocolAnthropic, options: conversation.ResponseOptions{AnthropicThinking: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			converted, err := io.ReadAll(conversation.ConvertResponseStreamWithOptions(
+				io.NopCloser(strings.NewReader(source)), test.operation, test.options,
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := qualityScanState{protocol: test.protocol}
+			ObserveQualityChunk(&state, converted)
+			sig := state.signals()
+			if !sig.HasThinking {
+				t.Fatalf("converted encrypted thinking evidence was lost:\n%s", converted)
+			}
+			if got := ClassifyQualityHold(sig, 32); got != QualityDeliver {
+				t.Fatalf("converted encrypted thinking verdict = %s (%#v)", got, sig)
+			}
+		})
+	}
+}
+
+func TestObserveQualityChunkWhitespaceIsNotThinking(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		protocol string
+		fixture  string
+	}{
+		{name: "chat", protocol: qualityProtocolChat, fixture: sse(`data: {"choices":[{"delta":{"reasoning_content":" \n\t"}}]}`)},
+		{name: "responses", protocol: qualityProtocolResponses, fixture: sse(`data: {"type":"response.reasoning_summary_text.delta","delta":" \n\t"}`)},
+		{name: "messages", protocol: qualityProtocolAnthropic, fixture: sse(`data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":" \n\t"}}`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := qualityScanState{protocol: test.protocol}
+			ObserveQualityChunk(&state, []byte(test.fixture))
+			if sig := state.signals(); sig.HasThinking {
+				t.Fatalf("whitespace-only reasoning counted as thinking: %#v", sig)
+			}
+		})
+	}
+}
+
+func TestObserveQualityChunkAnthropicSignatureIsThinking(t *testing.T) {
+	t.Parallel()
+	state := qualityScanState{protocol: qualityProtocolAnthropic}
+	ObserveQualityChunk(&state, []byte(sse(
+		`data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"gAAAA-cipher"}}`,
+	)))
+	if sig := state.signals(); !sig.HasThinking || !sig.ReasoningStarted {
+		t.Fatalf("non-empty Anthropic signature must count as encrypted thinking: %#v", sig)
+	}
+}
+
 func TestObserveQualityChunkResponsesReasoningItem(t *testing.T) {
 	t.Parallel()
 	fake := qualityScanState{protocol: qualityProtocolResponses}
 	ObserveQualityChunk(&fake, []byte(sse(
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
-		`data: {"type":"response.output_text.delta","delta":"hello hello hello hello hello hello hello hello"}`,
+		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("hello ", 40)+`"}`,
 		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
 	)))
 	fakeSig := fake.signals()
@@ -650,45 +742,160 @@ func TestPeekQualityStreamHoldTimeoutStubOnlyDoesNotFailOpen(t *testing.T) {
 	}
 }
 
+type qualityOpenPeekResult struct {
+	replay  io.ReadCloser
+	verdict QualityVerdict
+	err     error
+}
+
+func peekOpenQualityStreamForTest(t *testing.T, protocol, stream string) qualityOpenPeekResult {
+	t.Helper()
+	reader, writer := io.Pipe()
+	done := make(chan qualityOpenPeekResult, 1)
+	go func() {
+		replay, verdict, _, _, err := peekQualityStream(
+			context.Background(), reader, protocol,
+			QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: 2 * time.Second},
+		)
+		done <- qualityOpenPeekResult{replay: replay, verdict: verdict, err: err}
+	}()
+	if _, err := io.WriteString(writer, stream); err != nil {
+		_ = writer.Close()
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		_ = writer.Close()
+		return result
+	case <-time.After(500 * time.Millisecond):
+		_ = writer.CloseWithError(errors.New("test terminal stream timeout"))
+		result := <-done
+		if result.replay != nil {
+			_ = result.replay.Close()
+		}
+		t.Fatal("terminal stream waited for hold/idle instead of finishing while the connection remained open")
+		return qualityOpenPeekResult{}
+	}
+}
+
 func TestPeekQualityStreamEmptyCompletedRetriesWithoutIdle(t *testing.T) {
 	t.Parallel()
-	started := time.Now()
-	replay, verdict, _, _, err := peekQualityStream(
-		context.Background(),
-		io.NopCloser(strings.NewReader(sse(
-			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":0}}}`,
-		))),
-		qualityProtocolResponses,
-		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: 2 * time.Second},
-	)
-	if replay != nil {
-		defer replay.Close()
+	for _, test := range []struct {
+		name     string
+		protocol string
+		stream   string
+	}{
+		{
+			name:     "responses completed",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":0}}}`,
+			),
+		},
+		{
+			name:     "responses completed with empty text node",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":""}]}],"usage":{"output_tokens":0}}}`,
+			),
+		},
+		{name: "chat done", protocol: qualityProtocolChat, stream: sse("data: [DONE]")},
+		{
+			name:     "chat finish reason",
+			protocol: qualityProtocolChat,
+			stream:   sse(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`),
+		},
+		{name: "anthropic message stop", protocol: qualityProtocolAnthropic, stream: sse(`data: {"type":"message_stop"}`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := peekOpenQualityStreamForTest(t, test.protocol, test.stream)
+			if result.replay != nil {
+				defer result.replay.Close()
+			}
+			if !errors.Is(result.err, errQualityEmptyStream) {
+				t.Fatalf("peek error = %v, want empty stream", result.err)
+			}
+			if result.verdict != QualityWait {
+				t.Fatalf("verdict = %s, want wait so the attempt loop retries as transport", result.verdict)
+			}
+		})
 	}
-	if !errors.Is(err, errQualityEmptyStream) {
-		t.Fatalf("peek error = %v, want empty stream", err)
-	}
-	if verdict != QualityWait {
-		t.Fatalf("verdict = %s, want wait so the attempt loop retries as transport", verdict)
-	}
-	if time.Since(started) > 500*time.Millisecond {
-		t.Fatalf("empty completed stream waited %s, want immediate retry", time.Since(started))
-	}
+}
 
-	started = time.Now()
-	replay, verdict, _, _, err = peekQualityStream(
-		context.Background(),
-		io.NopCloser(strings.NewReader(sse("data: [DONE]"))),
-		qualityProtocolChat,
-		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: 2 * time.Second},
-	)
-	if replay != nil {
-		defer replay.Close()
-	}
-	if !errors.Is(err, errQualityEmptyStream) {
-		t.Fatalf("chat empty [DONE] peek error = %v, want empty stream", err)
-	}
-	if time.Since(started) > 500*time.Millisecond {
-		t.Fatalf("empty chat [DONE] waited %s, want immediate retry", time.Since(started))
+func TestPeekQualityStreamTerminalSemanticOutputIsNotEmpty(t *testing.T) {
+	t.Parallel()
+	longText := strings.Repeat("word ", 40)
+	shortText := strings.Repeat("a", 80)
+	for _, test := range []struct {
+		name        string
+		protocol    string
+		stream      string
+		wantVerdict QualityVerdict
+	}{
+		{
+			name:     "responses aggregate function call",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+		{
+			name:     "responses streamed function call",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"read_file","arguments":""}}`,
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[]}}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+		{
+			name:     "chat tool call",
+			protocol: qualityProtocolChat,
+			stream: sse(
+				`data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+		{
+			name:     "anthropic tool use",
+			protocol: qualityProtocolAnthropic,
+			stream: sse(
+				`data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"tool_1","name":"read_file","input":{}}}`,
+				`data: {"type":"message_stop"}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+		{
+			name:     "responses aggregate long text",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"` + longText + `"}]}]}}`,
+			),
+			wantVerdict: QualityWithhold,
+		},
+		{
+			name:     "responses aggregate does not double count deltas",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.output_text.delta","delta":"`+shortText+`"}`,
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"`+shortText+`"}]}]}}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := peekOpenQualityStreamForTest(t, test.protocol, test.stream)
+			if result.replay != nil {
+				defer result.replay.Close()
+			}
+			if result.err != nil {
+				t.Fatalf("peek error = %v, want semantic output", result.err)
+			}
+			if result.verdict != test.wantVerdict {
+				t.Fatalf("verdict = %s, want %s", result.verdict, test.wantVerdict)
+			}
+		})
 	}
 }
 
@@ -807,6 +1014,10 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		{name: "client tools schema", body: `{"tools":[{"type":"function","function":{"name":"charge"}}]}`},
 		{name: "legacy functions schema", body: `{"functions":[{"name":"charge"}]}`},
 		{name: "tui tools schema plus user input", body: `{"model":"grok-4.6","tools":[{"type":"function","name":"read_file"}],"input":[{"role":"user","content":"hello"}]}`},
+		{name: "local shell declaration", body: `{"tools":[{"type":"local_shell"}]}`},
+		{name: "local environment shell declaration", body: `{"tools":[{"type":"shell","environment":{"type":"local"}}]}`},
+		{name: "apply patch declaration", body: `{"tools":[{"type":"apply_patch"}]}`},
+		{name: "client namespace", body: `{"tools":[{"type":"namespace","name":"local","tools":[{"type":"function","name":"read_file"}]}]}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := input
@@ -827,13 +1038,53 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := input
 			request.Body = []byte(test.body)
-			if !qualityRequestHasInFlightToolResults(request.Body) {
-				t.Fatal("fixture must still be detected as tool output")
-			}
 			if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
 				t.Fatal("in-flight tool results must still be held so 0-thinking agent turns are classified")
 			}
 		})
+	}
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "responses web search", body: `{"tools":[{"type":"web_search"}]}`},
+		{name: "versioned web search", body: `{"tools":[{"type":"web_search_2025_08_26"}]}`},
+		{name: "x search", body: `{"tools":[{"type":"x_search"}]}`},
+		{name: "image generation", body: `{"tools":[{"type":"image_generation"}]}`},
+		{name: "file search", body: `{"tools":[{"type":"file_search"}]}`},
+		{name: "collections search", body: `{"tools":[{"type":"collections_search"}]}`},
+		{name: "code execution", body: `{"tools":[{"type":"code_execution"}]}`},
+		{name: "code interpreter", body: `{"tools":[{"type":"code_interpreter"}]}`},
+		{name: "hosted shell", body: `{"tools":[{"type":"shell","environment":{"type":"container_auto"}}]}`},
+		{name: "future native tool skips replay", body: `{"tools":[{"type":"future_server_tool"}]}`},
+		{name: "remote mcp", body: `{"tools":[{"type":"mcp","server_url":"https://example.com"}]}`},
+		{name: "mixed client and hosted", body: `{"tools":[{"type":"function","name":"read_file"},{"type":"web_search"}]}`},
+		{name: "chat web search options", body: `{"web_search_options":{}}`},
+		{name: "messages web search", body: `{"tools":[{"type":"web_search_20250305","name":"web_search"}]}`},
+		{name: "messages mcp servers", body: `{"mcp_servers":[{"type":"url","url":"https://example.com"}]}`},
+		{name: "deferred hosted tool", body: `{"input":[{"type":"additional_tools","tools":[{"type":"mcp","server_url":"https://example.com"}]}]}`},
+		{name: "nested hosted tool", body: `{"tools":[{"type":"namespace","name":"remote","tools":[{"type":"web_search"}]}]}`},
+		{name: "after local tool with hosted declaration", body: `{"tools":[{"type":"web_search"}],"input":[{"type":"function_call_output","call_id":"call_1","output":"done"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := input
+			request.Body = []byte(test.body)
+			if !qualityRequestHasReplayUnsafeHostedTools(request.Body) {
+				t.Fatal("fixture must be classified as replay-unsafe hosted tooling")
+			}
+			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("hosted tools must not be held because account retry can execute them again")
+			}
+		})
+	}
+	for _, body := range []string{
+		`{"tools":[{"type":"function","name":"read_file","parameters":{"type":"object","properties":{"tools":{"type":"array"}}}}]}`,
+		`{"mcp_servers":[]}`,
+		`{"web_search_options":null}`,
+	} {
+		if qualityRequestHasReplayUnsafeHostedTools([]byte(body)) {
+			t.Fatalf("safe or empty tool metadata classified as hosted: %s", body)
+		}
 	}
 	toolCache := input
 	toolCache.Body = []byte(`{"messages":[{"role":"user","content":"hello"}]}`)

@@ -1,7 +1,9 @@
 package inference
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
@@ -43,8 +45,13 @@ func (h *Handler) handleOpenAISpeech(c *gin.Context) {
 		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "audio speech 仅支持 application/json")
 		return
 	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		writeOpenAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过限制")
+		return
+	}
 	var request openAISpeechRequest
-	if err := decodeSingleJSON(c.Request.Body, &request, false); err != nil {
+	if err := decodeSingleJSON(bytes.NewReader(body), &request, false); err != nil {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "audio speech 请求无效")
 		return
 	}
@@ -109,6 +116,9 @@ func (h *Handler) handleOpenAISpeech(c *gin.Context) {
 		OutputFormat:             format,
 		Speed:                    speed,
 		OptimizeStreamingLatency: optimize,
+		Method:                   c.Request.Method,
+		Path:                     c.Request.URL.Path,
+		Headers:                  c.Request.Header.Clone(),
 	}
 	if request.TextNormalization != nil {
 		input.TextNormalization = *request.TextNormalization

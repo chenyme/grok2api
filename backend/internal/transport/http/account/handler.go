@@ -1259,7 +1259,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 	result := newAccountResponse(value)
-	if request.Enabled != nil && result.CooldownUntil != nil && time.Now().UTC().Before(*result.CooldownUntil) {
+	if value.EnabledChanged && result.CooldownUntil != nil && time.Now().UTC().Before(*result.CooldownUntil) {
 		result.EnabledDoesNotClearCooldown = true
 	}
 	if request.BuildSuperEntitled != nil {

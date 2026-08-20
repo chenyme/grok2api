@@ -706,6 +706,50 @@ func TestUpdateAuditCommitDelayRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUpdateAuditRetentionPreservesExplicitZero(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Audit.RetentionDays = 7
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Audit.RetentionDays = 0
+	input.Audit.RetentionDaysProvided = true
+
+	if _, err := service.Update(context.Background(), service.Get().Revision, input); err != nil {
+		t.Fatal(err)
+	}
+	if applied.Audit.RetentionDays != 0 {
+		t.Fatalf("applied audit policy = %#v", applied.Audit)
+	}
+	if repo.value.Audit.RetentionDays == nil || *repo.value.Audit.RetentionDays != 0 {
+		t.Fatalf("persisted audit policy = %#v", repo.value.Audit)
+	}
+	reloaded, _, _, err := LoadPersisted(context.Background(), cfg, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Audit.RetentionDays != 0 {
+		t.Fatalf("reloaded audit policy = %#v", reloaded.Audit)
+	}
+}
+
+func TestLoadPersistedKeepsAuditDefaultsForOlderPayload(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Audit.RetentionDays = 30
+	value := toDomainConfig(cfg)
+	value.Audit.RetentionDays = nil
+	repo := &runtimeSettingsRepositoryStub{value: value, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Audit.RetentionDays != 30 {
+		t.Fatalf("legacy audit defaults = %#v", loaded.Audit)
+	}
+}
+
 func TestUpdateRejectsNegativeAuditCommitDelay(t *testing.T) {
 	cfg := testConfig(t)
 	service := NewService(cfg, time.Time{}, 0, &runtimeSettingsRepositoryStub{}, nil, nil)

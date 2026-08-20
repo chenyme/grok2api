@@ -556,4 +556,104 @@ func TestDegradeTimestampScansPostgresTimeValue(t *testing.T) {
 	}
 }
 
+func TestAuditRepositoryRequestMetadata(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-request-body.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	now := time.Now().UTC()
+	reqHeaders := map[string][]string{
+		"User-Agent":   {"curl/8.4.0"},
+		"Content-Type": {"application/json"},
+	}
+	record := audit.Record{
+		RequestID:      "req-with-body",
+		ClientKeyID:    1,
+		ModelRouteID:   1,
+		StatusCode:     200,
+		RequestMethod:  "POST",
+		RequestPath:    "/v1/chat/completions",
+		RequestHeaders: reqHeaders,
+		CreatedAt:      now,
+	}
+	if err := repository.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := repository.List(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items len = %d, want 1", len(items))
+	}
+	if len(items[0].RequestHeaders) != 0 {
+		t.Fatalf("list unexpectedly loaded audit payloads: %#v", items[0])
+	}
+	detail, err := repository.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.RequestMethod != "POST" || detail.RequestPath != "/v1/chat/completions" || detail.RequestHeaders["User-Agent"][0] != "curl/8.4.0" {
+		t.Fatalf("Detail HTTP fields mismatch: %#v", detail)
+	}
+}
+
+func TestAuditRepositoryPurgeOlderThanBatchesAuditsAndAttempts(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-purge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	values := make([]audit.Record, auditPurgeBatchSize+1)
+	for index := range values {
+		values[index] = audit.Record{
+			EventID:      fmt.Sprintf("evt_audit_purge_%04d", index),
+			RequestID:    fmt.Sprintf("purge-%04d", index),
+			ClientKeyID:  1,
+			ModelRouteID: 1,
+			StatusCode:   200,
+			CreatedAt:    cutoff.Add(-time.Hour),
+			Attempts: []audit.Attempt{{
+				Number: 1, Source: audit.AttemptSourceCredential, Stage: "response_stream", StartedAt: cutoff.Add(-time.Hour),
+			}},
+		}
+	}
+	if err := repository.CreateBatch(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(ctx, audit.Record{
+		EventID: "evt_audit_purge_new", RequestID: "purge-new", ClientKeyID: 1, ModelRouteID: 1,
+		StatusCode: 200, CreatedAt: cutoff.Add(time.Hour),
+		Attempts: []audit.Attempt{{Number: 1, Source: audit.AttemptSourceCredential, Stage: "response", StartedAt: cutoff.Add(time.Hour)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := repository.PurgeOlderThan(ctx, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != int64(len(values)) {
+		t.Fatalf("deleted = %d, want %d", deleted, len(values))
+	}
+	if count := tableRowCount(t, database, "request_audits"); count != 1 {
+		t.Fatalf("remaining audits = %d", count)
+	}
+	if count := tableRowCount(t, database, "request_audit_attempts"); count != 1 {
+		t.Fatalf("remaining attempts = %d", count)
+	}
+}
+
 func uint64Pointer(value uint64) *uint64 { return &value }

@@ -78,7 +78,7 @@ func (s *Service) ProbeEgressQuality(ctx context.Context, nodeID uint64, input e
 	probeCtx := infraegress.WithQualityProbe(ctx)
 	result, err := s.CreateChatCompletion(probeCtx, Input{
 		RequestID: requestID, ClientKey: key, PublicModel: publicModel, Body: body,
-		Streaming: true, Operation: audit.OperationChat, ForcedEgressNodeID: nodeID,
+		Streaming: true, Operation: audit.OperationChat, ForcedEgressNodeID: nodeID, ForcedAccountID: input.AccountID,
 	})
 	if err != nil {
 		return egressapp.QualityProbeResult{}, normalizeQualityProbeRequestError(err)

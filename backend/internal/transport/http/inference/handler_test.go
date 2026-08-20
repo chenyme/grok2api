@@ -927,8 +927,8 @@ func TestStreamInspectorMarksChatReasoningComment(t *testing.T) {
 }
 
 func TestInternalSSEMarkerFilterAcrossChunkBoundaries(t *testing.T) {
-	marker := reasoningStartSSEComment + "\n\n"
-	input := []byte("data: before\n\n" + marker + "data: after\n\n")
+	markers := reasoningStartSSEComment + "\n\n" + reasoningEvidenceSSEComment + "\n\n"
+	input := []byte("data: before\n\n" + markers + "data: after\n\n")
 	want := "data: before\n\ndata: after\n\n"
 	for split := 0; split <= len(input); split++ {
 		filter := internalSSEMarkerFilter{enabled: true}
@@ -948,6 +948,7 @@ func TestCopyStreamConsumesInternalReasoningMarker(t *testing.T) {
 	context, _ := gin.CreateTestContext(recorder)
 	body := `data: {"choices":[{"delta":{"role":"assistant"}}]}` + "\n\n" +
 		": grok2api-reasoning-start\n\n" +
+		": grok2api-reasoning-evidence\n\n" +
 		`data: {"choices":[{"delta":{"content":"hello"}}]}` + "\n\n" +
 		"data: [DONE]\n\n"
 	marked := 0
@@ -957,11 +958,31 @@ func TestCopyStreamConsumesInternalReasoningMarker(t *testing.T) {
 	if marked != 1 {
 		t.Fatalf("first token marked %d times", marked)
 	}
-	if strings.Contains(recorder.Body.String(), "grok2api-reasoning-start") {
+	if strings.Contains(recorder.Body.String(), "grok2api-reasoning-") {
 		t.Fatalf("internal marker leaked to client: %q", recorder.Body.String())
 	}
 	if !strings.Contains(recorder.Body.String(), `"content":"hello"`) {
 		t.Fatalf("visible Chat delta missing: %q", recorder.Body.String())
+	}
+}
+
+func TestCopyStreamConsumesAnthropicReasoningEvidenceMarker(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	body := ": grok2api-reasoning-evidence\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}` + "\n\n" +
+		"event: message_stop\n" +
+		`data: {"type":"message_stop"}` + "\n\n"
+	if _, err := copyStream(context.Writer, strings.NewReader(body), streamProtocolAnthropic, nil); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(recorder.Body.String(), "grok2api-reasoning-evidence") {
+		t.Fatalf("internal Anthropic marker leaked to client: %q", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"signature":"sig"`) {
+		t.Fatalf("Anthropic signature delta missing: %q", recorder.Body.String())
 	}
 }
 
@@ -991,14 +1012,14 @@ func TestCopyStreamWritesTerminalOnIdleTimeout(t *testing.T) {
 		want     []string
 	}{
 		{name: "chat", protocol: streamProtocolChat, want: []string{`"code":"upstream_stream_idle_timeout"`, "data: [DONE]"}},
-		{name: "responses", protocol: streamProtocolResponses, want: []string{`"type":"response.failed"`, `"id":"resp_abort"`, `"created_at":`, `"sequence_number":`, `"code":"upstream_stream_idle_timeout"`, `"status":"failed"`, `"model":`}},
+		{name: "responses", protocol: streamProtocolResponses, want: []string{`"type":"response.failed"`, `"id":"resp_abort"`, `"created_at":`, `"sequence_number":`, `"code":"server_error"`, `"message":"upstream_stream_idle_timeout:`, `"status":"failed"`, `"model":"grok-test"`}},
 		{name: "anthropic", protocol: streamProtocolAnthropic, want: []string{`"type":"error"`, "上游流式响应长时间无数据"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			context, _ := gin.CreateTestContext(recorder)
-			_, err := copyStream(context.Writer, &idleErrorReader{}, test.protocol, nil)
+			_, err := copyStreamWithFallbackModel(context.Writer, &idleErrorReader{}, test.protocol, nil, "grok-test")
 			if !errors.Is(err, errUpstreamStreamRead) || !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) {
 				t.Fatalf("copy error = %v", err)
 			}
@@ -1094,24 +1115,24 @@ func TestCopyStreamWritesTerminalOnIncompleteEOF(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	_, err := copyStream(context.Writer, strings.NewReader(""), streamProtocolResponses, nil)
+	_, err := copyStreamWithFallbackModel(context.Writer, strings.NewReader(""), streamProtocolResponses, nil, "grok-test")
 	if !errors.Is(err, errUpstreamStreamIncomplete) {
 		t.Fatalf("copy error = %v", err)
 	}
 	got := recorder.Body.String()
-	if !strings.Contains(got, `"type":"response.failed"`) || !strings.Contains(got, `"code":"upstream_stream_incomplete"`) {
+	if !strings.Contains(got, `"type":"response.failed"`) || !strings.Contains(got, `"code":"server_error"`) || !strings.Contains(got, `"message":"upstream_stream_incomplete:`) || !strings.Contains(got, `"model":"grok-test"`) {
 		t.Fatalf("incomplete EOF missing terminal SSE event: %q", got)
 	}
 }
 
 func TestSanitizeResponsesFillsMissingIDs(t *testing.T) {
-	state := &responsesCompatState{}
+	state := &responsesCompatState{model: "grok-test"}
 	got := rewriteResponsesDataLine([]byte(`data: {"type":"response.output_item.added","item":{"type":"reasoning"}}`+"\n"), state)
 	if !bytes.Contains(got, []byte(`"id":"item_1"`)) {
 		t.Fatalf("item id not filled: %s", got)
 	}
 	got = rewriteResponsesDataLine([]byte(`data: {"type":"response.created","response":{"status":"in_progress"}}`+"\n"), state)
-	if !bytes.Contains(got, []byte(`"id":"resp_abort"`)) || !bytes.Contains(got, []byte(`"created_at":`)) || !bytes.Contains(got, []byte(`"model":`)) {
+	if !bytes.Contains(got, []byte(`"id":"resp_abort"`)) || !bytes.Contains(got, []byte(`"created_at":`)) || !bytes.Contains(got, []byte(`"model":"grok-test"`)) {
 		t.Fatalf("response id/created_at/model not filled: %s", got)
 	}
 }
@@ -1120,13 +1141,61 @@ func TestCopyStreamAbortTrailerAlwaysIncludesModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
-	_, err := copyStream(context.Writer, &idleErrorReader{}, streamProtocolResponses, nil)
+	_, err := copyStreamWithFallbackModel(context.Writer, &idleErrorReader{}, streamProtocolResponses, nil, "grok-test")
 	if !errors.Is(err, errUpstreamStreamRead) {
 		t.Fatalf("copy error = %v", err)
 	}
 	got := recorder.Body.String()
-	if !strings.Contains(got, `"type":"response.failed"`) || !strings.Contains(got, `"model":`) {
+	if !strings.Contains(got, `"type":"response.failed"`) || !strings.Contains(got, `"model":"grok-test"`) {
 		t.Fatalf("abort trailer missing model: %q", got)
+	}
+}
+
+func TestCopyStreamAbortTrailerPrefersUpstreamModel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	body := []byte(`data: {"type":"response.created","response":{"id":"resp_real","model":"upstream-model","status":"in_progress"}}` + "\n\n")
+	_, err := copyStreamWithFallbackModel(context.Writer, &chunkErrorReader{data: body}, streamProtocolResponses, nil, "request-model")
+	if !errors.Is(err, errUpstreamStreamRead) {
+		t.Fatalf("copy error = %v", err)
+	}
+	got := recorder.Body.String()
+	failedAt := strings.LastIndex(got, "event: response.failed")
+	if failedAt < 0 {
+		t.Fatalf("abort trailer missing: %q", got)
+	}
+	failed := got[failedAt:]
+	if !strings.Contains(failed, `"model":"upstream-model"`) || strings.Contains(failed, `"model":"request-model"`) {
+		t.Fatalf("abort trailer did not prefer upstream model: %q", failed)
+	}
+}
+
+func TestResponsesAbortTrailerUsesStandardErrorShape(t *testing.T) {
+	trailer := streamAbortTrailer(
+		streamProtocolResponses,
+		neterror.ErrUpstreamStreamIdleTimeout,
+		responseMetadata{},
+		&responsesCompatState{model: "grok-test"},
+	)
+	dataAt := bytes.Index(trailer, []byte("data: "))
+	if dataAt < 0 {
+		t.Fatalf("abort trailer missing data line: %q", trailer)
+	}
+	payload := bytes.TrimSpace(trailer[dataAt+len("data: "):])
+	var event struct {
+		Response struct {
+			Error map[string]any `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(payload, &event); err != nil {
+		t.Fatalf("decode abort trailer: %v; payload=%q", err, payload)
+	}
+	if event.Response.Error["code"] != "server_error" || !strings.Contains(stringAny(event.Response.Error["message"]), "upstream_stream_idle_timeout") {
+		t.Fatalf("unexpected Responses error: %#v", event.Response.Error)
+	}
+	if _, exists := event.Response.Error["type"]; exists {
+		t.Fatalf("Responses error contains non-protocol type: %#v", event.Response.Error)
 	}
 }
 

@@ -1,6 +1,7 @@
 package inference
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -33,8 +34,13 @@ func (h *Handler) synthesizeSpeech(c *gin.Context) {
 		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "TTS 仅支持 application/json")
 		return
 	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		writeOpenAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过限制")
+		return
+	}
 	var request ttsRequest
-	if err := decodeSingleJSON(c.Request.Body, &request, false); err != nil {
+	if err := decodeSingleJSON(bytes.NewReader(body), &request, false); err != nil {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "TTS 请求无效")
 		return
 	}
@@ -70,6 +76,7 @@ func (h *Handler) synthesizeSpeech(c *gin.Context) {
 	input := gateway.TTSInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model, Text: text, VoiceID: strings.TrimSpace(request.VoiceID),
 		Language: language, OutputFormat: format, Speed: speed, OptimizeStreamingLatency: optimize,
+		Method: c.Request.Method, Path: c.Request.URL.Path, Headers: c.Request.Header.Clone(),
 	}
 	if request.TextNormalization != nil {
 		input.TextNormalization = *request.TextNormalization
@@ -128,7 +135,9 @@ func (h *Handler) transcribeSpeech(c *gin.Context) {
 func (h *Handler) transcribeSpeechRequest(c *gin.Context, openAICompatible bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodyBytes)
 	contentType := strings.ToLower(strings.TrimSpace(c.GetHeader("Content-Type")))
-	input := gateway.STTInput{PublicModel: "grok-stt"}
+	input := gateway.STTInput{
+		PublicModel: "grok-stt", Method: c.Request.Method, Path: c.Request.URL.Path, Headers: c.Request.Header.Clone(),
+	}
 	unsupportedOpenAIParameter := ""
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		if err := c.Request.ParseMultipartForm(h.maxBodyBytes); err != nil {
@@ -283,6 +292,9 @@ func (h *Handler) transcribeSpeechRequest(c *gin.Context, openAICompatible bool)
 	}
 	input.ClientKey = clientKey
 	input.RequestID = requestID
+	input.Method = c.Request.Method
+	input.Path = c.Request.URL.Path
+	input.Headers = c.Request.Header.Clone()
 	result, err := h.gateway.TranscribeSpeech(c.Request.Context(), input)
 	if err != nil {
 		writeGatewayError(c, err)

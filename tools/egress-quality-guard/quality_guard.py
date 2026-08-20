@@ -47,6 +47,11 @@ INTERNAL_API_PREFIX = "/api/internal/v1/quality-guard"
 QUALITY_MARKER_PROFILE_ID = "quality-marker"
 THROUGHPUT_PROFILE_ID = "throughput"
 THINKING_GUARD_MIN_OUTPUT_TOKENS = 64
+LEASE_PAGE_SIZE = 1000
+LEASE_SCAN_MAX_PAGES = 1000
+LEASE_RECOVERY_MAX_PER_CYCLE = 8
+LEASE_RECOVERY_BACKOFF_BASE_SECONDS = 30
+LEASE_RECOVERY_BACKOFF_MAX_SECONDS = 1800
 
 
 class GuardDisabled(RuntimeError):
@@ -321,8 +326,10 @@ class ApiClient:
                 result.add(node_id)
         return result
 
-    def quality_test(self, node_id: str, profile_id: str = "") -> dict[str, Any]:
+    def quality_test(self, node_id: str, profile_id: str = "", account_id: str = "") -> dict[str, Any]:
         body = {"profileId": profile_id} if profile_id else {}
+        if account_id:
+            body["accountId"] = account_id
         return self._request("POST", f"{INTERNAL_API_PREFIX}/egress-nodes/{node_id}/quality-test", body or None)
 
     def connectivity_test(self, node_id: str) -> dict[str, Any]:
@@ -341,6 +348,42 @@ class ApiClient:
     def set_enabled(self, node_id: str, enabled: bool) -> int:
         result = self._request("PATCH", f"{INTERNAL_API_PREFIX}/egress-nodes/batch", {"ids": [node_id], "enabled": enabled})
         return int(result.get("updated") or 0)
+
+    def list_leases(self) -> list[dict[str, Any]]:
+        values: list[dict[str, Any]] = []
+        cursor = ""
+        seen_cursors: set[str] = set()
+        for _page in range(LEASE_SCAN_MAX_PAGES):
+            query = {"limit": LEASE_PAGE_SIZE}
+            if cursor:
+                query["cursor"] = cursor
+            payload = self._request("GET", f"{INTERNAL_API_PREFIX}/egress-leases?{urllib.parse.urlencode(query)}")
+            items = list(payload.get("items") or [])
+            values.extend(items)
+            if not payload.get("hasMore"):
+                return values
+            next_cursor = str(payload.get("nextCursor") or "")
+            if not next_cursor or next_cursor == cursor or next_cursor in seen_cursors:
+                raise RuntimeError("lease pagination did not advance")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+        raise RuntimeError("lease pagination exceeded the safety limit")
+
+    def quarantine_lease(self, node_id: str, account_id: str, reason: str) -> dict[str, Any]:
+        return self._request("POST", f"{INTERNAL_API_PREFIX}/egress-leases/quarantine", {
+            "nodeId": node_id,
+            "accountId": account_id,
+            "reason": reason,
+            "quarantineSeconds": self.config.quarantine_seconds,
+        })
+
+    def restore_lease(self, node_id: str, account_id: str, version: str) -> bool:
+        result = self._request("POST", f"{INTERNAL_API_PREFIX}/egress-leases/restore", {
+            "nodeId": node_id,
+            "accountId": account_id,
+            "version": version,
+        })
+        return bool(result.get("restored"))
 
     def rotate_node(self, node_id: str, old_exit_ip: str = "") -> dict[str, Any]:
         if not self.config.rotation_url:
@@ -517,6 +560,9 @@ def generation_window_ms(first_token_ms: int, duration_ms: int, reasoning_tokens
 
 def default_node_state() -> dict[str, Any]:
     return {
+        "observe_only": False,
+        "observe_only_reason": "",
+        "quarantined_lease_count": 0,
         "active_soft_strikes": 0,
         "passive_soft_strikes": 0,
         "error_strikes": 0,
@@ -630,6 +676,8 @@ class Guard:
         self._resolved_node_ids = list(config.node_ids)
         self.state.setdefault("started_at", time.time())
         self.state.setdefault("recent_events", [])
+        self.state.setdefault("leases", {})
+        self.state.setdefault("lease_recovery", {})
         ensure_statistics(self.state)
         self._update_guard_metadata()
         self._save()
@@ -677,6 +725,11 @@ class Guard:
         for key, value in default_node_state().items():
             current.setdefault(key, value)
         return current
+
+    @staticmethod
+    def _is_lease_scoped(node: dict[str, Any]) -> bool:
+        """Return whether one logical node expands to account-specific sticky leases."""
+        return bool(node.get("accountBoundProxy"))
 
     def _defer_no_account(self, state: dict[str, Any], node: dict[str, Any], now: float, event: str, **fields: Any) -> None:
         state["last_probe_at"] = now
@@ -732,9 +785,213 @@ class Guard:
     def _probe_account_unavailable(exc: Exception) -> bool:
         return isinstance(exc, ApiError) and exc.code == "egressQualityProbeNoAccount"
 
+    @staticmethod
+    def _lease_key(node_id: str, account_id: str) -> str:
+        return f"{node_id}:{account_id}"
+
+    def _clear_lease_recovery(self, key: str) -> None:
+        self.state.setdefault("lease_recovery", {}).pop(key, None)
+
+    def _defer_lease_recovery(self, key: str, now: float) -> None:
+        recovery = self.state.setdefault("lease_recovery", {})
+        current = recovery.get(key) or {}
+        failures = min(16, int(current.get("failures") or 0) + 1)
+        delay = min(LEASE_RECOVERY_BACKOFF_MAX_SECONDS, LEASE_RECOVERY_BACKOFF_BASE_SECONDS * (2 ** (failures - 1)))
+        recovery[key] = {"failures": failures, "next_attempt_at": now + delay}
+
+    def _quarantine_lease(self, node: dict[str, Any], audit_value: dict[str, Any], reason: str, now: float) -> None:
+        node_id = str(node.get("id") or "")
+        account_id = str(audit_value.get("accountId") or "")
+        state = self._state_for(node_id)
+        request_id = str(audit_value.get("requestId") or "")
+        if not account_id:
+            state.update({"observe_only": True, "observe_only_reason": "missing_account_identity", "last_reason": reason})
+            self._bump_statistic("actions", "suppressed")
+            append_state_event(self.state, "lease_quarantine_suppressed", node_id=node_id, node_name=node.get("name"), reason=reason, request_id=request_id)
+            log_event("lease_quarantine_suppressed", node_id=node_id, node_name=node.get("name"), reason=reason, cause="missing_account_identity")
+            return
+        try:
+            lease = self.api.quarantine_lease(node_id, account_id, reason)
+        except Exception as exc:
+            state.update({"observe_only": True, "observe_only_reason": "lease_api_unavailable", "last_reason": reason})
+            self._bump_statistic("actions", "suppressed")
+            append_state_event(self.state, "lease_quarantine_failed", node_id=node_id, node_name=node.get("name"), reason=reason, account_id=account_id, request_id=request_id)
+            log_event("lease_quarantine_failed", node_id=node_id, node_name=node.get("name"), reason=reason, error_type=type(exc).__name__)
+            return
+        key = self._lease_key(node_id, account_id)
+        leases = self.state.setdefault("leases", {})
+        already_quarantined = key in leases
+        leases[key] = lease
+        self._clear_lease_recovery(key)
+        state.update({"observe_only": False, "observe_only_reason": "", "last_reason": reason})
+        event = "lease_quarantine_extended" if already_quarantined else "lease_quarantined"
+        if not already_quarantined:
+            state["quarantined_lease_count"] = int(state.get("quarantined_lease_count", 0)) + 1
+            self._bump_statistic("actions", "quarantined")
+        append_state_event(self.state, event, node_id=node_id, node_name=node.get("name"), reason=reason, account_id=account_id, request_id=request_id, cooldown_until=lease.get("cooldownUntil"))
+        self._save()
+        log_event(event, node_id=node_id, node_name=node.get("name"), reason=reason, account_id=account_id, cooldown_until=lease.get("cooldownUntil"))
+
+    def _extend_lease(self, node: dict[str, Any], lease: dict[str, Any], reason: str) -> bool:
+        node_id = str(lease.get("nodeId") or node.get("id") or "")
+        account_id = str(lease.get("accountId") or "")
+        try:
+            replacement = self.api.quarantine_lease(node_id, account_id, reason)
+        except Exception as exc:
+            log_event("lease_quarantine_extension_failed", node_id=node_id, node_name=node.get("name"), reason=reason, error_type=type(exc).__name__)
+            return False
+        key = self._lease_key(node_id, account_id)
+        self.state.setdefault("leases", {})[key] = replacement
+        self._clear_lease_recovery(key)
+        append_state_event(self.state, "lease_quarantine_extended", node_id=node_id, node_name=node.get("name"), reason=reason, account_id=account_id, cooldown_until=replacement.get("cooldownUntil"))
+        log_event("lease_quarantine_extended", node_id=node_id, node_name=node.get("name"), reason=reason, account_id=account_id)
+        return True
+
+    def _recover_lease(self, node: dict[str, Any], lease: dict[str, Any], now: float) -> None:
+        node_id = str(lease.get("nodeId") or "")
+        account_id = str(lease.get("accountId") or "")
+        version = str(lease.get("version") or "")
+        if not node_id or not account_id or not version:
+            return
+        key = self._lease_key(node_id, account_id)
+        profile_id, profile = resolve_probe_profile(self.config.profiles_file, QUALITY_MARKER_PROFILE_ID)
+        self._bump_statistic("active", "total")
+        try:
+            result = self.api.quality_test(node_id, profile_id, account_id)
+            classification, reason = classify_result(result, self.config, profile)
+        except Exception as exc:
+            self._bump_statistic("active", "errors")
+            if not self._extend_lease(node, lease, "recovery_probe_error"):
+                self._defer_lease_recovery(key, now)
+            log_event("lease_recovery_probe_failed", node_id=node_id, node_name=node.get("name"), account_id=account_id, error_type=type(exc).__name__)
+            return
+        self._record_probe(node, result, classification, reason, now)
+        if classification != "healthy":
+            if not self._extend_lease(node, lease, reason):
+                self._defer_lease_recovery(key, now)
+            return
+        try:
+            restored = self.api.restore_lease(node_id, account_id, version)
+        except ApiError as exc:
+            if exc.code == "qualityLeaseConflict":
+                self._clear_lease_recovery(key)
+                log_event("lease_restore_stale", node_id=node_id, node_name=node.get("name"), account_id=account_id)
+                return
+            self._defer_lease_recovery(key, now)
+            log_event("lease_restore_failed", node_id=node_id, node_name=node.get("name"), account_id=account_id, error_type=type(exc).__name__)
+            return
+        except Exception as exc:
+            self._defer_lease_recovery(key, now)
+            log_event("lease_restore_failed", node_id=node_id, node_name=node.get("name"), account_id=account_id, error_type=type(exc).__name__)
+            return
+        if not restored:
+            self._defer_lease_recovery(key, now)
+            return
+        self.state.setdefault("leases", {}).pop(key, None)
+        self._clear_lease_recovery(key)
+        node_state = self._state_for(node_id)
+        node_state["quarantined_lease_count"] = max(0, int(node_state.get("quarantined_lease_count", 0)) - 1)
+        self._bump_statistic("actions", "restored")
+        append_state_event(self.state, "lease_restored", node_id=node_id, node_name=node.get("name"), reason="quality_probe_healthy", account_id=account_id)
+        log_event("lease_restored", node_id=node_id, node_name=node.get("name"), account_id=account_id, reason="quality_probe_healthy")
+
+    def _reconcile_leases(self, nodes: list[dict[str, Any]], now: float) -> bool:
+        node_by_id = {str(node.get("id") or ""): node for node in nodes}
+        try:
+            values = self.api.list_leases()
+        except Exception as exc:
+            log_event("lease_reconciliation_failed", error_type=type(exc).__name__)
+            return False
+        state_leases = self.state.setdefault("leases", {})
+        recovery_state = self.state.setdefault("lease_recovery", {})
+        backend_keys: set[str] = set()
+        due: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for node in nodes:
+            if self._is_lease_scoped(node):
+                self._state_for(str(node["id"]))["quarantined_lease_count"] = 0
+        for lease in values:
+            node_id = str(lease.get("nodeId") or "")
+            account_id = str(lease.get("accountId") or "")
+            if not node_id or not account_id:
+                continue
+            key = self._lease_key(node_id, account_id)
+            backend_keys.add(key)
+            state_leases[key] = lease
+            node = node_by_id.get(node_id)
+            if node is None or not self._is_lease_scoped(node):
+                continue
+            state = self._state_for(node_id)
+            state["observe_only"] = False
+            state["observe_only_reason"] = ""
+            state["quarantined_lease_count"] = int(state.get("quarantined_lease_count", 0)) + 1
+            if now >= float(lease.get("cooldownUntil") or 0):
+                retry = recovery_state.get(key) or {}
+                if now >= float(retry.get("next_attempt_at") or 0):
+                    due.append((node, lease))
+        for key in list(state_leases):
+            if key not in backend_keys:
+                state_leases.pop(key, None)
+                recovery_state.pop(key, None)
+        for key in list(recovery_state):
+            if key not in backend_keys:
+                recovery_state.pop(key, None)
+        for node, lease in due[:LEASE_RECOVERY_MAX_PER_CYCLE]:
+            self._recover_lease(node, lease, now)
+        deferred = max(0, len(due) - LEASE_RECOVERY_MAX_PER_CYCLE)
+        if deferred:
+            log_event("lease_recovery_budget_exhausted", due=len(due), deferred=deferred, limit=LEASE_RECOVERY_MAX_PER_CYCLE)
+        return True
+
+    def _release_protected_leases(self, protected_node_ids: set[str], nodes: list[dict[str, Any]]) -> None:
+        if not protected_node_ids:
+            return
+        node_by_id = {str(node.get("id") or ""): node for node in nodes}
+        state_leases = self.state.setdefault("leases", {})
+        for key, lease in list(state_leases.items()):
+            node_id = str(lease.get("nodeId") or "")
+            if node_id not in protected_node_ids:
+                continue
+            account_id = str(lease.get("accountId") or "")
+            version = str(lease.get("version") or "")
+            try:
+                restored = self.api.restore_lease(node_id, account_id, version)
+            except Exception as exc:
+                log_event("protected_lease_release_failed", node_id=node_id, error_type=type(exc).__name__)
+                continue
+            if not restored:
+                continue
+            state_leases.pop(key, None)
+            node = node_by_id.get(node_id) or {}
+            state = self._state_for(node_id)
+            state["quarantined_lease_count"] = max(0, int(state.get("quarantined_lease_count", 0)) - 1)
+            self._bump_statistic("actions", "restored")
+            append_state_event(self.state, "lease_restored", node_id=node_id, node_name=node.get("name"), reason="fixed_fallback_node", account_id=account_id)
+            log_event("protected_lease_released", node_id=node_id, node_name=node.get("name"), account_id=account_id)
+
     def _quarantine(self, nodes: list[dict[str, Any]], node: dict[str, Any], reason: str, now: float, recover_now: bool = True) -> None:
         node_id = str(node["id"])
         state = self._state_for(node_id)
+        if self._is_lease_scoped(node):
+            state.update({
+                "observe_only": True,
+                "observe_only_reason": "account_bound_proxy",
+                "last_reason": reason,
+            })
+            self._bump_statistic("actions", "suppressed")
+            append_state_event(
+                self.state,
+                "lease_scoped_quarantine_suppressed",
+                node_id=node_id,
+                node_name=node.get("name"),
+                reason=reason,
+            )
+            log_event(
+                "lease_scoped_quarantine_suppressed",
+                node_id=node_id,
+                node_name=node.get("name"),
+                reason=reason,
+            )
+            return
         if not self._can_quarantine(nodes, node_id):
             self._bump_statistic("actions", "suppressed")
             log_event("quarantine_suppressed", node_id=node_id, node_name=node.get("name"), reason=reason, minimum_healthy=self.config.min_healthy_nodes)
@@ -993,13 +1250,80 @@ class Guard:
 
     def _prepare_nodes(self, now: float) -> tuple[list[dict[str, Any]], list[dict[str, Any]], set[str]]:
         all_nodes = self.api.list_nodes()
+        lease_api_ready = self._reconcile_leases(all_nodes, now)
         protected_node_ids = self.api.fixed_fallback_node_ids()
+        if lease_api_ready:
+            self._release_protected_leases(protected_node_ids, all_nodes)
         previous_protected = set(str(value) for value in self.state.get("protected_node_ids", []))
         if protected_node_ids != previous_protected:
             self.state["protected_node_ids"] = sorted(protected_node_ids)
             for node_id in sorted(protected_node_ids - previous_protected):
                 log_event("fixed_fallback_node_skipped", node_id=node_id)
         state_nodes = self.state.setdefault("nodes", {})
+        release_failed_ids: set[str] = set()
+        # An account-bound proxy renders a different sticky lease for each
+        # account. Release any whole-node quarantine left by an older guard;
+        # current versions isolate the audited account lease instead.
+        for node in all_nodes:
+            node_id = str(node.get("id") or "")
+            if not node_id or not node.get("proxyConfigured"):
+                continue
+            existing = state_nodes.get(node_id)
+            if not self._is_lease_scoped(node):
+                if existing:
+                    existing["observe_only"] = False
+                    existing["observe_only_reason"] = ""
+                continue
+            state = self._state_for(node_id)
+            if not lease_api_ready:
+                state["observe_only"] = True
+                state["observe_only_reason"] = "lease_api_unavailable"
+            elif state.get("observe_only_reason") in {"account_bound_proxy", "lease_api_unavailable"}:
+                state["observe_only"] = False
+                state["observe_only_reason"] = ""
+            if not state.get("disabled_by_guard"):
+                continue
+            if not node.get("enabled"):
+                try:
+                    updated = self.api.set_enabled(node_id, True)
+                except Exception as exc:
+                    release_failed_ids.add(node_id)
+                    log_event(
+                        "lease_scoped_guard_release_failed",
+                        node_id=node_id,
+                        node_name=node.get("name"),
+                        error_type=type(exc).__name__,
+                    )
+                    continue
+                if updated != 1:
+                    release_failed_ids.add(node_id)
+                    log_event(
+                        "lease_scoped_guard_release_not_applied",
+                        node_id=node_id,
+                        node_name=node.get("name"),
+                        updated=updated,
+                    )
+                    continue
+                node["enabled"] = True
+                self._bump_statistic("actions", "restored")
+            state.update({
+                "active_soft_strikes": 0,
+                "passive_soft_strikes": 0,
+                "error_strikes": 0,
+                "quarantined_until": 0.0,
+                "disabled_by_guard": False,
+                "last_reason": "",
+                "quarantine_source": "",
+            })
+            append_state_event(
+                self.state,
+                "lease_scoped_guard_released",
+                node_id=node_id,
+                node_name=node.get("name"),
+                reason="lease_scoped_node",
+            )
+            self._save()
+            log_event("lease_scoped_guard_released", node_id=node_id, node_name=node.get("name"))
         # Making an enabled node a fixed fallback is an explicit operator
         # override. Relinquish stale guard ownership before eligibility checks
         # so strict mode cannot repeatedly attempt an invalid disable. A
@@ -1030,7 +1354,7 @@ class Guard:
             tracked = bool((state_nodes.get(stale_id) or {}).get("disabled_by_guard"))
             if stale_id not in present_ids or (stale_id not in managed_ids and not tracked):
                 del state_nodes[stale_id]
-        skip_ids: set[str] = set()
+        skip_ids: set[str] = set(release_failed_ids)
         if not nodes:
             log_event("no_eligible_nodes")
             return all_nodes, [], skip_ids
@@ -1067,6 +1391,8 @@ class Guard:
                 continue
             if state.get("disabled_by_guard"):
                 skip_ids.add(node_id)
+                if self._is_lease_scoped(node):
+                    continue
                 self._probe_quarantined(node, now)
         return all_nodes, nodes, skip_ids
 
@@ -1076,6 +1402,9 @@ class Guard:
         for node in nodes:
             node_id = str(node["id"])
             state = self._state_for(node_id)
+            if self._is_lease_scoped(node):
+                self._save()
+                continue
             if node_id not in skip_ids and node.get("enabled") and not state.get("disabled_by_guard"):
                 self._probe_active(all_nodes, node, now)
             self._save()
@@ -1175,15 +1504,18 @@ class Guard:
             duration_ms=int(audit_value.get("durationMs") or 0),
             strikes=int(state.get("passive_soft_strikes", 0)),
         )
-        log_event(
-            "passive_immediate_quarantine",
-            node_id=node_id,
-            node_name=node.get("name"),
-            classification=classification,
-            reason=reason,
-            output_tps=round(speed, 3),
-        )
-        self._quarantine(all_nodes, node, reason, now, recover_now=False)
+        if self._is_lease_scoped(node):
+            self._quarantine_lease(node, audit_value, reason, now)
+        else:
+            log_event(
+                "passive_immediate_quarantine",
+                node_id=node_id,
+                node_name=node.get("name"),
+                classification=classification,
+                reason=reason,
+                output_tps=round(speed, 3),
+            )
+            self._quarantine(all_nodes, node, reason, now, recover_now=False)
 
     def run_passive_cycle(self) -> None:
         now = time.time()

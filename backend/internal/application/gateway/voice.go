@@ -35,6 +35,9 @@ type TTSInput struct {
 	OptimizeStreamingLatency int
 	TextNormalization        bool
 	WithTimestamps           bool
+	Method                   string
+	Path                     string
+	Headers                  map[string][]string
 }
 
 type STTInput struct {
@@ -58,6 +61,9 @@ type STTInput struct {
 	// ResponseFormat is empty for the native Console-compatible response, or an
 	// OpenAI-compatible format normalized by the HTTP transport.
 	ResponseFormat string
+	Method         string
+	Path           string
+	Headers        map[string][]string
 }
 
 type VoiceListInput struct {
@@ -82,7 +88,7 @@ type voiceExecutionResult struct {
 
 func (s *Service) SynthesizeSpeech(ctx context.Context, input TTSInput) (*Result, error) {
 	reservation, _ := audit.EstimateOfficialTTSCost(input.Text)
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, reservation, func(providerValue accountdomain.Provider) bool {
+	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, reservation, input.Method, input.Path, input.Headers, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.TTS(providerValue)
 		return ok
 	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, upstream string) (voiceExecutionResult, error) {
@@ -127,7 +133,7 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, input TTSInput) (*Result
 }
 
 func (s *Service) ListTTSVoices(ctx context.Context, input VoiceListInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, false, audit.PricingResult{}, func(providerValue accountdomain.Provider) bool {
+	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, false, audit.PricingResult{}, "", "", nil, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.TTS(providerValue)
 		return ok
 	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (voiceExecutionResult, error) {
@@ -156,7 +162,7 @@ func (s *Service) ListTTSVoices(ctx context.Context, input VoiceListInput) (*Res
 }
 
 func (s *Service) GetTTSVoice(ctx context.Context, input VoiceIDInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, false, audit.PricingResult{}, func(providerValue accountdomain.Provider) bool {
+	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationTTS, modeldomain.CapabilityTTS, false, audit.PricingResult{}, "", "", nil, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.TTS(providerValue)
 		return ok
 	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, _ string) (voiceExecutionResult, error) {
@@ -181,7 +187,7 @@ func (s *Service) GetTTSVoice(ctx context.Context, input VoiceIDInput) (*Result,
 }
 
 func (s *Service) TranscribeSpeech(ctx context.Context, input STTInput) (*Result, error) {
-	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationSTT, modeldomain.CapabilitySTT, true, audit.PricingResult{}, func(providerValue accountdomain.Provider) bool {
+	return s.executeVoice(ctx, input.RequestID, input.ClientKey, input.PublicModel, audit.OperationSTT, modeldomain.CapabilitySTT, true, audit.PricingResult{}, input.Method, input.Path, input.Headers, func(providerValue accountdomain.Provider) bool {
 		_, ok := s.providers.STT(providerValue)
 		return ok
 	}, func(executionCtx context.Context, providerValue accountdomain.Provider, credential accountdomain.Credential, upstream string) (voiceExecutionResult, error) {
@@ -277,6 +283,9 @@ func (s *Service) executeVoice(
 	capability modeldomain.Capability,
 	consumesQuota bool,
 	reservation audit.PricingResult,
+	method string,
+	path string,
+	headers map[string][]string,
 	supports voiceProviderSupport,
 	execute func(context.Context, accountdomain.Provider, accountdomain.Credential, string) (voiceExecutionResult, error),
 ) (*Result, error) {
@@ -303,6 +312,7 @@ func (s *Service) executeVoice(
 		ClientIP:     requestmeta.ClientIP(ctx),
 		ModelRouteID: route.ID, ModelPublicID: externalModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone,
+		RequestMethod: method, RequestPath: path, RequestHeaders: headers,
 	}
 	if err := s.checkLedgerReady(); err != nil {
 		return nil, err

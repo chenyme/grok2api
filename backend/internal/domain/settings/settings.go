@@ -98,10 +98,10 @@ type ProviderBuildConfig struct {
 
 // RoutingConfig 定义会话粘性、冷却和故障切换边界。
 type RoutingConfig struct {
-	StickyTTL       time.Duration
-	CooldownBase    time.Duration
-	CooldownMax     time.Duration
-	CapacityWait    time.Duration
+	StickyTTL        time.Duration
+	CooldownBase     time.Duration
+	CooldownMax      time.Duration
+	CapacityWait     time.Duration
 	MaxAttempts      int
 	VideoMaxAttempts int
 	PreferFreeBuild  bool
@@ -124,6 +124,7 @@ type AuditConfig struct {
 	BatchSize     int
 	FlushInterval time.Duration
 	CommitDelay   time.Duration
+	RetentionDays *int
 }
 
 // ClientKeyDefaultsConfig 定义新建客户端密钥的默认限制。
