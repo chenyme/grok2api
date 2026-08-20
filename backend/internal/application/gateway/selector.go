@@ -1191,12 +1191,12 @@ func (s *Selector) markFailure(ctx context.Context, credential account.Credentia
 		for i := 1; i < effectiveFailureCount && cooldown < cooldownMax; i++ {
 			cooldown *= 2
 		}
-		if cooldown > cooldownMax {
-			cooldown = cooldownMax
-		}
 		if retryAfter > cooldown {
 			cooldown = retryAfter
 		}
+	}
+	if cooldownMax > 0 && cooldown > cooldownMax {
+		cooldown = cooldownMax
 	}
 	until := time.Now().UTC().Add(cooldown)
 	lastError := fmt.Sprintf("upstream status %d", status)

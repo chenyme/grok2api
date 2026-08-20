@@ -1,0 +1,15 @@
+[Unit]
+Description=Cap grok2api account cooldown to routing retry window
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/ubuntu/grok2api
+ExecStart=/home/ubuntu/grok2api/tools/cooldown-clamp/clamp-account-cooldown-loop.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
