@@ -461,45 +461,160 @@ func TestPeekQualityStreamHoldTimeoutEmptyDoesNotFailOpen(t *testing.T) {
 	}
 }
 
+type qualityOpenPeekResult struct {
+	replay  io.ReadCloser
+	verdict QualityVerdict
+	err     error
+}
+
+func peekOpenQualityStreamForTest(t *testing.T, protocol, stream string) qualityOpenPeekResult {
+	t.Helper()
+	reader, writer := io.Pipe()
+	done := make(chan qualityOpenPeekResult, 1)
+	go func() {
+		replay, verdict, _, _, err := peekQualityStream(
+			context.Background(), reader, protocol,
+			QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: 2 * time.Second},
+		)
+		done <- qualityOpenPeekResult{replay: replay, verdict: verdict, err: err}
+	}()
+	if _, err := io.WriteString(writer, stream); err != nil {
+		_ = writer.Close()
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		_ = writer.Close()
+		return result
+	case <-time.After(500 * time.Millisecond):
+		_ = writer.CloseWithError(errors.New("test terminal stream timeout"))
+		result := <-done
+		if result.replay != nil {
+			_ = result.replay.Close()
+		}
+		t.Fatal("terminal stream waited for hold/idle instead of finishing while the connection remained open")
+		return qualityOpenPeekResult{}
+	}
+}
+
 func TestPeekQualityStreamEmptyCompletedRetriesWithoutIdle(t *testing.T) {
 	t.Parallel()
-	started := time.Now()
-	replay, verdict, _, _, err := peekQualityStream(
-		context.Background(),
-		io.NopCloser(strings.NewReader(sse(
-			`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":0}}}`,
-		))),
-		qualityProtocolResponses,
-		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: 2 * time.Second},
-	)
-	if replay != nil {
-		defer replay.Close()
+	for _, test := range []struct {
+		name     string
+		protocol string
+		stream   string
+	}{
+		{
+			name:     "responses completed",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":0}}}`,
+			),
+		},
+		{
+			name:     "responses completed with empty text node",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":""}]}],"usage":{"output_tokens":0}}}`,
+			),
+		},
+		{name: "chat done", protocol: qualityProtocolChat, stream: sse("data: [DONE]")},
+		{
+			name:     "chat finish reason",
+			protocol: qualityProtocolChat,
+			stream:   sse(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`),
+		},
+		{name: "anthropic message stop", protocol: qualityProtocolAnthropic, stream: sse(`data: {"type":"message_stop"}`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := peekOpenQualityStreamForTest(t, test.protocol, test.stream)
+			if result.replay != nil {
+				defer result.replay.Close()
+			}
+			if !errors.Is(result.err, errQualityEmptyStream) {
+				t.Fatalf("peek error = %v, want empty stream", result.err)
+			}
+			if result.verdict != QualityWait {
+				t.Fatalf("verdict = %s, want wait so the attempt loop retries as transport", result.verdict)
+			}
+		})
 	}
-	if !errors.Is(err, errQualityEmptyStream) {
-		t.Fatalf("peek error = %v, want empty stream", err)
-	}
-	if verdict != QualityWait {
-		t.Fatalf("verdict = %s, want wait so the attempt loop retries as transport", verdict)
-	}
-	if time.Since(started) > 500*time.Millisecond {
-		t.Fatalf("empty completed stream waited %s, want immediate retry", time.Since(started))
-	}
+}
 
-	started = time.Now()
-	replay, verdict, _, _, err = peekQualityStream(
-		context.Background(),
-		io.NopCloser(strings.NewReader(sse("data: [DONE]"))),
-		qualityProtocolChat,
-		QualityRetryRuntime{MinOutputTokens: 32, HoldTimeout: 2 * time.Second},
-	)
-	if replay != nil {
-		defer replay.Close()
-	}
-	if !errors.Is(err, errQualityEmptyStream) {
-		t.Fatalf("chat empty [DONE] peek error = %v, want empty stream", err)
-	}
-	if time.Since(started) > 500*time.Millisecond {
-		t.Fatalf("empty chat [DONE] waited %s, want immediate retry", time.Since(started))
+func TestPeekQualityStreamTerminalSemanticOutputIsNotEmpty(t *testing.T) {
+	t.Parallel()
+	longText := strings.Repeat("word ", 40)
+	shortText := strings.Repeat("a", 80)
+	for _, test := range []struct {
+		name        string
+		protocol    string
+		stream      string
+		wantVerdict QualityVerdict
+	}{
+		{
+			name:     "responses aggregate function call",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{}"}]}}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+		{
+			name:     "responses streamed function call",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_1","name":"read_file","arguments":""}}`,
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[]}}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+		{
+			name:     "chat tool call",
+			protocol: qualityProtocolChat,
+			stream: sse(
+				`data: {"choices":[{"delta":{"tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+		{
+			name:     "anthropic tool use",
+			protocol: qualityProtocolAnthropic,
+			stream: sse(
+				`data: {"type":"content_block_start","content_block":{"type":"tool_use","id":"tool_1","name":"read_file","input":{}}}`,
+				`data: {"type":"message_stop"}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+		{
+			name:     "responses aggregate long text",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"` + longText + `"}]}]}}`,
+			),
+			wantVerdict: QualityWithhold,
+		},
+		{
+			name:     "responses aggregate does not double count deltas",
+			protocol: qualityProtocolResponses,
+			stream: sse(
+				`data: {"type":"response.output_text.delta","delta":"`+shortText+`"}`,
+				`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"`+shortText+`"}]}]}}`,
+			),
+			wantVerdict: QualityDeliver,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := peekOpenQualityStreamForTest(t, test.protocol, test.stream)
+			if result.replay != nil {
+				defer result.replay.Close()
+			}
+			if result.err != nil {
+				t.Fatalf("peek error = %v, want semantic output", result.err)
+			}
+			if result.verdict != test.wantVerdict {
+				t.Fatalf("verdict = %s, want %s", result.verdict, test.wantVerdict)
+			}
+		})
 	}
 }
 
