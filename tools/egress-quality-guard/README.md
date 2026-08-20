@@ -43,6 +43,20 @@ your own traffic before allowing automatic quarantine.
    records a generic connectivity probe for diagnosis, then uses the real
    model-quality probe as the authority before re-enabling the node.
 
+Account-bound proxy templates such as Resin usernames containing `{account}`
+render a distinct sticky lease for each account. Scheduled node probes remain
+suppressed because one lease cannot represent its siblings. A passive anomaly
+removes only the audited account lease; after the hold, recovery pins a probe to
+that same account and node, renews an unhealthy hold, and clears the durable
+marker only with a matching CAS version. Routing stops enforcing a hold after
+its deadline, so a stopped sidecar cannot strand an account indefinitely.
+Rebinding an account atomically removes its old marker. If identity or the lease
+API is unavailable, the guard falls back to observation and never disables the
+shared node. Rendered proxy usernames and credentials never cross the API.
+Lease reconciliation uses opaque keyset pagination and scans the complete
+durable set. Recovery probes are capped per cycle and retry with exponential
+backoff, so a large expired queue cannot monopolize one guard cycle.
+
 The public inference API cannot request a specific egress node or bypass a
 disabled node. This capability is confined to the authenticated internal route.
 Ambiguous probe-only 403 responses do not cool borrowed accounts; definitive
@@ -112,6 +126,10 @@ probe prompt, or model response body.
 
 - Never deletes a node or changes account bindings.
 - Never restores a node disabled by an operator.
+- Never applies whole-node quarantine to an account-bound `{account}` proxy. A
+  legacy quarantine still owned by the guard is released during reconciliation.
+- Lease recovery is pinned to the same account and node and uses an opaque CAS
+  version so stale probes cannot clear a newer quarantine.
 - Refuses to quarantine below `qualityGuard.minimumHealthyNodes`.
 - Strict mode overrides that floor rather than scheduling an unverified exit.
 - Uses an exclusive process lock to prevent duplicate guards.

@@ -12,6 +12,7 @@ import (
 type responsesCompatState struct {
 	responseID      string
 	createdAt       int64
+	model           string
 	itemSeq         int
 	itemIDs         map[int64]string
 	usedItemIDs     map[string]struct{}
@@ -102,6 +103,9 @@ func (s *responsesCompatState) rememberFromMeta(meta responseMetadata) {
 	if id := strings.TrimSpace(meta.ResponseID); id != "" {
 		s.responseID = id
 	}
+	if model := strings.TrimSpace(meta.Model); model != "" {
+		s.model = model
+	}
 	s.ensureID()
 }
 
@@ -173,6 +177,13 @@ func sanitizeResponsesEvent(event map[string]any, state *responsesCompatState) b
 			resp["output"] = []any{}
 			changed = true
 		}
+		if model := strings.TrimSpace(stringAny(resp["model"])); model != "" {
+			state.model = model
+		} else {
+			// Grok TUI serde requires `model` on response.failed / completed.
+			resp["model"] = state.model
+			changed = true
+		}
 		if errObj, ok := resp["error"].(map[string]any); ok && strings.TrimSpace(stringAny(errObj["id"])) == "" {
 			errObj["id"] = "err_" + strings.TrimPrefix(state.ensureID(), "resp_")
 			changed = true
@@ -217,6 +228,35 @@ func sanitizeResponsesEvent(event map[string]any, state *responsesCompatState) b
 				state.responseID = id
 			} else if id != state.responseID {
 				event["id"] = state.responseID
+				changed = true
+			}
+		}
+	}
+	if ensureOutputTextAnnotations(event) {
+		changed = true
+	}
+	return changed
+}
+
+// Grok CLI serde requires output_text.annotations even when there are no
+// citations. Missing the field makes a retry fail with
+// "serialization error: missing field `annotations`".
+func ensureOutputTextAnnotations(node any) bool {
+	changed := false
+	switch typed := node.(type) {
+	case map[string]any:
+		if stringAny(typed["type"]) == "output_text" && typed["annotations"] == nil {
+			typed["annotations"] = []any{}
+			changed = true
+		}
+		for _, key := range []string{"item", "part", "response", "content", "output", "delta"} {
+			if ensureOutputTextAnnotations(typed[key]) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if ensureOutputTextAnnotations(child) {
 				changed = true
 			}
 		}

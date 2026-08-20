@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, Trash2, TriangleAlert, Webhook } from "lucide-react";
+import { ArrowRight, ClipboardPaste, Compass, Download, ExternalLink, FileUp, Link, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCw, Search, SquareTerminal, TimerOff, Trash2, TriangleAlert, Webhook } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
@@ -37,6 +37,7 @@ import { nextTableSort, type SortOrder, type TableSort } from "@/shared/lib/tabl
 import {
   acceptWebAccountTerms,
   cleanupAccounts,
+  clearAccountCooldown,
   deleteAccount,
   deleteAccounts,
   previewAccountDeletion,
@@ -324,11 +325,11 @@ export function AccountsPage() {
       if (!editing) throw new Error(t("errors.generic"));
       const input: AccountUpdateInput = {
         name: values.name,
-        enabled: values.enabled,
         priority: values.priority,
         maxConcurrent: values.maxConcurrent,
         minimumRemaining: values.minimumRemaining,
       };
+      if (values.enabled !== editing.enabled) input.enabled = values.enabled;
       if (editing.provider !== "grok_build") {
         if (values.clearCloudflareCookies) input.clearCloudflareCookies = true;
         else if (values.cloudflareCookies.trim()) input.cloudflareCookies = values.cloudflareCookies;
@@ -344,6 +345,7 @@ export function AccountsPage() {
       if (entitlementChanged) void queryClient.invalidateQueries({ queryKey: ["models"] });
       setEditing(null);
       if (account.modelSyncFailed) toast.warning(t("accounts.updatedWithModelSyncFailure"));
+      else if (account.enabledDoesNotClearCooldown) toast.warning(t("accounts.enabledDoesNotClearCooldown"));
       else toast.success(t("accounts.updated"));
     },
     onError: showError,
@@ -503,6 +505,15 @@ export function AccountsPage() {
     onSuccess: () => {
       invalidateAccountData();
       toast.success(t("accounts.authRefreshed"));
+    },
+    onError: showError,
+  });
+
+  const clearCooldownMutation = useMutation({
+    mutationFn: clearAccountCooldown,
+    onSuccess: () => {
+      invalidateAccountData();
+      toast.success(t("accounts.cooldownCleared"));
     },
     onError: showError,
   });
@@ -1512,6 +1523,11 @@ export function AccountsPage() {
                             />
                           ) : null}
                           {provider === "grok_build" ? <DropdownMenuItem onClick={() => tokenMutation.mutate(account.id)}><RotateCw />{t("accounts.refreshToken")}</DropdownMenuItem> : null}
+                          {account.cooldownUntil && new Date(account.cooldownUntil) > new Date() ? (
+                            <DropdownMenuItem onClick={() => clearCooldownMutation.mutate(account.id)} disabled={clearCooldownMutation.isPending}>
+                              <TimerOff />{t("accounts.clearCooldown")}
+                            </DropdownMenuItem>
+                          ) : null}
                           <DropdownMenuItem onClick={() => provider === "grok_build" ? billingMutation.mutate(account.id) : quotaMutation.mutate(account.id)}><RefreshCw />{provider === "grok_build" ? t("accounts.refreshBilling") : t("accounts.refreshModeQuota")}</DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => { resetLinkedDeleteState(); setDeleting(account); }}><Trash2 />{t("common.delete")}</DropdownMenuItem>

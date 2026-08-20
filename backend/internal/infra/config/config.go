@@ -297,6 +297,9 @@ type QualityGuardRequestRetryConfig struct {
 	MinOutputTokens int      `yaml:"minOutputTokens"`
 	OnExhausted     string   `yaml:"onExhausted"`
 	AccountCooldown Duration `yaml:"accountCooldown"`
+	// IdleAccountCooldown cools an account after a truly empty upstream
+	// stream. Independent of accountCooldown (missing-thinking). Zero uses 24h.
+	IdleAccountCooldown Duration `yaml:"idleAccountCooldown"`
 }
 
 type ClientKeyDefaultsConfig struct {
@@ -802,6 +805,9 @@ func validateQualityGuardRequestRetry(value QualityGuardRequestRetryConfig) erro
 	if d := value.AccountCooldown.Value(); d != 0 && (d < time.Minute || d > 168*time.Hour) {
 		return errors.New("qualityGuard.requestRetry.accountCooldown 必须在 1m 到 168h 之间")
 	}
+	if d := value.IdleAccountCooldown.Value(); d != 0 && (d < time.Minute || d > 168*time.Hour) {
+		return errors.New("qualityGuard.requestRetry.idleAccountCooldown 必须在 1m 到 168h 之间")
+	}
 	return nil
 }
 
@@ -936,7 +942,7 @@ func defaultConfig() Config {
 			MinimumGenerationWindow: Duration(time.Second), RotationTimeout: Duration(45 * time.Second),
 			RequestRetry: QualityGuardRequestRetryConfig{
 				MaxAttempts: 6, HoldTimeout: Duration(3 * time.Second), MinOutputTokens: 32, OnExhausted: "fail_closed",
-				AccountCooldown: Duration(24 * time.Hour),
+				AccountCooldown: Duration(24 * time.Hour), IdleAccountCooldown: Duration(24 * time.Hour),
 			},
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},

@@ -342,6 +342,28 @@ class ApiClientTests(unittest.TestCase):
         }
         self.assertEqual(client.fixed_fallback_node_ids(), {"9", "11"})
 
+    def test_list_leases_uses_stable_cursor_until_complete(self):
+        client = quality_guard.ApiClient(config())
+        requested_cursors = []
+
+        def request(_method, path, _body=None):
+            query = quality_guard.urllib.parse.parse_qs(quality_guard.urllib.parse.urlparse(path).query)
+            cursor = (query.get("cursor") or [""])[0]
+            requested_cursors.append(cursor)
+            if not cursor:
+                return {"items": [{"accountId": "1"}], "hasMore": True, "nextCursor": "next-page"}
+            return {"items": [{"accountId": "2"}], "hasMore": False, "nextCursor": ""}
+
+        client._request = request
+        self.assertEqual([value["accountId"] for value in client.list_leases()], ["1", "2"])
+        self.assertEqual(requested_cursors, ["", "next-page"])
+
+    def test_list_leases_rejects_non_advancing_cursor(self):
+        client = quality_guard.ApiClient(config())
+        client._request = lambda *_args, **_kwargs: {"items": [], "hasMore": True, "nextCursor": "same"}
+        with self.assertRaises(RuntimeError):
+            client.list_leases()
+
 
 class FakeApi:
     def __init__(self, nodes, results, audit_pages=None, fixed_fallback_ids=None):
@@ -352,7 +374,9 @@ class FakeApi:
         self.enabled_calls = []
         self.quality_calls = []
         self.quality_profile_calls = []
+        self.quality_account_calls = []
         self.rotation_calls = []
+        self.leases = {}
 
     def list_nodes(self):
         return self.nodes
@@ -360,9 +384,10 @@ class FakeApi:
     def fixed_fallback_node_ids(self):
         return set(self.fixed_fallback_ids)
 
-    def quality_test(self, node_id, profile_id=""):
+    def quality_test(self, node_id, profile_id="", account_id=""):
         self.quality_calls.append(node_id)
         self.quality_profile_calls.append(profile_id)
+        self.quality_account_calls.append(account_id)
         value = self.results.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -387,6 +412,26 @@ class FakeApi:
         if self.audit_pages:
             return self.audit_pages.pop(0)
         return {"items": [], "hasMore": False, "nextCursor": ""}
+
+    def list_leases(self):
+        return list(self.leases.values())
+
+    def quarantine_lease(self, node_id, account_id, reason):
+        key = f"{node_id}:{account_id}"
+        value = {
+            "nodeId": node_id, "accountId": account_id, "reason": reason,
+            "version": f"version-{len(self.leases) + 1:09d}", "cooldownUntil": time.time() + 300,
+        }
+        self.leases[key] = value
+        return value
+
+    def restore_lease(self, node_id, account_id, version):
+        key = f"{node_id}:{account_id}"
+        current = self.leases.get(key)
+        if current is None or current.get("version") != version:
+            raise quality_guard.ApiError(409, "qualityLeaseConflict", "stale")
+        del self.leases[key]
+        return True
 
 
 class GuardTests(unittest.TestCase):
@@ -443,6 +488,182 @@ class GuardTests(unittest.TestCase):
             guard.run_active_cycle()
             self.assertEqual(api.quality_calls, ["2"])
             self.assertEqual(guard.state["protected_node_ids"], ["1"])
+
+    def test_fixed_fallback_releases_existing_account_lease_without_probe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", node_ids=("1",))
+            nodes = self.nodes(2)
+            nodes[0]["accountBoundProxy"] = True
+            api = FakeApi(nodes, [], fixed_fallback_ids={"1"})
+            api.leases["1:101"] = {
+                "nodeId": "1", "accountId": "101", "reason": "hard_tps",
+                "version": "lease-version-0001", "cooldownUntil": time.time() + 300,
+            }
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_active_cycle()
+            self.assertEqual(api.leases, {})
+            self.assertEqual(api.quality_calls, [])
+            self.assertEqual(guard.state["statistics"]["actions"]["restored"], 1)
+            self.assertEqual(guard.state["recent_events"][-1]["event"], "lease_restored")
+
+    def test_account_bound_proxy_skips_scheduled_probe_and_stays_observable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+            )
+            nodes = self.nodes(3)
+            nodes[0]["accountBoundProxy"] = True
+            api = FakeApi(nodes, [])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_active_cycle()
+
+            self.assertEqual(api.quality_calls, [])
+            self.assertEqual(api.enabled_calls, [])
+            self.assertTrue(nodes[0]["enabled"])
+            self.assertFalse(guard.state["nodes"]["1"]["observe_only"])
+            self.assertEqual(guard.state["nodes"]["1"]["observe_only_reason"], "")
+
+    def test_account_bound_proxy_records_passive_anomaly_without_node_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                mode="passive",
+                node_ids=("1",),
+            )
+            nodes = self.nodes(3)
+            nodes[0]["accountBoundProxy"] = True
+            api = FakeApi(nodes, [{"expectedMatched": True, "outputTokens": 100, "reasoningTokens": 40, "outputTokensPerSecond": 100}], [
+                {"items": [], "hasMore": False, "nextCursor": ""},
+                {"items": [self.audit("lease-hit", "1", 1200)], "hasMore": False, "nextCursor": ""},
+            ])
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_passive_cycle()
+            guard.run_passive_cycle()
+
+            state = guard.state["nodes"]["1"]
+            self.assertEqual(api.enabled_calls, [])
+            self.assertTrue(nodes[0]["enabled"])
+            self.assertFalse(state["disabled_by_guard"])
+            self.assertEqual(state["last_classification"], "hard")
+            self.assertEqual(state["last_reason"], "hard_tps")
+            self.assertEqual(guard.state["statistics"]["actions"]["quarantined"], 1)
+            self.assertEqual(len(api.leases), 1)
+            self.assertEqual(
+                [event["event"] for event in guard.state["recent_events"]],
+                ["passive_audit_anomaly", "lease_quarantined"],
+            )
+            next(iter(api.leases.values()))["cooldownUntil"] = 0
+            guard.run_active_cycle()
+            self.assertEqual(api.quality_account_calls, ["101"])
+            self.assertEqual(api.leases, {})
+            self.assertEqual(guard.state["recent_events"][-1]["event"], "lease_restored")
+
+    def test_repeated_account_anomaly_extends_one_lease_without_double_counting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", node_ids=("1",))
+            nodes = self.nodes(2)
+            nodes[0]["accountBoundProxy"] = True
+            api = FakeApi(nodes, [])
+            guard = quality_guard.Guard(cfg, api)
+            audit = {"accountId": "101"}
+
+            guard._quarantine_lease(nodes[0], audit, "hard_tps", time.time())
+            guard._quarantine_lease(nodes[0], audit, "hard_tps", time.time())
+
+            self.assertEqual(len(api.leases), 1)
+            self.assertEqual(guard.state["nodes"]["1"]["quarantined_lease_count"], 1)
+            self.assertEqual(guard.state["statistics"]["actions"]["quarantined"], 1)
+            self.assertEqual(guard.state["recent_events"][-1]["event"], "lease_quarantine_extended")
+
+    def test_due_lease_recovery_has_a_per_cycle_budget(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", node_ids=("1",))
+            nodes = self.nodes(2)
+            nodes[0]["accountBoundProxy"] = True
+            healthy = {"expectedMatched": True, "outputTokens": 100, "reasoningTokens": 40, "outputTokensPerSecond": 100}
+            api = FakeApi(nodes, [healthy] * 20)
+            for index in range(20):
+                account_id = str(1000 + index)
+                api.leases[f"1:{account_id}"] = {
+                    "nodeId": "1", "accountId": account_id, "reason": "hard_tps",
+                    "version": f"lease-version-{index:04d}", "cooldownUntil": 0,
+                }
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_active_cycle()
+            self.assertEqual(len(api.quality_account_calls), quality_guard.LEASE_RECOVERY_MAX_PER_CYCLE)
+            self.assertEqual(len(api.leases), 20 - quality_guard.LEASE_RECOVERY_MAX_PER_CYCLE)
+            guard.run_active_cycle()
+            self.assertEqual(len(api.quality_account_calls), quality_guard.LEASE_RECOVERY_MAX_PER_CYCLE * 2)
+
+    def test_failed_lease_recovery_is_backed_off(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(state_file=Path(directory) / "state.json", lock_file=Path(directory) / "lock", node_ids=("1",))
+            nodes = self.nodes(2)
+            nodes[0]["accountBoundProxy"] = True
+            api = FakeApi(nodes, [RuntimeError("probe failed"), RuntimeError("must not run immediately")])
+            api.leases["1:101"] = {
+                "nodeId": "1", "accountId": "101", "reason": "hard_tps",
+                "version": "lease-version-0001", "cooldownUntil": 0,
+            }
+            api.quarantine_lease = mock.Mock(side_effect=RuntimeError("backend unavailable"))
+            guard = quality_guard.Guard(cfg, api)
+            guard.run_active_cycle()
+            guard.run_active_cycle()
+            self.assertEqual(api.quality_account_calls, ["101"])
+            retry = guard.state["lease_recovery"]["1:101"]
+            self.assertGreater(retry["next_attempt_at"], time.time())
+
+    def test_account_bound_proxy_releases_only_guard_owned_legacy_quarantine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+            )
+            nodes = self.nodes(3)
+            nodes[0].update({"accountBoundProxy": True, "enabled": False})
+            api = FakeApi(nodes, [])
+            guard = quality_guard.Guard(cfg, api)
+            state = guard._state_for("1")
+            state.update({"disabled_by_guard": True, "last_reason": "hard_tps", "quarantined_until": time.time() + 300})
+            guard.run_active_cycle()
+
+            self.assertEqual(api.enabled_calls, [("1", True)])
+            self.assertTrue(nodes[0]["enabled"])
+            self.assertFalse(state["disabled_by_guard"])
+            self.assertFalse(state["observe_only"])
+            self.assertEqual(guard.state["statistics"]["actions"]["restored"], 1)
+            self.assertEqual(guard.state["recent_events"][-1]["event"], "lease_scoped_guard_released")
+
+            nodes[0]["enabled"] = False
+            guard.run_active_cycle()
+            self.assertEqual(api.enabled_calls, [("1", True)])
+            self.assertFalse(nodes[0]["enabled"])
+
+    def test_account_bound_proxy_keeps_ownership_when_legacy_release_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cfg = config(
+                state_file=Path(directory) / "state.json",
+                lock_file=Path(directory) / "lock",
+                node_ids=("1",),
+            )
+            nodes = self.nodes(3)
+            nodes[0].update({"accountBoundProxy": True, "enabled": False})
+            api = FakeApi(nodes, [])
+            api.set_enabled = mock.Mock(side_effect=RuntimeError("temporary backend failure"))
+            guard = quality_guard.Guard(cfg, api)
+            state = guard._state_for("1")
+            state.update({"disabled_by_guard": True, "last_reason": "hard_tps", "quarantined_until": 0})
+            guard.run_active_cycle()
+
+            api.set_enabled.assert_called_once_with("1", True)
+            self.assertEqual(api.quality_calls, [])
+            self.assertFalse(nodes[0]["enabled"])
+            self.assertTrue(state["disabled_by_guard"])
+            self.assertFalse(state["observe_only"])
 
     def test_enabled_node_promoted_to_fixed_fallback_releases_guard_ownership(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -990,7 +1211,7 @@ class GuardTests(unittest.TestCase):
             "provider": "grok_build", "streaming": True,
             "statusCode": 200, "firstTokenMs": 200, "durationMs": 200 + generation_ms,
             "outputTokens": output_tokens, "reasoningTokens": min(100, max(0, output_tokens - 1)),
-            "egressNodeId": node_id, "errorCode": None,
+            "accountId": "101", "egressNodeId": node_id, "errorCode": None,
         }
 
 

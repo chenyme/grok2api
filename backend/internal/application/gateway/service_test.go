@@ -555,6 +555,15 @@ func TestRoutingAttemptPolicy(t *testing.T) {
 	}
 }
 
+func TestPinnedRequestAttemptPolicyAlwaysAllowsOneAttempt(t *testing.T) {
+	for _, configured := range []int{1, 6, unlimitedRoutingAttempts} {
+		policy := newRequestRoutingAttemptPolicy(configured, true)
+		if !policy.allows(0) || policy.allows(1) || policy.hasNext(0) {
+			t.Fatalf("configured=%d pinned policy = %#v", configured, policy)
+		}
+	}
+}
+
 func TestGatewayUnlimitedAttemptsExhaustsEligiblePool(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-unlimited-attempts.db"))
@@ -4350,16 +4359,20 @@ func TestIsUpstreamStreamFailureIncludesIdleTimeout(t *testing.T) {
 
 func TestStreamFailureHealthPenaltyOnlyLongCoolsTrulyEmptyIdle(t *testing.T) {
 	t.Parallel()
-	status, cooldown := streamFailureHealthPenalty("upstream_stream_idle_timeout", Usage{})
-	if status != http.StatusGatewayTimeout || cooldown != qualityIdleAccountCooldown {
+	status, cooldown := streamFailureHealthPenalty("upstream_stream_idle_timeout", Usage{}, 15*time.Minute)
+	if status != http.StatusGatewayTimeout || cooldown != 15*time.Minute {
 		t.Fatalf("empty idle penalty = (%d, %s)", status, cooldown)
+	}
+	status, cooldown = streamFailureHealthPenalty("upstream_stream_idle_timeout", Usage{}, 0)
+	if status != http.StatusGatewayTimeout || cooldown != qualityIdleAccountCooldown {
+		t.Fatalf("zero idle cooldown must fall back to default (%d, %s)", status, cooldown)
 	}
 	for _, usage := range []Usage{
 		{OutputObserved: true},
 		{OutputTokens: 1},
 		{ReasoningTokens: 1},
 	} {
-		status, cooldown = streamFailureHealthPenalty("upstream_stream_idle_timeout", usage)
+		status, cooldown = streamFailureHealthPenalty("upstream_stream_idle_timeout", usage, 15*time.Minute)
 		if status != 0 || cooldown != 0 {
 			t.Fatalf("non-empty idle usage %#v received long penalty (%d, %s)", usage, status, cooldown)
 		}

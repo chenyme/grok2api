@@ -141,9 +141,32 @@ func TestSelectorQualityProbePinsAccountToRequestedEgressNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Release()
 	if lease.Credential.ID != second.ID || lease.Credential.ID == first.ID {
 		t.Fatalf("selected account=%d, want=%d on node=%d", lease.Credential.ID, second.ID, secondNode.ID)
+	}
+	lease.Release()
+
+	if _, err := accounts.UpsertEgressLeaseBlock(ctx, account.EgressLeaseBlock{
+		AccountID: second.ID, NodeID: secondNode.ID, Reason: "hard_tps", Version: "selector-lease-0001", CooldownUntil: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	selector = NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	if _, err := selector.AcquirePinnedForKey(ctx, account.ProviderBuild, second.ID, 0, "grok-test", "", true, clientkeydomain.AccountScope{}); err == nil {
+		t.Fatal("ordinary pinned inference ignored the active egress lease block")
+	} else {
+		var unavailable *SelectionUnavailableError
+		if !errors.As(err, &unavailable) || unavailable.Reason != SelectionCooling {
+			t.Fatalf("ordinary pinned error = %v", err)
+		}
+	}
+	recoveryLease, err := selector.AcquirePinnedForQualityProbe(ctx, account.ProviderBuild, second.ID, 0, "grok-test", "", clientkeydomain.AccountScope{})
+	if err != nil {
+		t.Fatalf("quality recovery did not bypass only the lease block: %v", err)
+	}
+	defer recoveryLease.Release()
+	if recoveryLease.Credential.ID != second.ID || recoveryLease.Credential.EgressNodeID != secondNode.ID {
+		t.Fatalf("quality recovery lease = %#v", recoveryLease.Credential)
 	}
 }
 

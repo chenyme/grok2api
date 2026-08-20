@@ -928,6 +928,50 @@ func TestConvertResponsesStreamMarksChatReasoningStart(t *testing.T) {
 	}
 }
 
+func TestConvertResponsesStreamMarksEncryptedChatReasoningEvidence(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`, "",
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`, "",
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"signature"}}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"status":"completed"}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if strings.Count(text, ": grok2api-reasoning-start\n\n") != 1 || strings.Count(text, ": grok2api-reasoning-evidence\n\n") != 1 {
+		t.Fatalf("encrypted reasoning markers missing or duplicated: %s", text)
+	}
+	if strings.Contains(text, "signature") || strings.Contains(text, "encrypted_content") {
+		t.Fatalf("encrypted reasoning leaked into Chat JSON: %s", text)
+	}
+}
+
+func TestConvertResponsesStreamMarksFinalEnvelopeReasoningEvidence(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"status":"completed","output":[{"id":"rs_1","type":"reasoning","encrypted_content":"signature"}]}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if strings.Count(text, ": grok2api-reasoning-evidence\n\n") != 1 {
+		t.Fatalf("final-envelope reasoning evidence missing or duplicated: %s", text)
+	}
+	if strings.Contains(text, "signature") || strings.Contains(text, "encrypted_content") {
+		t.Fatalf("final-envelope encrypted reasoning leaked into Chat JSON: %s", text)
+	}
+}
+
 func TestConvertResponsesStreamChatPrefersRawReasoningOverSummary(t *testing.T) {
 	stream := strings.Join([]string{
 		`event: response.created`,

@@ -186,6 +186,10 @@ type View struct {
 	QuotaWindows       []accountdomain.QuotaWindow
 	BuildBotFlagged    bool
 	BuildBotFlagSource int
+	// EnabledChanged is request-scoped update metadata. It is not persisted or
+	// serialized directly; the HTTP layer uses it to avoid warning when a PATCH
+	// merely repeats the account's existing enabled value.
+	EnabledChanged bool
 }
 
 type UpdateInput struct {
@@ -2207,6 +2211,7 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	if err != nil {
 		return View{}, mapRepositoryError(err)
 	}
+	enabledChanged := input.Enabled != nil && value.Enabled != *input.Enabled
 	if input.Name != nil {
 		value.Name = strings.TrimSpace(*input.Name)
 		if value.Name == "" {
@@ -2276,7 +2281,30 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	} else if updated.Enabled && s.providers != nil && s.providers.SupportsCredentialRefresh(updated.Provider) {
 		s.WakeCredentialRefresh()
 	}
-	return s.Get(ctx, updated.ID)
+	view, err := s.Get(ctx, updated.ID)
+	if err != nil {
+		return View{}, err
+	}
+	view.EnabledChanged = enabledChanged
+	return view, nil
+}
+
+// ClearCooldown resets request-path health so a cooled account can be
+// scheduled again. UpdateHealth publishes InvalidationAccountHealthChanged,
+// which overwrites the selector memory overlay (runtimeStore=memory).
+func (s *Service) ClearCooldown(ctx context.Context, id uint64) (View, error) {
+	value, err := s.accounts.Get(ctx, id)
+	if err != nil {
+		return View{}, mapRepositoryError(err)
+	}
+	// missing_thinking is a durable quality strike, not a transient cooldown
+	// error. Clearing the timer must not turn the next miss into another first
+	// strike and bypass the second-miss disable policy.
+	healthMarker := accountdomain.NormalizeHealthMarker(value.LastError)
+	if err := s.accounts.UpdateHealth(ctx, value.ID, value.Provider, 0, nil, healthMarker, false); err != nil {
+		return View{}, mapRepositoryError(err)
+	}
+	return s.Get(ctx, id)
 }
 
 // MarkBuildAPIFallback 幂等写入 Build 账号 XAI 推理回退标记；失败不吞掉，调用方可重试。
