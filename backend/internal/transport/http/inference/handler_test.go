@@ -1187,6 +1187,26 @@ func TestSanitizeResponsesDoesNotAddResponseIDToErrorEvent(t *testing.T) {
 	}
 }
 
+func TestSanitizeResponsesFillsMissingOutputTextAnnotations(t *testing.T) {
+	state := &responsesCompatState{}
+	added := rewriteResponsesDataLine([]byte(`data: {"type":"response.output_item.added","item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}}`+"\n"), state)
+	if !bytes.Contains(added, []byte(`"annotations":[]`)) {
+		t.Fatalf("item output_text missing annotations: %s", added)
+	}
+	completed := rewriteResponsesDataLine([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}}`+"\n"), state)
+	if !bytes.Contains(completed, []byte(`"annotations":[]`)) {
+		t.Fatalf("completed output_text missing annotations: %s", completed)
+	}
+	part := rewriteResponsesDataLine([]byte(`data: {"type":"response.content_part.added","part":{"type":"output_text","text":"hi"}}`+"\n"), state)
+	if !bytes.Contains(part, []byte(`"annotations":[]`)) {
+		t.Fatalf("content_part output_text missing annotations: %s", part)
+	}
+	kept := rewriteResponsesDataLine([]byte(`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"hi","annotations":[{"type":"url_citation","url":"https://x.test"}]}]}}`+"\n"), state)
+	if !bytes.Contains(kept, []byte(`"url":"https://x.test"`)) || bytes.Contains(kept, []byte(`"annotations":[]`)) {
+		t.Fatalf("existing annotations were replaced: %s", kept)
+	}
+}
+
 func TestResponsesCompatBoundsUnterminatedLineBuffer(t *testing.T) {
 	state := &responsesCompatState{}
 	chunk := bytes.Repeat([]byte{'x'}, maxStreamEventInspectionBytes+1)
