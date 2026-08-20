@@ -1392,66 +1392,6 @@ func directFileUploadTerminalError(raw json.RawMessage) bool {
 	}
 }
 
-func (a *Adapter) createMediaPost(ctx context.Context, cfg Config, lease *egress.Lease, token, mediaType, mediaURL, prompt, stage string) (string, error) {
-	payload := map[string]any{"mediaType": mediaType}
-	if mediaURL != "" {
-		payload["mediaUrl"] = mediaURL
-	}
-	if prompt != "" {
-		payload["prompt"] = prompt
-	}
-	response, err := a.postJSON(ctx, cfg, lease, token, cfg.BaseURL+"/rest/media/post/create", payload, time.Minute)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
-	return parseMediaPostResponseWithDiagnostics(response, func(upstreamErr *webMediaUpstreamError) {
-		a.logWebMediaUpstreamRejection(stage, response, upstreamErr)
-	})
-}
-
-func parseMediaPostResponse(response *http.Response) (string, error) {
-	return parseMediaPostResponseWithDiagnostics(response, nil)
-}
-
-func parseMediaPostResponseWithDiagnostics(response *http.Response, onUpstreamError func(*webMediaUpstreamError)) (string, error) {
-	const responseLimit = 2 << 20
-	readLimit := responseLimit
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		readLimit = webMediaDiagnosticBodyLimit
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, int64(readLimit)+1))
-	if err != nil {
-		return "", fmt.Errorf("读取媒体 Post 响应: %w", err)
-	}
-	truncated := len(body) > readLimit
-	if truncated {
-		body = body[:readLimit]
-	}
-	if truncated && response.StatusCode >= 200 && response.StatusCode < 300 {
-		return "", fmt.Errorf("创建媒体 Post 响应超过安全上限")
-	}
-	if response.StatusCode == http.StatusUnauthorized {
-		return "", provider.ErrUnauthorized
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		upstreamErr := newWebMediaUpstreamError(response.StatusCode, body, truncated)
-		if onUpstreamError != nil {
-			onUpstreamError(upstreamErr)
-		}
-		return "", upstreamErr
-	}
-	var value struct {
-		Post struct {
-			ID string `json:"id"`
-		} `json:"post"`
-	}
-	if json.Unmarshal(body, &value) != nil || strings.TrimSpace(value.Post.ID) == "" {
-		return "", fmt.Errorf("创建媒体 Post 响应无效")
-	}
-	return strings.TrimSpace(value.Post.ID), nil
-}
-
 func (a *Adapter) postJSON(ctx context.Context, cfg Config, lease *egress.Lease, token, endpoint string, payload any, timeout time.Duration) (*http.Response, error) {
 	return a.postJSONWithReferer(ctx, cfg, lease, token, endpoint, payload, timeout, cfg.BaseURL+"/imagine")
 }
