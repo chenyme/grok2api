@@ -555,6 +555,15 @@ func TestRoutingAttemptPolicy(t *testing.T) {
 	}
 }
 
+func TestPinnedRequestAttemptPolicyAlwaysAllowsOneAttempt(t *testing.T) {
+	for _, configured := range []int{1, 6, unlimitedRoutingAttempts} {
+		policy := newRequestRoutingAttemptPolicy(configured, true)
+		if !policy.allows(0) || policy.allows(1) || policy.hasNext(0) {
+			t.Fatalf("configured=%d pinned policy = %#v", configured, policy)
+		}
+	}
+}
+
 func TestGatewayUnlimitedAttemptsExhaustsEligiblePool(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-unlimited-attempts.db"))

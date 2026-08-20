@@ -74,6 +74,13 @@ func newRoutingAttemptPolicy(configured int) routingAttemptPolicy {
 	return routingAttemptPolicy{limit: configured}
 }
 
+func newRequestRoutingAttemptPolicy(configured int, pinned bool) routingAttemptPolicy {
+	if pinned {
+		return newRoutingAttemptPolicy(1)
+	}
+	return newRoutingAttemptPolicy(configured)
+}
+
 func (p routingAttemptPolicy) allows(attempt int) bool {
 	return p.unlimited || attempt < p.limit
 }
@@ -116,6 +123,9 @@ type Input struct {
 	// ForcedEgressNodeID is an internal-only administrator probe constraint.
 	// Public inference handlers never populate it.
 	ForcedEgressNodeID uint64
+	// ForcedAccountID is paired with ForcedEgressNodeID only by the internal
+	// Quality Guard recovery path. It never accepts public request input.
+	ForcedAccountID uint64
 }
 
 type Usage struct {
@@ -1001,11 +1011,11 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	if input.PreviousResponseID != "" && !supportsStoredResponses {
 		return nil, ErrResponseStateUnsupported
 	}
-	attemptPolicy := newRoutingAttemptPolicy(int(s.maxAttempts.Load()))
+	// A lease recovery probe stays on exactly one account and one rendered proxy
+	// identity. Retrying the same pinned account would provide neither failover
+	// nor new evidence and can multiply a slow/failing probe.
+	attemptPolicy := newRequestRoutingAttemptPolicy(int(s.maxAttempts.Load()), ownership != nil || input.ForcedAccountID != 0)
 	idempotencyID, _ := security.NewOpaqueToken(18)
-	if ownership != nil {
-		attemptPolicy = newRoutingAttemptPolicy(1)
-	}
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
 	if err := s.checkLedgerReady(); err != nil {
 		return nil, err
@@ -1197,7 +1207,18 @@ attemptLoop:
 		var lease *accountLease
 		var err error
 		selectionStarted := time.Now()
-		if ownership != nil {
+		if input.ForcedAccountID != 0 {
+			if input.ForcedEgressNodeID == 0 {
+				err = &SelectionUnavailableError{Reason: SelectionNoAccounts}
+			} else {
+				lease, err = s.selector.AcquirePinnedForQualityProbe(ctx, route.Provider, input.ForcedAccountID, route.ID, route.UpstreamModel, quotaMode, accountScope)
+				if err == nil && lease.Credential.EgressNodeID != input.ForcedEgressNodeID {
+					lease.Release()
+					lease = nil
+					err = &SelectionUnavailableError{Reason: SelectionNoAccounts}
+				}
+			}
+		} else if ownership != nil {
 			lease, err = s.selector.AcquirePinnedForKey(ctx, route.Provider, ownership.AccountID, route.ID, route.UpstreamModel, quotaMode, true, accountScope)
 		} else if input.ForcedEgressNodeID != 0 {
 			lease, err = s.selector.AcquireForKeyOnEgressNode(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, affinityKey, excluded, !quotaProbeAttempted, accountScope, input.ForcedEgressNodeID)
@@ -1229,7 +1250,7 @@ attemptLoop:
 			// Stored Responses are pinned to one account. Return the cached 429
 			// immediately instead of spinning until the cooldown expires or
 			// replaying the request on the same account.
-			if ownership != nil {
+			if ownership != nil || input.ForcedAccountID != 0 {
 				break attemptLoop
 			}
 			attempt--
