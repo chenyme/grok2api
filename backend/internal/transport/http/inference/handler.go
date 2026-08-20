@@ -1418,21 +1418,30 @@ func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetad
 		}
 		compat.rememberFromMeta(meta)
 		id := compat.ensureID()
-		response := map[string]any{
-			"id":                 id,
-			"object":             "response",
-			"created_at":         compat.createdAt,
-			"completed_at":       compat.createdAt,
-			"status":             "incomplete",
-			"output":             []any{},
-			"error":              nil,
-			"incomplete_details": map[string]any{"reason": code},
+		// Grok TUI 0.2.93 treats any response.incomplete as fatal
+		// max_tokens_truncation (not retryable), ignoring incomplete_details.reason.
+		// Stream aborts are transport failures — emit response.failed so the
+		// client can retry instead of killing the turn.
+		model := strings.TrimSpace(meta.Model)
+		if model == "" {
+			model = strings.TrimSpace(compat.model)
 		}
-		if model := strings.TrimSpace(meta.Model); model != "" {
-			response["model"] = model
+		response := map[string]any{
+			"id":           id,
+			"object":       "response",
+			"created_at":   compat.createdAt,
+			"completed_at": compat.createdAt,
+			"status":       "failed",
+			"model":        model,
+			"output":       []any{},
+			"error": map[string]any{
+				"code":    code,
+				"message": message,
+				"type":    "server_error",
+			},
 		}
 		event := map[string]any{
-			"type":            "response.incomplete",
+			"type":            "response.failed",
 			"id":              id,
 			"sequence_number": meta.SequenceNumber + 1,
 			"response":        response,
@@ -1442,7 +1451,7 @@ func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetad
 		if err != nil {
 			return nil
 		}
-		return []byte("event: response.incomplete\ndata: " + string(payload) + "\n\n")
+		return []byte("event: response.failed\ndata: " + string(payload) + "\n\n")
 	case streamProtocolAnthropic:
 		payload, err := json.Marshal(map[string]any{
 			"type":  "error",
