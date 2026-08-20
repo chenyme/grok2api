@@ -705,14 +705,20 @@ function AuditStatus({ audit, onOpen }: { audit: AuditDTO; onOpen: () => void })
       <span className="block whitespace-nowrap text-[10px] text-muted-foreground">{mode}</span>
     </>
   );
-  if (!audit.errorCode && audit.attemptCount === 0) return <div className="space-y-0.5 text-center">{content}</div>;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className="group space-y-0.5 rounded-md text-center outline-none focus-visible:ring-2 focus-visible:ring-ring/50 [&>span:last-child]:underline-offset-2 hover:[&>span:last-child]:text-foreground hover:[&>span:last-child]:underline" aria-label={t("audits.openDiagnostics")} onClick={onOpen}>{content}</button>
+        <button
+          type="button"
+          className="group inline-flex flex-col items-center justify-center space-y-0.5 rounded-md px-2 py-1 text-center outline-none transition-colors hover:bg-muted/80 focus-visible:ring-2 focus-visible:ring-ring/50 [&>span:last-child]:underline-offset-2 hover:[&>span:last-child]:text-foreground hover:[&>span:last-child]:underline cursor-pointer"
+          aria-label={t("audits.viewDetails")}
+          onClick={onOpen}
+        >
+          {content}
+        </button>
       </TooltipTrigger>
       <TooltipContent className="max-w-80 whitespace-normal break-words text-left leading-5" side="top">
-        {audit.errorCode || t("audits.openDiagnostics")}
+        {audit.errorCode || t("audits.viewDetails")}
       </TooltipContent>
     </Tooltip>
   );

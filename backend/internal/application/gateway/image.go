@@ -31,6 +31,10 @@ type ImageGenerationInput struct {
 	ResponseFormat string
 	Streaming      bool
 	PartialImages  int
+	RequestBody    string
+	Method         string
+	Path           string
+	Headers        map[string][]string
 }
 
 // ImageEditInput 表示图片编辑用例已经完成协议校验后的输入。
@@ -48,6 +52,10 @@ type ImageEditInput struct {
 	ResponseFormat string
 	Streaming      bool
 	PartialImages  int
+	RequestBody    string
+	Method         string
+	Path           string
+	Headers        map[string][]string
 }
 
 type imageProviderSupport func(accountdomain.Provider) bool
@@ -69,7 +77,7 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution, Quality: input.Quality,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
-	}, input.Streaming, input.Resolution, input.Quality, input.Count, 0)
+	}, input.Streaming, input.Resolution, input.Quality, input.Count, 0, input.RequestBody, input.Method, input.Path, input.Headers)
 }
 
 // EditImage 选择支持图片编辑的路由和账号，并返回可统一审计的上游响应。
@@ -88,7 +96,7 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 			Resolution: input.Resolution, Quality: input.Quality, ResponseFormat: input.ResponseFormat,
 			Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
-	}, input.Streaming, input.Resolution, input.Quality, input.Count, len(input.ImageURLs))
+	}, input.Streaming, input.Resolution, input.Quality, input.Count, len(input.ImageURLs), input.RequestBody, input.Method, input.Path, input.Headers)
 }
 
 func (s *Service) executeImage(
@@ -105,6 +113,10 @@ func (s *Service) executeImage(
 	quality string,
 	requestedCount int,
 	inputImageCount int,
+	requestBody string,
+	method string,
+	path string,
+	headers map[string][]string,
 ) (*Result, error) {
 	ctx, egressTrace := infraegress.WithTrace(ctx)
 	startedAt := time.Now()
@@ -130,6 +142,10 @@ func (s *Service) executeImage(
 		ClientIP:     requestmeta.ClientIP(ctx),
 		ModelRouteID: route.ID, ModelPublicID: externalModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone, Streaming: streaming,
+		RequestMethod: method,
+		RequestPath:   path,
+		RequestHeaders: headers,
+		RequestBody:   requestBody,
 	}
 	if operation == audit.OperationImageEdit {
 		auditBase.MediaInputImages = int64(max(0, inputImageCount))

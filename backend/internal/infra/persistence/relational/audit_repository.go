@@ -351,6 +351,12 @@ func toAuditModels(value audit.Record) (requestAuditModel, []requestAuditAttempt
 		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%d\x00%d", value.RequestID, value.ClientKeyID, value.ModelRouteID, value.CreatedAt.UnixNano())))
 		eventID = fmt.Sprintf("evt_%x", digest[:18])
 	}
+	requestHeadersJSON := "{}"
+	if len(value.RequestHeaders) > 0 {
+		if raw, err := json.Marshal(value.RequestHeaders); err == nil {
+			requestHeadersJSON = string(raw)
+		}
+	}
 	row := requestAuditModel{
 		EventID: truncate(eventID, 64), RequestID: truncate(value.RequestID, 64), ClientKeyID: value.ClientKeyID, ClientKeyName: truncate(value.ClientKeyName, 160), ClientIP: strings.TrimSpace(value.ClientIP),
 		ModelRouteID: value.ModelRouteID, ModelPublicID: truncate(value.ModelPublicID, 255), ModelUpstreamModel: truncate(value.ModelUpstreamModel, 255),
@@ -365,7 +371,12 @@ func toAuditModels(value audit.Record) (requestAuditModel, []requestAuditAttempt
 		EstimatedCostInUSDTicks: nonNegative(value.EstimatedCostInUSDTicks), PricingModel: truncate(value.PricingModel, 100), PricingVersion: truncate(value.PricingVersion, 20),
 		NumSourcesUsed: nonNegative(value.NumSourcesUsed), NumServerSideToolsUsed: nonNegative(value.NumServerSideToolsUsed),
 		ContextInputTokens: nonNegative(value.ContextInputTokens), ContextOutputTokens: nonNegative(value.ContextOutputTokens), FirstTokenMS: normalizedFirstToken(value), DurationMS: nonNegative(value.DurationMS),
-		ErrorCode: truncate(value.ErrorCode, 100), AttemptCount: len(value.Attempts), CreatedAt: value.CreatedAt,
+		ErrorCode: truncate(value.ErrorCode, 100),
+		RequestMethod: truncate(value.RequestMethod, 16),
+		RequestPath: truncate(value.RequestPath, 2048),
+		RequestHeadersJSON: truncate(requestHeadersJSON, 65536),
+		RequestBody: truncate(value.RequestBody, 16777216),
+		AttemptCount: len(value.Attempts), CreatedAt: value.CreatedAt,
 	}
 	attempts := make([]requestAuditAttemptModel, 0, len(value.Attempts))
 	for _, attempt := range value.Attempts {

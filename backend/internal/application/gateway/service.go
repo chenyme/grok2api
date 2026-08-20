@@ -108,6 +108,12 @@ type Input struct {
 	// GrokTurnIndex forwards only the turn supplied by a real Grok Shell client; the server never infers or increments it.
 	GrokTurnIndex string
 	Operation     audit.Operation
+	// Method is the client HTTP request method.
+	Method string
+	// Path is the client HTTP request path.
+	Path string
+	// Headers is the client HTTP request headers.
+	Headers map[string][]string
 	// auditOperation may classify a normal protocol request differently for
 	// operator visibility without changing routing or Provider semantics.
 	auditOperation audit.Operation
@@ -943,6 +949,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		ModelRouteID: route.ID, ModelPublicID: publicModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: auditOperation, UsageSource: audit.UsageSourceNone, Streaming: input.Streaming,
 		MediaInputImages: mediaSummary.InputImages,
+		RequestMethod:    input.Method,
+		RequestPath:      input.Path,
+		RequestHeaders:   input.Headers,
+		RequestBody:      string(input.Body),
 	}
 	if errors.Is(routeErr, clientkeyapp.ErrModelNotAllowed) {
 		record := auditBase

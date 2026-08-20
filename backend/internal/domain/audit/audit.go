@@ -111,6 +111,10 @@ type Record struct {
 	FirstTokenMS            *int64
 	DurationMS              int64
 	ErrorCode               string
+	RequestMethod           string
+	RequestPath             string
+	RequestHeaders          map[string][]string
+	RequestBody             string
 	AttemptCount            int
 	Attempts                []Attempt
 	CreatedAt               time.Time

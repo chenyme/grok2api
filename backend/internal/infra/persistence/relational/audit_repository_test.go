@@ -556,4 +556,66 @@ func TestDegradeTimestampScansPostgresTimeValue(t *testing.T) {
 	}
 }
 
+func TestAuditRepositoryRequestBody(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-request-body.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	now := time.Now().UTC()
+	reqJSON := `{"model":"grok-4","messages":[{"role":"user","content":"Hello world"}]}`
+	reqHeaders := map[string][]string{
+		"User-Agent":   {"curl/8.4.0"},
+		"Content-Type": {"application/json"},
+	}
+	record := audit.Record{
+		RequestID:      "req-with-body",
+		ClientKeyID:    1,
+		ModelRouteID:   1,
+		StatusCode:     200,
+		RequestMethod:  "POST",
+		RequestPath:    "/v1/chat/completions",
+		RequestHeaders: reqHeaders,
+		RequestBody:    reqJSON,
+		CreatedAt:      now,
+	}
+	if err := repository.Create(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	items, _, err := repository.List(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items len = %d, want 1", len(items))
+	}
+	if items[0].RequestBody != reqJSON {
+		t.Fatalf("RequestBody = %q, want %q", items[0].RequestBody, reqJSON)
+	}
+	if items[0].RequestMethod != "POST" {
+		t.Fatalf("RequestMethod = %q, want POST", items[0].RequestMethod)
+	}
+	if items[0].RequestPath != "/v1/chat/completions" {
+		t.Fatalf("RequestPath = %q, want /v1/chat/completions", items[0].RequestPath)
+	}
+	if items[0].RequestHeaders["User-Agent"][0] != "curl/8.4.0" {
+		t.Fatalf("RequestHeaders = %#v", items[0].RequestHeaders)
+	}
+	detail, err := repository.Get(ctx, items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.RequestBody != reqJSON {
+		t.Fatalf("Detail RequestBody = %q, want %q", detail.RequestBody, reqJSON)
+	}
+	if detail.RequestMethod != "POST" || detail.RequestPath != "/v1/chat/completions" || detail.RequestHeaders["User-Agent"][0] != "curl/8.4.0" {
+		t.Fatalf("Detail HTTP fields mismatch: %#v", detail)
+	}
+}
+
 func uint64Pointer(value uint64) *uint64 { return &value }
