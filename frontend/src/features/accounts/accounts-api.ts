@@ -124,7 +124,7 @@ export type LinkedAccountDTO = {
 
 export type AccountUpdateInput = {
   name: string;
-  enabled: boolean;
+  enabled?: boolean;
   priority: number;
   maxConcurrent: number;
   minimumRemaining: number;

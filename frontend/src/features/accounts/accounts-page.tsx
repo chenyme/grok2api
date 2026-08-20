@@ -325,11 +325,11 @@ export function AccountsPage() {
       if (!editing) throw new Error(t("errors.generic"));
       const input: AccountUpdateInput = {
         name: values.name,
-        enabled: values.enabled,
         priority: values.priority,
         maxConcurrent: values.maxConcurrent,
         minimumRemaining: values.minimumRemaining,
       };
+      if (values.enabled !== editing.enabled) input.enabled = values.enabled;
       if (editing.provider !== "grok_build") {
         if (values.clearCloudflareCookies) input.clearCloudflareCookies = true;
         else if (values.cloudflareCookies.trim()) input.cloudflareCookies = values.cloudflareCookies;
