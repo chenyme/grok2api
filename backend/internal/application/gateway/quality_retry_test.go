@@ -725,8 +725,11 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			request := input
 			request.Body = []byte(test.body)
-			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
-				t.Fatal("in-flight tool results must not be held")
+			if !qualityRequestHasInFlightToolResults(request.Body) {
+				t.Fatal("fixture must still be detected as tool output")
+			}
+			if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("in-flight tool results must still be held so 0-thinking agent turns are classified")
 			}
 		})
 	}
