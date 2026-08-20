@@ -270,13 +270,11 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// Retrying an in-flight tool *result* can repeat external side effects.
-	// Grok TUI always declares a tools schema even on the first thinking
-	// turn; skipping that schema would disable the hold for every agent
-	// request. Only skip when the body already contains tool output.
-	if qualityRequestHasInFlightToolResults(input.Body) {
-		return false
-	}
+	// Grok TUI always declares a tools schema, and after local tools run the
+	// next /v1/responses body already contains function_call_output. Retrying
+	// that body on another account does not re-execute TUI tools — it only
+	// regenerates the model turn. Skipping hold here let 0-thinking dumps
+	// through on the common agent loop. Keep holding.
 	// Aliases are rewritten before this gate, so inspect the effective request
 	// body instead of only the reasoning-capable base model. In particular,
 	// grok-4.3-none becomes grok-4.3 plus an explicit disabled setting.
@@ -287,10 +285,6 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return true
 	}
 	return modeldomain.SupportsReasoningForProvider(route.Provider, route.UpstreamModel)
-}
-
-func qualityRequestUsesTools(body []byte) bool {
-	return qualityRequestHasInFlightToolResults(body)
 }
 
 func qualityRequestHasInFlightToolResults(body []byte) bool {
