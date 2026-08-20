@@ -85,6 +85,7 @@ export function SettingsPage() {
             <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="console">{t("console.name")}</TabsTrigger>
             <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="delivery">{t("settings.groups.delivery")}</TabsTrigger>
             <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="policies">{t("settings.groups.policies")}</TabsTrigger>
+            <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="audit">{t("settings.audit.tabTitle")}</TabsTrigger>
             <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="accounts">{t("settings.accounts.title")}</TabsTrigger>
             <TabsTrigger className="h-9 w-auto shrink-0 justify-start rounded-md px-3 text-xs data-[state=active]:font-medium lg:w-full" value="about">{t("updates.title")}</TabsTrigger>
           </TabsList>
@@ -341,21 +342,96 @@ export function SettingsPage() {
             </AlertDialog>
           </SettingsSection>
 
-          <SettingsSection title={t("settings.audit.title")}>
-            <div className="space-y-0">
-              <SettingsField controlId="audit-buffer-size" label={t("settings.audit.bufferSize")} description={t("settings.audit.bufferSizeHelp")} badge={t("settings.restartRequired")} error={form.formState.errors.audit?.bufferSize?.message}><Input id="audit-buffer-size" type="number" min={1} max={262_144} {...form.register("audit.bufferSize", { valueAsNumber: true })} /></SettingsField>
-              <SettingsField controlId="audit-batch-size" label={t("settings.audit.batchSize")} description={t("settings.audit.batchSizeHelp")} error={form.formState.errors.audit?.batchSize?.message}><Input id="audit-batch-size" type="number" min={1} max={4_096} {...form.register("audit.batchSize", { valueAsNumber: true })} /></SettingsField>
-              <SettingsField controlId="audit-flush-interval" label={t("settings.audit.flushInterval")} description={t("settings.audit.flushIntervalHelp")} error={form.formState.errors.audit?.flushInterval?.message}><Controller control={form.control} name="audit.flushInterval" render={({ field }) => <DurationInput id="audit-flush-interval" value={field.value} onChange={field.onChange} />} /></SettingsField>
-              <SettingsField controlId="audit-commit-delay" label={t("settings.audit.commitDelay")} description={t("settings.audit.commitDelayHelp")} error={form.formState.errors.audit?.commitDelayMS?.message}><Input id="audit-commit-delay" type="number" min={1} max={50} {...form.register("audit.commitDelayMS", { valueAsNumber: true })} /></SettingsField>
-            </div>
-          </SettingsSection>
-
           <SettingsSection title={t("settings.clientKeys.title")}>
             <div className="space-y-0">
               <SettingsField controlId="client-key-default-rpm" label={t("settings.clientKeys.rpmLimit")} description={t("settings.clientKeys.rpmLimitHelp")} error={form.formState.errors.clientKeyDefaults?.rpmLimit?.message}><Input id="client-key-default-rpm" type="number" min={1} max={100_000} {...form.register("clientKeyDefaults.rpmLimit", { valueAsNumber: true })} /></SettingsField>
               <SettingsField controlId="client-key-default-concurrency" label={t("settings.clientKeys.maxConcurrent")} description={t("settings.clientKeys.maxConcurrentHelp")} error={form.formState.errors.clientKeyDefaults?.maxConcurrent?.message}><Input id="client-key-default-concurrency" type="number" min={1} max={1_024} {...form.register("clientKeyDefaults.maxConcurrent", { valueAsNumber: true })} /></SettingsField>
             </div>
           </SettingsSection>
+          </SettingsPane>
+
+          <SettingsPane value="audit">
+            <SettingsSection title={t("settings.audit.retentionTitle")}>
+              <div className="space-y-0">
+                <SettingsField
+                  controlId="audit-retention-days"
+                  label={t("settings.audit.retentionDays")}
+                  description={t("settings.audit.retentionDaysHelp")}
+                  error={form.formState.errors.audit?.retentionDays?.message}
+                >
+                  <Input
+                    id="audit-retention-days"
+                    type="number"
+                    min={0}
+                    max={365}
+                    {...form.register("audit.retentionDays", { valueAsNumber: true })}
+                  />
+                </SettingsField>
+
+              </div>
+            </SettingsSection>
+
+            <SettingsSection title={t("settings.audit.performanceTitle")}>
+              <div className="space-y-0">
+                <SettingsField
+                  controlId="audit-buffer-size"
+                  label={t("settings.audit.bufferSize")}
+                  description={t("settings.audit.bufferSizeHelp")}
+                  badge={t("settings.restartRequired")}
+                  error={form.formState.errors.audit?.bufferSize?.message}
+                >
+                  <Input
+                    id="audit-buffer-size"
+                    type="number"
+                    min={1}
+                    max={262_144}
+                    {...form.register("audit.bufferSize", { valueAsNumber: true })}
+                  />
+                </SettingsField>
+                <SettingsField
+                  controlId="audit-batch-size"
+                  label={t("settings.audit.batchSize")}
+                  description={t("settings.audit.batchSizeHelp")}
+                  error={form.formState.errors.audit?.batchSize?.message}
+                >
+                  <Input
+                    id="audit-batch-size"
+                    type="number"
+                    min={1}
+                    max={4_096}
+                    {...form.register("audit.batchSize", { valueAsNumber: true })}
+                  />
+                </SettingsField>
+                <SettingsField
+                  controlId="audit-flush-interval"
+                  label={t("settings.audit.flushInterval")}
+                  description={t("settings.audit.flushIntervalHelp")}
+                  error={form.formState.errors.audit?.flushInterval?.message}
+                >
+                  <Controller
+                    control={form.control}
+                    name="audit.flushInterval"
+                    render={({ field }) => (
+                      <DurationInput id="audit-flush-interval" value={field.value} onChange={field.onChange} />
+                    )}
+                  />
+                </SettingsField>
+                <SettingsField
+                  controlId="audit-commit-delay"
+                  label={t("settings.audit.commitDelay")}
+                  description={t("settings.audit.commitDelayHelp")}
+                  error={form.formState.errors.audit?.commitDelayMS?.message}
+                >
+                  <Input
+                    id="audit-commit-delay"
+                    type="number"
+                    min={1}
+                    max={50}
+                    {...form.register("audit.commitDelayMS", { valueAsNumber: true })}
+                  />
+                </SettingsField>
+              </div>
+            </SettingsSection>
           </SettingsPane>
 
           <SettingsPane value="accounts">

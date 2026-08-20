@@ -325,6 +325,9 @@ func (h *Handler) createChatCompletion(c *gin.Context) {
 		PromptCacheSeed:           extractPromptCacheSeed(c.Request.Header, body),
 		AllowClientToolCacheRoute: allowBuildClientToolCacheRoute(c.Request.Header),
 		GrokTurnIndex:             c.GetHeader("x-grok-turn-idx"),
+		Method:                    c.Request.Method,
+		Path:                      c.Request.URL.Path,
+		Headers:                   c.Request.Header.Clone(),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -367,6 +370,9 @@ func (h *Handler) createMessage(c *gin.Context) {
 		PromptCacheSeed:           extractPromptCacheSeed(c.Request.Header, body),
 		AllowClientToolCacheRoute: allowBuildClientToolCacheRoute(c.Request.Header),
 		GrokTurnIndex:             c.GetHeader("x-grok-turn-idx"),
+		Method:                    c.Request.Method,
+		Path:                      c.Request.URL.Path,
+		Headers:                   c.Request.Header.Clone(),
 	})
 	if err != nil {
 		writeGatewayAnthropicError(c, err)
@@ -381,8 +387,13 @@ func (h *Handler) generateImage(c *gin.Context) {
 		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "图片生成仅支持 application/json")
 		return
 	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		writeOpenAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过限制")
+		return
+	}
 	var request imageGenerationRequest
-	if decodeSingleJSON(c.Request.Body, &request, false) != nil || strings.TrimSpace(request.Model) == "" || strings.TrimSpace(request.Prompt) == "" {
+	if decodeSingleJSON(bytes.NewReader(body), &request, false) != nil || strings.TrimSpace(request.Model) == "" || strings.TrimSpace(request.Prompt) == "" {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片请求缺少有效 model 或 prompt")
 		return
 	}
@@ -428,6 +439,7 @@ func (h *Handler) generateImage(c *gin.Context) {
 		Count: count, Size: request.Size, AspectRatio: request.AspectRatio,
 		Resolution: request.Resolution, Quality: quality, ResponseFormat: request.ResponseFormat,
 		Streaming: request.Stream, PartialImages: partialImages,
+		Method: c.Request.Method, Path: c.Request.URL.Path, Headers: c.Request.Header.Clone(),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -572,8 +584,13 @@ func (h *Handler) editImage(c *gin.Context) {
 		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "图片编辑仅支持 application/json")
 		return
 	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		writeOpenAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过限制")
+		return
+	}
 	var request imageEditJSONRequest
-	if err := decodeSingleJSON(c.Request.Body, &request, false); err != nil {
+	if err := decodeSingleJSON(bytes.NewReader(body), &request, false); err != nil {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片编辑 JSON 请求无效")
 		return
 	}
@@ -661,6 +678,7 @@ func (h *Handler) editImage(c *gin.Context) {
 		ImageURLs: imageURLs, Count: count, Size: size, AspectRatio: aspectRatio,
 		Resolution: resolution, Quality: quality, ResponseFormat: request.ResponseFormat,
 		Streaming: request.Stream, PartialImages: partialImages,
+		Method: c.Request.Method, Path: c.Request.URL.Path, Headers: c.Request.Header.Clone(),
 	})
 	if err != nil {
 		writeGatewayError(c, err)
@@ -1140,6 +1158,9 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 		PromptCacheSeed: extractPromptCacheSeed(c.Request.Header, body), PreviousResponseID: request.PreviousResponseID,
 		AllowClientToolCacheRoute: allowBuildClientToolCacheRoute(c.Request.Header),
 		GrokTurnIndex:             c.GetHeader("x-grok-turn-idx"),
+		Method:                    c.Request.Method,
+		Path:                      c.Request.URL.Path,
+		Headers:                   c.Request.Header.Clone(),
 	}
 	var result *gateway.Result
 	if compact {
@@ -1643,6 +1664,10 @@ func (i *responseInspector) Inspect(chunk []byte) {
 	}
 }
 
+func (i *responseInspector) Metadata() responseMetadata {
+	return normalizeMetadataUsage(i.metadata, i.protocol)
+}
+
 func (i *responseInspector) observeReasoningStart() {
 	if i.firstTokenSeen || i.firstTokenReady || i.onFirstToken == nil {
 		return
@@ -1757,10 +1782,6 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 		}
 	}
 	return false
-}
-
-func (i *responseInspector) Metadata() responseMetadata {
-	return normalizeMetadataUsage(i.metadata, i.protocol)
 }
 
 func normalizeMetadataUsage(metadata responseMetadata, protocol streamProtocol) responseMetadata {

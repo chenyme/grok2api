@@ -115,6 +115,9 @@ type Input struct {
 	// GrokTurnIndex forwards only the turn supplied by a real Grok Shell client; the server never infers or increments it.
 	GrokTurnIndex string
 	Operation     audit.Operation
+	Method        string
+	Path          string
+	Headers       map[string][]string
 	// auditOperation may classify a normal protocol request differently for
 	// operator visibility without changing routing or Provider semantics.
 	auditOperation audit.Operation
@@ -953,6 +956,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		ModelRouteID: route.ID, ModelPublicID: publicModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: auditOperation, UsageSource: audit.UsageSourceNone, Streaming: input.Streaming,
 		MediaInputImages: mediaSummary.InputImages,
+		RequestMethod:    input.Method, RequestPath: input.Path, RequestHeaders: input.Headers,
 	}
 	if errors.Is(routeErr, clientkeyapp.ErrModelNotAllowed) {
 		record := auditBase
@@ -1115,6 +1119,25 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
 				attempts := failureAttempts.snapshot()
+				if !successful && len(attempts) == 0 {
+					statusCode := response.StatusCode
+					failureAttempts.append(audit.Attempt{
+						Source:             audit.AttemptSourceUpstreamHTTP,
+						Stage:              "response_stream",
+						AccountID:          auditAccountID(credential.ID),
+						AccountName:        credential.Name,
+						Method:             http.MethodPost,
+						RequestPath:        sanitizeRequestPath(path),
+						UpstreamURL:        sanitizeUpstreamURL(response.UpstreamURL),
+						StartedAt:          upstreamStartedAt.UTC(),
+						DurationMS:         time.Since(upstreamStartedAt).Milliseconds(),
+						UpstreamStatusCode: &statusCode,
+						UpstreamStatus:     response.Status,
+						ResponseHeaders:    sanitizeDiagnosticHeaders(response.Header),
+						TransportError:     errorCode,
+					})
+					attempts = failureAttempts.snapshot()
+				}
 				if !successful || len(attempts) > 0 {
 					record.Attempts = attempts
 				}
