@@ -148,8 +148,10 @@ qualityGuard:
   nodeIDs: []
   rotatableNodeIDs: []
   # Optional request-path withhold/retry for thinking models.
-  # 3s hold cuts encrypted thinking that arrives at the end of grok-4.6
-  # streams; 30s is the allowed maximum and the production default.
+  # Observe up to 30s for real reasoning evidence. If upstream has announced
+  # a reasoning item and visible output but proof arrives later, the still-open
+  # stream is released at the deadline without penalizing the account. Empty or
+  # terminal no-thinking responses are still retried.
   # Missing thinking with enough visible output is not delivered; another
   # account is tried (up to maxAttempts). fail_closed returns 503 instead
   # of the last body. Sidecar qualityGuard.enabled stays false until you

@@ -361,8 +361,8 @@ qualityGuard:
   enabled: true
   model: "grok-4.6"
   # 思考模型缺流式 reasoning 时先扣住响应，换号再打，不把降智正文发给用户。
-  # grok-4.6 的 encrypted thinking 在流末尾，hold 必须 30s；3s 会误判成
-  # missing-thinking，审计出现 200 · 错误。
+  # 最多观察 30 秒；已有 reasoning 起始信号和可见输出的进行中流会在超时后放行，
+  # 空流和终态仍无 thinking 的响应继续换号。
   requestRetry:
     enabled: true
     maxAttempts: 6

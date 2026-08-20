@@ -365,8 +365,8 @@ qualityGuard:
   enabled: true
   model: "grok-4.6"
   # Withhold thinking-model streams that have no streamed reasoning.
-  # 30s hold is required for grok-4.6 encrypted thinking at end-of-stream;
-  # 3s cuts those as missing-thinking (HTTP 200 · error in audits).
+  # Observe for up to 30s. An open stream with a reasoning start and visible
+  # output is released at the deadline; empty/terminal failures still retry.
   requestRetry:
     enabled: true
     maxAttempts: 6

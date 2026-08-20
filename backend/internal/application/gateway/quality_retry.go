@@ -129,9 +129,12 @@ func (s *Service) qualityRetryConfig() QualityRetryRuntime {
 // A hold timeout with no visible output is not fail-open: keep waiting for
 // more bytes or a stream abort so an empty hang is not flushed as HTTP 200.
 //
-// An empty reasoning stub is not thinking. Wait for usage/terminal so
-// encrypted thinking (tokens arrive at the end) is not withheld, and so
-// 200 + 推理·高 + reasoning=0 is not delivered the moment the stub appears.
+// An empty reasoning stub is not thinking. Before the hold deadline, wait for
+// real evidence or a terminal event. If the deadline expires while the stream
+// is still open and already has visible output, the result is inconclusive:
+// release it without penalizing the account. A stub-only empty stream keeps
+// waiting for idle/terminal handling. This keeps HoldTimeout a real latency
+// bound without reopening the empty-stream 200 response path.
 func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdict {
 	if minOutput <= 0 {
 		minOutput = defaultQualityMinOutput
@@ -144,7 +147,10 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 		output = sig.VisibleTokens
 	}
 	enough := output >= minOutput
-	if sig.ReasoningStarted && !sig.Terminal && !sig.HoldExpired {
+	if sig.ReasoningStarted && !sig.Terminal {
+		if sig.HoldExpired && output > 0 {
+			return QualityDeliver
+		}
 		return QualityWait
 	}
 	if sig.Terminal {

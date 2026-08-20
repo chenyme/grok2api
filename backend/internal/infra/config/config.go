@@ -295,7 +295,7 @@ type QualityGuardRequestRetryConfig struct {
 	OnExhausted     string   `yaml:"onExhausted"`
 	AccountCooldown Duration `yaml:"accountCooldown"`
 	// IdleAccountCooldown cools an account after a truly empty upstream
-	// stream. Independent of accountCooldown (missing-thinking). Zero uses 24h.
+	// stream. Independent of accountCooldown (missing-thinking). Zero uses 15m.
 	IdleAccountCooldown Duration `yaml:"idleAccountCooldown"`
 }
 
