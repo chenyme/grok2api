@@ -12,6 +12,7 @@ import (
 type responsesCompatState struct {
 	responseID      string
 	createdAt       int64
+	model           string
 	itemSeq         int
 	itemIDs         map[int64]string
 	usedItemIDs     map[string]struct{}
@@ -102,6 +103,9 @@ func (s *responsesCompatState) rememberFromMeta(meta responseMetadata) {
 	if id := strings.TrimSpace(meta.ResponseID); id != "" {
 		s.responseID = id
 	}
+	if model := strings.TrimSpace(meta.Model); model != "" {
+		s.model = model
+	}
 	s.ensureID()
 }
 
@@ -171,6 +175,13 @@ func sanitizeResponsesEvent(event map[string]any, state *responsesCompatState) b
 		}
 		if resp["output"] == nil {
 			resp["output"] = []any{}
+			changed = true
+		}
+		if model := strings.TrimSpace(stringAny(resp["model"])); model != "" {
+			state.model = model
+		} else {
+			// Grok TUI serde requires `model` on response.failed / completed.
+			resp["model"] = state.model
 			changed = true
 		}
 		if errObj, ok := resp["error"].(map[string]any); ok && strings.TrimSpace(stringAny(errObj["id"])) == "" {
