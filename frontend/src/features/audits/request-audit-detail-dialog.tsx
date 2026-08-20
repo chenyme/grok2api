@@ -72,26 +72,28 @@ export function RequestAuditDetailDialog({
               />
             ) : null}
           </div>
-          <DialogDescription className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-            <span className="font-mono text-muted-foreground truncate max-w-[240px]" title={activeAudit?.requestId}>
-              {activeAudit?.requestId}
-            </span>
-            {activeAudit?.clientIp ? (
-              <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                <Globe2 className="mr-1 size-2.5" />
-                {activeAudit.clientIp}
-              </Badge>
-            ) : null}
-            {activeAudit?.operation ? (
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0 uppercase">
-                {activeAudit.operation}
-              </Badge>
-            ) : null}
-            {activeAudit ? (
-              <span className="text-[11px] text-muted-foreground">
-                {formatDateTime(activeAudit.createdAt, i18n.language)}
+          <DialogDescription asChild>
+            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <span className="font-mono text-muted-foreground truncate max-w-[240px]" title={activeAudit?.requestId}>
+                {activeAudit?.requestId}
               </span>
-            ) : null}
+              {activeAudit?.clientIp ? (
+                <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                  <Globe2 className="mr-1 size-2.5" />
+                  {activeAudit.clientIp}
+                </Badge>
+              ) : null}
+              {activeAudit?.operation ? (
+                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 uppercase">
+                  {activeAudit.operation}
+                </Badge>
+              ) : null}
+              {activeAudit ? (
+                <span className="text-[11px] text-muted-foreground">
+                  {formatDateTime(activeAudit.createdAt, i18n.language)}
+                </span>
+              ) : null}
+            </div>
           </DialogDescription>
         </DialogHeader>
 
