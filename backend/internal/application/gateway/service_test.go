@@ -1234,7 +1234,7 @@ func TestUnpricedVoiceRemainsAvailableToFiniteClientKey(t *testing.T) {
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
 	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, nil, 1)
 	executed := false
-	result, err := service.executeVoice(ctx, "req-voice-billing", clientkey.Key{ID: 1, BillingLimitUSDTicks: 1}, voiceModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, audit.PricingResult{}, "", "", "", nil, func(account.Provider) bool {
+	result, err := service.executeVoice(ctx, "req-voice-billing", clientkey.Key{ID: 1, BillingLimitUSDTicks: 1}, voiceModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, audit.PricingResult{}, "", "", nil, func(account.Provider) bool {
 		return true
 	}, func(context.Context, account.Provider, account.Credential, string) (voiceExecutionResult, error) {
 		executed = true
@@ -1305,7 +1305,7 @@ func TestVoicePricingSettlesTTSAndRESTSTTUsage(t *testing.T) {
 	if !ok {
 		t.Fatal("TTS pricing unavailable")
 	}
-	ttsResult, err := service.executeVoice(ctx, "req-priced-tts", limitedKey, ttsModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, ttsPricing, "", "", "", nil, func(account.Provider) bool {
+	ttsResult, err := service.executeVoice(ctx, "req-priced-tts", limitedKey, ttsModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, ttsPricing, "", "", nil, func(account.Provider) bool {
 		return true
 	}, func(context.Context, account.Provider, account.Credential, string) (voiceExecutionResult, error) {
 		return voiceExecutionResult{response: jsonVoiceResponse(http.StatusOK, map[string]any{"ok": true}), pricing: ttsPricing}, nil
@@ -1328,7 +1328,7 @@ func TestVoicePricingSettlesTTSAndRESTSTTUsage(t *testing.T) {
 	if !ok {
 		t.Fatal("STT pricing unavailable")
 	}
-	sttResult, err := service.executeVoice(ctx, "req-priced-stt", limitedKey, sttModel, audit.OperationSTT, modeldomain.CapabilitySTT, true, audit.PricingResult{}, "", "", "", nil, func(account.Provider) bool {
+	sttResult, err := service.executeVoice(ctx, "req-priced-stt", limitedKey, sttModel, audit.OperationSTT, modeldomain.CapabilitySTT, true, audit.PricingResult{}, "", "", nil, func(account.Provider) bool {
 		return true
 	}, func(context.Context, account.Provider, account.Credential, string) (voiceExecutionResult, error) {
 		return voiceExecutionResult{response: jsonVoiceResponse(http.StatusOK, map[string]any{"text": "hello"}), pricing: sttPricing}, nil
@@ -1369,7 +1369,7 @@ func TestVoicePricingSettlesTTSAndRESTSTTUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	executed := false
-	_, err = service.executeVoice(ctx, "req-capped-tts", cappedKey, ttsModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, ttsPricing, "", "", "", nil, func(account.Provider) bool {
+	_, err = service.executeVoice(ctx, "req-capped-tts", cappedKey, ttsModel, audit.OperationTTS, modeldomain.CapabilityTTS, true, ttsPricing, "", "", nil, func(account.Provider) bool {
 		return true
 	}, func(context.Context, account.Provider, account.Credential, string) (voiceExecutionResult, error) {
 		executed = true

@@ -31,7 +31,6 @@ type ImageGenerationInput struct {
 	ResponseFormat string
 	Streaming      bool
 	PartialImages  int
-	RequestBody    string
 	Method         string
 	Path           string
 	Headers        map[string][]string
@@ -52,7 +51,6 @@ type ImageEditInput struct {
 	ResponseFormat string
 	Streaming      bool
 	PartialImages  int
-	RequestBody    string
 	Method         string
 	Path           string
 	Headers        map[string][]string
@@ -77,7 +75,7 @@ func (s *Service) GenerateImage(ctx context.Context, input ImageGenerationInput)
 			Size: input.Size, AspectRatio: input.AspectRatio, Resolution: input.Resolution, Quality: input.Quality,
 			ResponseFormat: input.ResponseFormat, Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
-	}, input.Streaming, input.Resolution, input.Quality, input.Count, 0, input.RequestBody, input.Method, input.Path, input.Headers)
+	}, input.Streaming, input.Resolution, input.Quality, input.Count, 0, input.Method, input.Path, input.Headers)
 }
 
 // EditImage 选择支持图片编辑的路由和账号，并返回可统一审计的上游响应。
@@ -96,7 +94,7 @@ func (s *Service) EditImage(ctx context.Context, input ImageEditInput) (*Result,
 			Resolution: input.Resolution, Quality: input.Quality, ResponseFormat: input.ResponseFormat,
 			Streaming: input.Streaming, PartialImages: input.PartialImages,
 		})
-	}, input.Streaming, input.Resolution, input.Quality, input.Count, len(input.ImageURLs), input.RequestBody, input.Method, input.Path, input.Headers)
+	}, input.Streaming, input.Resolution, input.Quality, input.Count, len(input.ImageURLs), input.Method, input.Path, input.Headers)
 }
 
 func (s *Service) executeImage(
@@ -113,7 +111,6 @@ func (s *Service) executeImage(
 	quality string,
 	requestedCount int,
 	inputImageCount int,
-	requestBody string,
 	method string,
 	path string,
 	headers map[string][]string,
@@ -142,10 +139,7 @@ func (s *Service) executeImage(
 		ClientIP:     requestmeta.ClientIP(ctx),
 		ModelRouteID: route.ID, ModelPublicID: externalModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: operation, UsageSource: audit.UsageSourceNone, Streaming: streaming,
-		RequestMethod: method,
-		RequestPath:   path,
-		RequestHeaders: headers,
-		RequestBody:   requestBody,
+		RequestMethod: method, RequestPath: path, RequestHeaders: headers,
 	}
 	if operation == audit.OperationImageEdit {
 		auditBase.MediaInputImages = int64(max(0, inputImageCount))
@@ -303,7 +297,7 @@ func (s *Service) executeImage(
 	effectiveQuotaMode := lease.QuotaMode
 	accountID := credential.ID
 	var once sync.Once
-	finalizeWithBody := func(_ Usage, _ string, errorCode string, responseBody string) {
+	finalize := func(_ Usage, _ string, errorCode string) {
 		once.Do(func() {
 			successful := auditRequestSucceeded(response.StatusCode, errorCode)
 			lease.completeSelectorObservation(successful)
@@ -312,7 +306,6 @@ func (s *Service) executeImage(
 			record := auditBase
 			record.AccountID, record.AccountName, record.StatusCode = &accountID, credential.Name, response.StatusCode
 			record.ErrorCode = errorCode
-			record.ResponseBody = responseBody
 			record.DurationMS, record.CreatedAt = time.Since(startedAt).Milliseconds(), time.Now().UTC()
 			applyAuditEgress(&record, egressTrace, route.Provider)
 			if successful {
@@ -357,15 +350,8 @@ func (s *Service) executeImage(
 			}
 		})
 	}
-	finalize := func(usage Usage, responseID string, errorCode string) {
-		finalizeWithBody(usage, responseID, errorCode, "")
-	}
 	finalizationOwnsReservation = true
-	return &Result{
-		StatusCode: response.StatusCode, Status: response.Status, Header: response.Header,
-		Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }},
-		Finalize: finalize, FinalizeWithBody: finalizeWithBody,
-	}, nil
+	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
 }
 
 // quotaFinalizationModes separates the immediate local consumption fence from

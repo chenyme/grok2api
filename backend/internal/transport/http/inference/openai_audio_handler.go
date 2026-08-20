@@ -116,9 +116,8 @@ func (h *Handler) handleOpenAISpeech(c *gin.Context) {
 		OutputFormat:             format,
 		Speed:                    speed,
 		OptimizeStreamingLatency: optimize,
-		RequestBody:              string(body),
 		Method:                   c.Request.Method,
-		Path:                     c.Request.URL.RequestURI(),
+		Path:                     c.Request.URL.Path,
 		Headers:                  c.Request.Header.Clone(),
 	}
 	if request.TextNormalization != nil {

@@ -415,6 +415,27 @@ func TestRoutingMaxAttemptsSupportsLargeCredentialPools(t *testing.T) {
 	}
 }
 
+func TestValidateAuditRetentionDaysRange(t *testing.T) {
+	for _, days := range []int{-1, 366} {
+		cfg := defaultConfig()
+		cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+		cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+		cfg.Audit.RetentionDays = days
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("audit retentionDays %d should be rejected", days)
+		}
+	}
+	for _, days := range []int{0, 7, 365} {
+		cfg := defaultConfig()
+		cfg.Secrets.JWTSecret = "12345678901234567890123456789012"
+		cfg.Secrets.CredentialEncryptionKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+		cfg.Audit.RetentionDays = days
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("audit retentionDays %d should be valid: %v", days, err)
+		}
+	}
+}
+
 func TestValidateRejectsInvalidAutoAssignShareConfig(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.Routing.AutoAssignMaxNodeShare = 0.03

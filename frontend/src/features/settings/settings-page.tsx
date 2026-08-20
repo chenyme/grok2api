@@ -368,45 +368,6 @@ export function SettingsPage() {
                   />
                 </SettingsField>
 
-                <SettingsField
-                  controlId="audit-record-request-body"
-                  label={t("settings.audit.recordRequestBody")}
-                  description={t("settings.audit.recordRequestBodyHelp")}
-                >
-                  <Controller
-                    control={form.control}
-                    name="audit.recordRequestBody"
-                    render={({ field }) => (
-                      <div className="flex h-9 items-center">
-                        <Switch
-                          id="audit-record-request-body"
-                          checked={Boolean(field.value)}
-                          onCheckedChange={field.onChange}
-                        />
-                      </div>
-                    )}
-                  />
-                </SettingsField>
-
-                <SettingsField
-                  controlId="audit-record-response-body"
-                  label={t("settings.audit.recordResponseBody")}
-                  description={t("settings.audit.recordResponseBodyHelp")}
-                >
-                  <Controller
-                    control={form.control}
-                    name="audit.recordResponseBody"
-                    render={({ field }) => (
-                      <div className="flex h-9 items-center">
-                        <Switch
-                          id="audit-record-response-body"
-                          checked={Boolean(field.value)}
-                          onCheckedChange={field.onChange}
-                        />
-                      </div>
-                    )}
-                  />
-                </SettingsField>
               </div>
             </SettingsSection>
 

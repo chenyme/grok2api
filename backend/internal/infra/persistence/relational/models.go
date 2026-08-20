@@ -345,8 +345,6 @@ type requestAuditModel struct {
 	RequestMethod           string    `gorm:"size:16;not null;default:'';check:chk_request_audits_request_method,length(request_method) <= 16"`
 	RequestPath             string    `gorm:"type:text;not null;default:'';check:chk_request_audits_request_path,length(request_path) <= 2048"`
 	RequestHeadersJSON      string    `gorm:"type:text;not null;default:'{}';check:chk_request_audits_request_headers,length(request_headers_json) <= 65536"`
-	RequestBody             string    `gorm:"type:text;not null;default:'';check:chk_request_audits_request_body,length(request_body) <= 16777216"`
-	ResponseBody            string    `gorm:"type:text;not null;default:'';check:chk_request_audits_response_body,length(response_body) <= 16777216"`
 	AttemptCount            int       `gorm:"not null;default:0;check:chk_request_audits_attempt_count,attempt_count >= 0"`
 	CreatedAt               time.Time `gorm:"not null"`
 }

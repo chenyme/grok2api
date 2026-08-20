@@ -993,8 +993,8 @@ func (s *Service) recordVideoAudit(ctx context.Context, job media.Job, durationM
 		AccountID: accountID, AccountName: job.AccountName, StatusCode: statusCode, ErrorCode: job.ErrorCode,
 		EgressNodeID: job.EgressNodeID, EgressNodeName: job.EgressNodeName, EgressScope: job.EgressScope, EgressMode: audit.EgressMode(job.EgressMode),
 		MediaInputImages: int64(job.InputImageCount),
-		RequestBody:      job.InputJSON,
 		DurationMS:       durationMS, AttemptCount: len(attempts), Attempts: append([]audit.Attempt(nil), attempts...), CreatedAt: createdAt,
+		RequestMethod: http.MethodPost, RequestPath: "/v1/videos/generations",
 	}
 	if job.Status == media.StatusCompleted && job.Seconds > 0 {
 		record.MediaOutputSeconds = int64(max(0, job.Seconds))

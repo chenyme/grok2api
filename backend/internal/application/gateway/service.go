@@ -115,12 +115,9 @@ type Input struct {
 	// GrokTurnIndex forwards only the turn supplied by a real Grok Shell client; the server never infers or increments it.
 	GrokTurnIndex string
 	Operation     audit.Operation
-	// Method is the client HTTP request method.
-	Method string
-	// Path is the client HTTP request path.
-	Path string
-	// Headers is the client HTTP request headers.
-	Headers map[string][]string
+	Method        string
+	Path          string
+	Headers       map[string][]string
 	// auditOperation may classify a normal protocol request differently for
 	// operator visibility without changing routing or Provider semantics.
 	auditOperation audit.Operation
@@ -164,7 +161,6 @@ type Result struct {
 	MarkFirstToken      func()
 	RecordStreamFailure func(StreamFailureDiagnostic)
 	Finalize            func(usage Usage, responseID, errorCode string)
-	FinalizeWithBody    func(usage Usage, responseID, errorCode, responseBody string)
 }
 
 // StreamFailureDiagnostic safely projects a failure termination event returned in-stream after downstream 2xx headers.
@@ -960,10 +956,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 		ModelRouteID: route.ID, ModelPublicID: publicModel, ModelUpstreamModel: modeldomain.DisplayUpstreamModel(route.Provider, route.UpstreamModel),
 		Provider: string(route.Provider), Operation: auditOperation, UsageSource: audit.UsageSourceNone, Streaming: input.Streaming,
 		MediaInputImages: mediaSummary.InputImages,
-		RequestMethod:    input.Method,
-		RequestPath:      input.Path,
-		RequestHeaders:   input.Headers,
-		RequestBody:      string(input.Body),
+		RequestMethod:    input.Method, RequestPath: input.Path, RequestHeaders: input.Headers,
 	}
 	if errors.Is(routeErr, clientkeyapp.ErrModelNotAllowed) {
 		record := auditBase
@@ -1072,7 +1065,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	handoffResponse := func(response *provider.Response, lease *accountLease, credential accountdomain.Credential, upstreamStartedAt time.Time) *Result {
 		accountID := credential.ID
 		var once sync.Once
-		finalizeWithBody := func(usage Usage, responseID, errorCode, responseBody string) {
+		finalize := func(usage Usage, responseID, errorCode string) {
 			once.Do(func() {
 				// HTTP 状态码保留线上真实值；流在 2xx 响应头之后失败时由 errorCode
 				// 决定最终结果，避免把协议状态与业务结果混为一谈。
@@ -1125,7 +1118,6 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				}
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
-				record.ResponseBody = responseBody
 				attempts := failureAttempts.snapshot()
 				if !successful && len(attempts) == 0 {
 					statusCode := response.StatusCode
@@ -1197,9 +1189,6 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				timing.finish(s.logger, outcome)
 			})
 		}
-		finalize := func(usage Usage, responseID, errorCode string) {
-			finalizeWithBody(usage, responseID, errorCode, "")
-		}
 		response.Body = &firstByteReadCloser{ReadCloser: response.Body, mark: timing.markFirstBody}
 		recordStreamFailure := func(diagnostic StreamFailureDiagnostic) {
 			failureAttempts.captureStreamFailure(credential, upstreamStartedAt, response, diagnostic)
@@ -1209,12 +1198,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			markFirstToken = firstToken.mark
 		}
 		timingHandedOff = true
-		return &Result{
-			StatusCode: response.StatusCode, Status: response.Status, Header: response.Header,
-			Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }},
-			MarkFirstToken: markFirstToken, RecordStreamFailure: recordStreamFailure,
-			Finalize: finalize, FinalizeWithBody: finalizeWithBody,
-		}
+		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, MarkFirstToken: markFirstToken, RecordStreamFailure: recordStreamFailure, Finalize: finalize}
 	}
 	// fail_open retains at most one successful no-thinking stream. The account
 	// lease is released immediately; the read pump applies upstream backpressure

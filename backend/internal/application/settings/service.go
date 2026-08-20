@@ -119,16 +119,12 @@ type SegmentedSelectorConfig struct {
 
 // AuditConfig 是管理接口使用的审计可编辑输入。
 type AuditConfig struct {
-	BufferSize                 int
-	BatchSize                  int
-	FlushInterval              string
-	CommitDelayMS              int
-	RetentionDays              int
-	RetentionDaysProvided      bool
-	RecordRequestBody          bool
-	RecordRequestBodyProvided  bool
-	RecordResponseBody         bool
-	RecordResponseBodyProvided bool
+	BufferSize            int
+	BatchSize             int
+	FlushInterval         string
+	CommitDelayMS         int
+	RetentionDays         int
+	RetentionDaysProvided bool
 }
 
 // ClientKeyDefaultsConfig 是管理接口使用的密钥默认限制输入。
@@ -410,14 +406,13 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		commitDelay = value.Audit.CommitDelay
 	}
 	retentionDays := base.Audit.RetentionDays
-	if value.Audit.RetentionDays > 0 {
-		retentionDays = value.Audit.RetentionDays
+	if value.Audit.RetentionDays != nil {
+		retentionDays = *value.Audit.RetentionDays
 	}
 	base.Audit = config.AuditConfig{
 		BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: config.Duration(value.Audit.FlushInterval),
 		CommitDelay: config.Duration(commitDelay), RetentionDays: retentionDays,
-		RecordRequestBody: value.Audit.RecordRequestBody, RecordResponseBody: value.Audit.RecordResponseBody,
-		LedgerMode:  base.Audit.LedgerMode, LedgerFailureThreshold: base.Audit.LedgerFailureThreshold,
+		LedgerMode: base.Audit.LedgerMode, LedgerFailureThreshold: base.Audit.LedgerFailureThreshold,
 		LedgerUnhealthyGrace: base.Audit.LedgerUnhealthyGrace, LedgerQueueHighWatermarkPct: base.Audit.LedgerQueueHighWatermarkPct,
 	}
 	base.ClientKeyDefaults = config.ClientKeyDefaultsConfig{
@@ -493,7 +488,7 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		},
 		Audit: settingsdomain.AuditConfig{
 			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval.Value(), CommitDelay: value.Audit.CommitDelay.Value(),
-			RetentionDays: value.Audit.RetentionDays, RecordRequestBody: value.Audit.RecordRequestBody, RecordResponseBody: value.Audit.RecordResponseBody,
+			RetentionDays: intPointer(value.Audit.RetentionDays),
 		},
 		ClientKeyDefaults: settingsdomain.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
@@ -509,6 +504,8 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 		},
 	}
 }
+
+func intPointer(value int) *int { return &value }
 
 func (s *Service) snapshotLocked() Snapshot {
 	restartRequired := []string{}
@@ -588,12 +585,6 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	}
 	if input.Audit.RetentionDaysProvided {
 		next.Audit.RetentionDays = input.Audit.RetentionDays
-	}
-	if input.Audit.RecordRequestBodyProvided {
-		next.Audit.RecordRequestBody = input.Audit.RecordRequestBody
-	}
-	if input.Audit.RecordResponseBodyProvided {
-		next.Audit.RecordResponseBody = input.Audit.RecordResponseBody
 	}
 	next.ClientKeyDefaults.RPMLimit = input.ClientKeyDefaults.RPMLimit
 	next.ClientKeyDefaults.MaxConcurrent = input.ClientKeyDefaults.MaxConcurrent
@@ -733,8 +724,6 @@ func toEditable(cfg config.Config) EditableConfig {
 		Audit: AuditConfig{
 			BufferSize: cfg.Audit.BufferSize, BatchSize: cfg.Audit.BatchSize, FlushInterval: cfg.Audit.FlushInterval.String(), CommitDelayMS: int(cfg.Audit.CommitDelay.Value() / time.Millisecond),
 			RetentionDays: cfg.Audit.RetentionDays, RetentionDaysProvided: true,
-			RecordRequestBody: cfg.Audit.RecordRequestBody, RecordRequestBodyProvided: true,
-			RecordResponseBody: cfg.Audit.RecordResponseBody, RecordResponseBodyProvided: true,
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: cfg.ClientKeyDefaults.RPMLimit, MaxConcurrent: cfg.ClientKeyDefaults.MaxConcurrent},
 		Accounts: AccountsConfig{

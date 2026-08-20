@@ -556,7 +556,7 @@ func TestDegradeTimestampScansPostgresTimeValue(t *testing.T) {
 	}
 }
 
-func TestAuditRepositoryRequestBody(t *testing.T) {
+func TestAuditRepositoryRequestMetadata(t *testing.T) {
 	ctx := context.Background()
 	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-request-body.db"))
 	if err != nil {
@@ -568,7 +568,6 @@ func TestAuditRepositoryRequestBody(t *testing.T) {
 	}
 	repository := NewAuditRepository(database)
 	now := time.Now().UTC()
-	reqJSON := `{"model":"grok-4","messages":[{"role":"user","content":"Hello world"}]}`
 	reqHeaders := map[string][]string{
 		"User-Agent":   {"curl/8.4.0"},
 		"Content-Type": {"application/json"},
@@ -581,7 +580,6 @@ func TestAuditRepositoryRequestBody(t *testing.T) {
 		RequestMethod:  "POST",
 		RequestPath:    "/v1/chat/completions",
 		RequestHeaders: reqHeaders,
-		RequestBody:    reqJSON,
 		CreatedAt:      now,
 	}
 	if err := repository.Create(ctx, record); err != nil {
@@ -594,27 +592,67 @@ func TestAuditRepositoryRequestBody(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items len = %d, want 1", len(items))
 	}
-	if items[0].RequestBody != reqJSON {
-		t.Fatalf("RequestBody = %q, want %q", items[0].RequestBody, reqJSON)
-	}
-	if items[0].RequestMethod != "POST" {
-		t.Fatalf("RequestMethod = %q, want POST", items[0].RequestMethod)
-	}
-	if items[0].RequestPath != "/v1/chat/completions" {
-		t.Fatalf("RequestPath = %q, want /v1/chat/completions", items[0].RequestPath)
-	}
-	if items[0].RequestHeaders["User-Agent"][0] != "curl/8.4.0" {
-		t.Fatalf("RequestHeaders = %#v", items[0].RequestHeaders)
+	if len(items[0].RequestHeaders) != 0 {
+		t.Fatalf("list unexpectedly loaded audit payloads: %#v", items[0])
 	}
 	detail, err := repository.Get(ctx, items[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if detail.RequestBody != reqJSON {
-		t.Fatalf("Detail RequestBody = %q, want %q", detail.RequestBody, reqJSON)
-	}
 	if detail.RequestMethod != "POST" || detail.RequestPath != "/v1/chat/completions" || detail.RequestHeaders["User-Agent"][0] != "curl/8.4.0" {
 		t.Fatalf("Detail HTTP fields mismatch: %#v", detail)
+	}
+}
+
+func TestAuditRepositoryPurgeOlderThanBatchesAuditsAndAttempts(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "audit-purge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAuditRepository(database)
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	values := make([]audit.Record, auditPurgeBatchSize+1)
+	for index := range values {
+		values[index] = audit.Record{
+			EventID:      fmt.Sprintf("evt_audit_purge_%04d", index),
+			RequestID:    fmt.Sprintf("purge-%04d", index),
+			ClientKeyID:  1,
+			ModelRouteID: 1,
+			StatusCode:   200,
+			CreatedAt:    cutoff.Add(-time.Hour),
+			Attempts: []audit.Attempt{{
+				Number: 1, Source: audit.AttemptSourceCredential, Stage: "response_stream", StartedAt: cutoff.Add(-time.Hour),
+			}},
+		}
+	}
+	if err := repository.CreateBatch(ctx, values); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(ctx, audit.Record{
+		EventID: "evt_audit_purge_new", RequestID: "purge-new", ClientKeyID: 1, ModelRouteID: 1,
+		StatusCode: 200, CreatedAt: cutoff.Add(time.Hour),
+		Attempts: []audit.Attempt{{Number: 1, Source: audit.AttemptSourceCredential, Stage: "response", StartedAt: cutoff.Add(time.Hour)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := repository.PurgeOlderThan(ctx, cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != int64(len(values)) {
+		t.Fatalf("deleted = %d, want %d", deleted, len(values))
+	}
+	if count := tableRowCount(t, database, "request_audits"); count != 1 {
+		t.Fatalf("remaining audits = %d", count)
+	}
+	if count := tableRowCount(t, database, "request_audit_attempts"); count != 1 {
+		t.Fatalf("remaining attempts = %d", count)
 	}
 }
 

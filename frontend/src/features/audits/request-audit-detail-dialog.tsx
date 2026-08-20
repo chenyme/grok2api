@@ -1,28 +1,21 @@
 import { useQuery } from "@tanstack/react-query";
 import {
-  Bot,
-  Check,
   CheckCircle2,
-  Code2,
-  Copy,
-  FileCode,
   FileText,
   Globe2,
   KeyRound,
+  ListTree,
   Network,
   Server,
   TriangleAlert,
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getRequestAudit, type AuditAttemptDTO, type AuditDTO } from "@/features/audits/request-audits-api";
-import { copyToClipboard } from "@/shared/clipboard";
 import { CopyButton } from "@/shared/components/copy-button";
 import { ErrorState, LoadingState } from "@/shared/components/data-state";
 import { cn } from "@/shared/lib/cn";
@@ -61,10 +54,10 @@ export function RequestAuditDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[min(680px,calc(100svh-2rem))] max-h-[calc(100svh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0 text-xs sm:max-w-4xl">
-        <DialogHeader className="shrink-0 border-b border-border/60 px-5 py-3.5 pr-12">
+      <DialogContent className="flex h-[min(700px,calc(100svh-2rem))] max-h-[calc(100svh-2rem)] min-h-0 flex-col gap-0 overflow-hidden p-0 text-xs sm:max-w-[900px]">
+        <DialogHeader className="shrink-0 px-5 pb-3 pt-4 pr-12">
           <div className="flex items-center gap-2">
-            <DialogTitle className="text-sm font-semibold">{t("audits.detailTitle")}</DialogTitle>
+            <DialogTitle>{t("audits.detailTitle")}</DialogTitle>
             {activeAudit ? (
               <StatusBadge
                 statusCode={activeAudit.statusCode}
@@ -73,25 +66,32 @@ export function RequestAuditDetailDialog({
             ) : null}
           </div>
           <DialogDescription asChild>
-            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-              <span className="font-mono text-muted-foreground truncate max-w-[240px]" title={activeAudit?.requestId}>
-                {activeAudit?.requestId}
-              </span>
+            <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-normal text-muted-foreground">
+              {activeAudit?.requestId ? (
+                <span className="max-w-[280px] truncate" title={activeAudit.requestId}>
+                  {activeAudit.requestId}
+                </span>
+              ) : null}
               {activeAudit?.clientIp ? (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0">
-                  <Globe2 className="mr-1 size-2.5" />
-                  {activeAudit.clientIp}
-                </Badge>
+                <>
+                  {activeAudit.requestId ? <span aria-hidden="true">·</span> : null}
+                  <span className="inline-flex items-center gap-1">
+                    <Globe2 className="size-3" />
+                    {activeAudit.clientIp}
+                  </span>
+                </>
               ) : null}
               {activeAudit?.operation ? (
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 uppercase">
-                  {activeAudit.operation}
-                </Badge>
+                <>
+                  {activeAudit.requestId || activeAudit.clientIp ? <span aria-hidden="true">·</span> : null}
+                  <span>{activeAudit.operation}</span>
+                </>
               ) : null}
               {activeAudit ? (
-                <span className="text-[11px] text-muted-foreground">
-                  {formatDateTime(activeAudit.createdAt, i18n.language)}
-                </span>
+                <>
+                  {activeAudit.requestId || activeAudit.clientIp || activeAudit.operation ? <span aria-hidden="true">·</span> : null}
+                  <span>{formatDateTime(activeAudit.createdAt, i18n.language)}</span>
+                </>
               ) : null}
             </div>
           </DialogDescription>
@@ -104,19 +104,15 @@ export function RequestAuditDetailDialog({
 
         {activeAudit ? (
           <Tabs defaultValue="overview" className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="flex shrink-0 items-center justify-between border-b border-border/40 bg-muted/20 px-5 py-2">
-              <TabsList className="h-8">
+            <div className="shrink-0 overflow-x-auto bg-muted/15 px-4 py-2 sm:px-5">
+              <TabsList className="h-8 w-max">
                 <TabsTrigger value="overview" className="gap-1.5 px-3 text-xs">
                   <FileText className="size-3.5" />
                   {t("audits.requestOverview")}
                 </TabsTrigger>
-                <TabsTrigger value="requestBody" className="gap-1.5 px-3 text-xs">
-                  <Code2 className="size-3.5" />
-                  {t("audits.clientRequestBody")}
-                </TabsTrigger>
-                <TabsTrigger value="responseBody" className="gap-1.5 px-3 text-xs">
-                  <Bot className="size-3.5" />
-                  {t("audits.responseBodyTitle")}
+                <TabsTrigger value="requestMetadata" className="gap-1.5 px-3 text-xs">
+                  <ListTree className="size-3.5" />
+                  {t("audits.requestMetadata")}
                 </TabsTrigger>
                 <TabsTrigger value="attempts" className="gap-1.5 px-3 text-xs">
                   <Server className="size-3.5" />
@@ -130,16 +126,12 @@ export function RequestAuditDetailDialog({
               </TabsList>
             </div>
 
-            <TabsContent value="overview" className="min-h-0 flex-1 overflow-y-auto p-5 focus-visible:outline-none">
+            <TabsContent value="overview" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 focus-visible:outline-none sm:p-5">
               <RequestOverviewPanel audit={activeAudit} />
             </TabsContent>
 
-            <TabsContent value="requestBody" className="min-h-0 flex-1 overflow-hidden p-4 focus-visible:outline-none">
-              <ClientRequestBodyPanel audit={activeAudit} />
-            </TabsContent>
-
-            <TabsContent value="responseBody" className="min-h-0 flex-1 overflow-hidden p-4 focus-visible:outline-none">
-              <ResponseBodyPanel audit={activeAudit} />
+            <TabsContent value="requestMetadata" className="min-h-0 flex-1 overflow-hidden px-4 pb-4 pt-3 focus-visible:outline-none sm:px-5 sm:pb-5">
+              <RequestMetadataPanel audit={activeAudit} />
             </TabsContent>
 
             <TabsContent value="attempts" className="min-h-0 flex-1 overflow-hidden focus-visible:outline-none">
@@ -175,8 +167,8 @@ function RequestOverviewPanel({ audit }: { audit: AuditDTO }) {
     const costTicks = audit.costInUsdTicks > 0 ? audit.costInUsdTicks : audit.estimatedCostInUsdTicks;
     if (!costTicks) return "$0";
     const usd = (costTicks / 100_000_000).toFixed(6);
-    return `$${usd}${audit.costInUsdTicks <= 0 && audit.estimatedCostInUsdTicks > 0 ? " (估算)" : ""}`;
-  }, [audit]);
+    return `$${usd}${audit.costInUsdTicks <= 0 && audit.estimatedCostInUsdTicks > 0 ? ` (${t("audits.estimated")})` : ""}`;
+  }, [audit, t]);
 
   const durationDisplay = useMemo(() => {
     let text = `${formatNumber(audit.durationMs, i18n.language)} ms`;
@@ -187,7 +179,7 @@ function RequestOverviewPanel({ audit }: { audit: AuditDTO }) {
   }, [audit, t, i18n.language]);
 
   return (
-    <div className="grid gap-x-8 gap-y-4 sm:grid-cols-2">
+    <div className="grid gap-2.5 sm:grid-cols-2">
       <OverviewField
         label={t("audits.targetAccount")}
         value={audit.accountName || (audit.accountId ? `#${audit.accountId}` : "-")}
@@ -241,9 +233,9 @@ function RequestOverviewPanel({ audit }: { audit: AuditDTO }) {
           className="sm:col-span-2"
           label={t("audits.mediaInput")}
           value={[
-            audit.mediaInputImages > 0 ? `${t("audits.mediaInput")}: ${audit.mediaInputImages} 张` : "",
-            audit.mediaOutputImages > 0 ? `${t("audits.mediaOutput")}: ${audit.mediaOutputImages} 张` : "",
-            audit.mediaOutputSeconds > 0 ? `${audit.mediaOutputSeconds} 秒` : "",
+            audit.mediaInputImages > 0 ? `${t("audits.mediaInput")}: ${t("audits.imageCount", { count: audit.mediaInputImages })}` : "",
+            audit.mediaOutputImages > 0 ? `${t("audits.mediaOutput")}: ${t("audits.imageCount", { count: audit.mediaOutputImages })}` : "",
+            audit.mediaOutputSeconds > 0 ? t("audits.secondsCount", { count: audit.mediaOutputSeconds }) : "",
           ].filter(Boolean).join(" · ")}
         />
       ) : null}
@@ -251,280 +243,31 @@ function RequestOverviewPanel({ audit }: { audit: AuditDTO }) {
   );
 }
 
-function ClientRequestBodyPanel({ audit }: { audit: AuditDTO }) {
+function RequestMetadataPanel({ audit }: { audit: AuditDTO }) {
   const { t } = useTranslation();
-  const [activeView, setActiveView] = useState<"raw_http" | "body" | "headers">("raw_http");
-  const [copiedType, setCopiedType] = useState<string | null>(null);
+  const headers = useMemo(() => audit.requestHeaders ?? {}, [audit.requestHeaders]);
 
-  const rawBody = audit.requestBody ?? "";
-  const method = audit.requestMethod || "POST";
-  const path = audit.requestPath || "";
-  const headers = audit.requestHeaders ?? {};
-
-  const { formattedJson, headerText, rawHttpText, markdownHttpBlock, markdownJsonBlock, byteSize } = useMemo(() => {
-    let formatted = rawBody;
-    if (rawBody) {
-      try {
-        const parsed = JSON.parse(rawBody);
-        formatted = JSON.stringify(parsed, null, 2);
-      } catch {
-        formatted = rawBody;
-      }
-    }
-
-    const headerLines = Object.entries(headers)
-      .map(([key, values]) => `${key}: ${values.join(", ")}`)
-      .join("\n");
-
-    const requestLine = path ? `${method} ${path} HTTP/1.1` : "";
-    const rawHttp = [requestLine, headerLines, "", formatted]
-      .filter((segment, idx) => idx === 2 ? true : Boolean(segment))
-      .join("\n");
-
-    const mdHttp = "```http\n" + rawHttp + "\n```";
-    const mdJson = formatted ? "```json\n" + formatted + "\n```" : "";
-    const size = new Blob([rawBody]).size;
-
-    return {
-      formattedJson: formatted,
-      headerText: headerLines,
-      rawHttpText: rawHttp,
-      markdownHttpBlock: mdHttp,
-      markdownJsonBlock: mdJson,
-      byteSize: size,
-    };
-  }, [rawBody, method, path, headers]);
-
-  async function handleCopy(type: "raw" | "json" | "markdown_http" | "markdown_json" | "headers") {
-    let textToCopy = rawHttpText;
-    if (type === "json") textToCopy = formattedJson;
-    else if (type === "markdown_http") textToCopy = markdownHttpBlock;
-    else if (type === "markdown_json") textToCopy = markdownJsonBlock;
-    else if (type === "headers") textToCopy = headerText;
-
-    const ok = await copyToClipboard(textToCopy);
-    if (ok) {
-      setCopiedType(type);
-      setTimeout(() => setCopiedType(null), 1800);
-      toast.success(t("common.copied"));
-    } else {
-      toast.error(t("common.copyFailed"));
-    }
-  }
-
-  if (!rawBody && Object.keys(headers).length === 0 && !path) {
-    return <EmptyPanel icon={<FileText />} message={t("audits.noRequestBody")} />;
+  if (!audit.requestMethod && !audit.requestPath && Object.keys(headers).length === 0) {
+    return <EmptyPanel icon={<FileText />} message={t("audits.noRequestMetadata")} />;
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-muted/20">
-      <div className="flex h-11 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/40 bg-muted/40 px-3">
-        <div className="flex items-center gap-2">
-          {method && path ? (
-            <Badge variant="outline" className="font-mono text-[10px] uppercase font-semibold">
-              {method} {path}
-            </Badge>
-          ) : null}
-          {byteSize > 0 ? (
-            <Badge variant="secondary" className="font-mono text-[10px]">
-              {formatByteSize(byteSize)}
-            </Badge>
-          ) : null}
-          {Object.keys(headers).length > 0 ? (
-            <Badge variant="outline" className="text-[10px] text-muted-foreground">
-              {Object.keys(headers).length} headers
-            </Badge>
-          ) : null}
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      <section className="shrink-0">
+        <p className="mb-2 px-1 text-[11px] font-medium text-muted-foreground">{t("audits.requestPath")}</p>
+        <div className="flex h-10 min-w-0 items-center gap-3 rounded-lg bg-muted/15 px-3">
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {audit.requestMethod || "-"}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-xs" title={audit.requestPath}>
+            {audit.requestPath || "-"}
+          </span>
+          {audit.requestPath ? <CopyButton value={audit.requestPath} /> : null}
         </div>
-
-        <div className="flex items-center gap-1.5">
-          <div className="flex rounded-md bg-muted/60 p-0.5 text-[11px]">
-            <button
-              type="button"
-              onClick={() => setActiveView("raw_http")}
-              className={cn("rounded px-2 py-0.5 transition-colors cursor-pointer", activeView === "raw_http" ? "bg-background font-medium shadow-xs text-foreground" : "text-muted-foreground hover:text-foreground")}
-            >
-              Raw HTTP
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveView("body")}
-              className={cn("rounded px-2 py-0.5 transition-colors cursor-pointer", activeView === "body" ? "bg-background font-medium shadow-xs text-foreground" : "text-muted-foreground hover:text-foreground")}
-            >
-              Body JSON
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveView("headers")}
-              className={cn("rounded px-2 py-0.5 transition-colors cursor-pointer", activeView === "headers" ? "bg-background font-medium shadow-xs text-foreground" : "text-muted-foreground hover:text-foreground")}
-            >
-              Headers
-            </button>
-          </div>
-
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
-            onClick={() => void handleCopy(activeView === "body" ? "json" : activeView === "headers" ? "headers" : "raw")}
-            title={activeView === "body" ? t("audits.copyBodyJson") : activeView === "headers" ? t("audits.copyHeaders") : t("audits.copyRawHttp")}
-          >
-            {copiedType === "raw" || copiedType === "json" || copiedType === "headers" ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
-            {copiedType === "raw" || copiedType === "json" || copiedType === "headers" ? t("common.copied") : activeView === "body" ? t("audits.copyJson") : activeView === "headers" ? t("audits.copyHeaders") : "复制 HTTP"}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
-            onClick={() => void handleCopy(activeView === "body" ? "markdown_json" : "markdown_http")}
-            title={t("audits.copyMarkdownCode")}
-          >
-            {copiedType === "markdown_http" || copiedType === "markdown_json" ? (
-              <Check className="size-3.5 text-emerald-500" />
-            ) : (
-              <FileCode className="size-3.5" />
-            )}
-            {copiedType === "markdown_http" || copiedType === "markdown_json" ? t("common.copied") : t("audits.copyMarkdown")}
-          </Button>
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        {activeView === "raw_http" ? (
-          <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all select-text">
-            {rawHttpText}
-          </pre>
-        ) : activeView === "body" ? (
-          formattedJson ? (
-            <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all select-text">
-              {formattedJson}
-            </pre>
-          ) : (
-            <p className="text-muted-foreground text-[11px] p-2">{t("audits.noRequestBody")}</p>
-          )
-        ) : (
-          Object.keys(headers).length > 0 ? (
-            <div className="space-y-1 font-mono text-[11px]">
-              {Object.entries(headers).map(([key, values]) => (
-                <div key={key} className="flex gap-2 py-1 border-b border-border/20 last:border-0">
-                  <span className="font-semibold text-primary/80 min-w-[160px] shrink-0">{key}:</span>
-                  <span className="text-muted-foreground break-all">{values.join(", ")}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-muted-foreground text-[11px] p-2">{t("audits.noRequestHeaders")}</p>
-          )
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ResponseBodyPanel({ audit }: { audit: AuditDTO }) {
-  const { t } = useTranslation();
-  const [copiedType, setCopiedType] = useState<string | null>(null);
-
-  const rawBody = audit.responseBody ?? "";
-
-  const { formattedJson, isJson, markdownBlock, byteSize } = useMemo(() => {
-    let formatted = rawBody;
-    let jsonValid = false;
-    if (rawBody) {
-      try {
-        const parsed = JSON.parse(rawBody);
-        formatted = JSON.stringify(parsed, null, 2);
-        jsonValid = true;
-      } catch {
-        formatted = rawBody;
-        jsonValid = false;
-      }
-    }
-
-    const md = jsonValid ? "```json\n" + formatted + "\n```" : "```\n" + formatted + "\n```";
-    const size = new Blob([rawBody]).size;
-
-    return {
-      formattedJson: formatted,
-      isJson: jsonValid,
-      markdownBlock: md,
-      byteSize: size,
-    };
-  }, [rawBody]);
-
-  async function handleCopy(type: "raw" | "markdown") {
-    const textToCopy = type === "raw" ? formattedJson : markdownBlock;
-    const ok = await copyToClipboard(textToCopy);
-    if (ok) {
-      setCopiedType(type);
-      setTimeout(() => setCopiedType(null), 1800);
-      toast.success(t("common.copied"));
-    } else {
-      toast.error(t("common.copyFailed"));
-    }
-  }
-
-  if (!rawBody) {
-    return <EmptyPanel icon={<FileText />} message={t("audits.noResponseBody")} />;
-  }
-
-  return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-muted/20">
-      <div className="flex h-11 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/40 bg-muted/40 px-3">
-        <div className="flex items-center gap-2">
-          {audit.statusCode ? (
-            <StatusBadge statusCode={audit.statusCode} failed={Boolean(audit.errorCode) || audit.statusCode >= 400} />
-          ) : null}
-          {byteSize > 0 ? (
-            <Badge variant="secondary" className="font-mono text-[10px]">
-              {formatByteSize(byteSize)}
-            </Badge>
-          ) : null}
-          {audit.streaming ? (
-            <Badge variant="outline" className="text-[10px] text-muted-foreground">
-              {t("audits.modeStreaming")}
-            </Badge>
-          ) : null}
-          {audit.outputTokens > 0 ? (
-            <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground">
-              {audit.outputTokens} tokens
-            </Badge>
-          ) : null}
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
-            onClick={() => void handleCopy("raw")}
-            title={t("audits.copyResponseRaw")}
-          >
-            {copiedType === "raw" ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
-            {copiedType === "raw" ? t("common.copied") : isJson ? t("audits.copyJson") : t("common.copy")}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
-            onClick={() => void handleCopy("markdown")}
-            title={t("audits.copyMarkdownCode")}
-          >
-            {copiedType === "markdown" ? <Check className="size-3.5 text-emerald-500" /> : <FileCode className="size-3.5" />}
-            {copiedType === "markdown" ? t("common.copied") : t("audits.copyMarkdown")}
-          </Button>
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all select-text">
-          {formattedJson}
-        </pre>
-      </div>
+      </section>
+      <section className="min-h-0 flex-1">
+        <HeadersPanel title={t("audits.requestHeaders")} headers={headers} emptyMessage={t("audits.noRequestHeaders")} />
+      </section>
     </div>
   );
 }
@@ -570,15 +313,18 @@ function UpstreamAttemptsPanel({
     );
   }
 
+  const terminalAttemptNumber = Math.max(...attempts.map((attempt) => attempt.number));
+
   return (
     <div className="grid h-full min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] lg:grid-cols-[190px_minmax(0,1fr)] lg:grid-rows-1">
-      <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-border/40 bg-muted/25 p-2.5 lg:border-r lg:border-b-0">
-        <p className="mb-1 shrink-0 px-2 text-muted-foreground">{t("audits.attemptTimeline")}</p>
+      <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-b border-border/40 bg-muted/25 px-4 py-2 sm:px-5 lg:border-r lg:border-b-0 lg:pr-2.5">
+        <p className="mb-0.5 shrink-0 text-xs text-muted-foreground">{t("audits.attemptTimeline")}</p>
         <div className="flex max-h-28 gap-1 overflow-auto lg:min-h-0 lg:max-h-none lg:flex-1 lg:flex-col">
           {attempts.map((attempt) => (
             <AttemptButton
               key={attempt.id}
               attempt={attempt}
+              statusCode={attempt.upstreamStatusCode || (attempt.number === terminalAttemptNumber ? audit.statusCode : 0)}
               selected={attempt.number === selectedAttempt.number}
               onClick={() => setSelectedNumber(attempt.number)}
             />
@@ -590,60 +336,63 @@ function UpstreamAttemptsPanel({
   );
 }
 
-function AttemptButton({ attempt, selected, onClick }: { attempt: AuditAttemptDTO; selected: boolean; onClick: () => void }) {
+function AttemptButton({ attempt, statusCode, selected, onClick }: { attempt: AuditAttemptDTO; statusCode: number; selected: boolean; onClick: () => void }) {
   const { t } = useTranslation();
   const Icon = attempt.source === "upstream_http" ? Server : attempt.source === "gateway_transport" ? Network : KeyRound;
   return (
     <button
       type="button"
       className={cn(
-        "w-48 shrink-0 rounded-md px-2.5 py-2 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 lg:w-full",
-        selected ? "bg-accent text-accent-foreground font-medium" : "hover:bg-accent/60"
+        "flex h-8 w-36 shrink-0 items-center justify-between gap-2 rounded-lg px-2.5 text-left text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/50 lg:w-full",
+        selected ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
       )}
       aria-pressed={selected}
       onClick={onClick}
     >
-      <span className="flex items-center justify-between gap-2">
-        <span className="flex min-w-0 items-center gap-2 truncate">
-          <Icon className="size-3.5 shrink-0" />
-          {t("audits.attemptNumber", { number: attempt.number })}
-        </span>
-        {attempt.upstreamStatusCode ? (
-          <StatusBadge statusCode={attempt.upstreamStatusCode} failed={attempt.stage === "response_stream"} />
-        ) : null}
+      <span className="flex min-w-0 items-center gap-2 truncate">
+        <Icon className="size-3.5 shrink-0" />
+        {t("audits.attemptNumber", { number: attempt.number })}
       </span>
+      {statusCode ? (
+        <StatusBadge statusCode={statusCode} failed={attempt.stage === "response_stream"} />
+      ) : (
+        <span className="shrink-0 text-xs text-muted-foreground">—</span>
+      )}
     </button>
   );
 }
 
 function AttemptDetail({ attempt }: { attempt: AuditAttemptDTO }) {
   const { t } = useTranslation();
+  const hasBody = Boolean(attempt.responseBody);
+  const hasHeaders = Object.keys(attempt.responseHeaders).length > 0;
+  const hasErrors = attempt.errorChain.length > 0;
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <Tabs defaultValue="overview" className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 sm:px-5">
-        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 py-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2.5 py-3">
           <AttemptSummary attempt={attempt} />
-          <div className="ml-auto max-w-full overflow-x-auto">
-            <TabsList className="h-7">
-              <TabsTrigger value="overview" className="text-xs px-2.5">{t("audits.overview")}</TabsTrigger>
-              <TabsTrigger value="body" className="text-xs px-2.5">{t("audits.responseBody")}</TabsTrigger>
-              <TabsTrigger value="headers" className="text-xs px-2.5">{t("audits.responseHeaders")}</TabsTrigger>
-              <TabsTrigger value="errors" className="text-xs px-2.5">{t("audits.errorChain")}</TabsTrigger>
+          <div className="ml-auto max-w-full shrink-0 overflow-x-auto pb-0.5">
+            <TabsList className="h-7 w-max">
+              <TabsTrigger value="overview" className="h-6 px-2.5 text-xs">{t("audits.overview")}</TabsTrigger>
+              {hasBody ? <TabsTrigger value="body" className="h-6 px-2.5 text-xs">{t("audits.responseBody")}</TabsTrigger> : null}
+              {hasHeaders ? <TabsTrigger value="headers" className="h-6 px-2.5 text-xs">{t("audits.responseHeaders")}</TabsTrigger> : null}
+              {hasErrors ? <TabsTrigger value="errors" className="h-6 px-2.5 text-xs">{t("audits.errorChain")}</TabsTrigger> : null}
             </TabsList>
           </div>
         </div>
         <TabsContent value="overview" className="min-h-0 flex-1 overflow-y-auto">
           <AttemptOverview attempt={attempt} />
         </TabsContent>
-        <TabsContent value="body" className="min-h-0 flex-1 overflow-hidden pt-2">
+        {hasBody ? <TabsContent value="body" className="min-h-0 flex-1 overflow-hidden pt-2">
           <AttemptResponseBody attempt={attempt} />
-        </TabsContent>
-        <TabsContent value="headers" className="min-h-0 flex-1 overflow-hidden pt-2">
-          <HeadersPanel headers={attempt.responseHeaders} />
-        </TabsContent>
-        <TabsContent value="errors" className="min-h-0 flex-1 overflow-hidden pt-2">
+        </TabsContent> : null}
+        {hasHeaders ? <TabsContent value="headers" className="min-h-0 flex-1 overflow-hidden pt-2">
+          <HeadersPanel title={t("audits.responseHeaders")} headers={attempt.responseHeaders} />
+        </TabsContent> : null}
+        {hasErrors ? <TabsContent value="errors" className="min-h-0 flex-1 overflow-hidden pt-2">
           <ErrorChainPanel attempt={attempt} />
-        </TabsContent>
+        </TabsContent> : null}
       </Tabs>
     </main>
   );
@@ -708,7 +457,7 @@ function AttemptOverview({ attempt }: { attempt: AuditAttemptDTO }) {
 
 function OverviewField({ className, label, value, copy }: { className?: string; label: string; value: string; copy?: boolean }) {
   return (
-    <div className={cn("flex min-w-0 items-start gap-3 rounded-md bg-muted/20 p-2.5", className)}>
+    <div className={cn("flex min-w-0 items-start gap-3 rounded-lg bg-muted/25 p-3", className)}>
       <div className="min-w-0 flex-1">
         <p className="text-[11px] text-muted-foreground">{label}</p>
         <p className="mt-0.5 break-all text-xs font-medium" title={value}>
@@ -740,8 +489,8 @@ function CodePanel({
   const { t } = useTranslation();
   if (!value) return <EmptyPanel icon={<FileText />} message={emptyMessage} />;
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md bg-muted/25 border border-border/40">
-      <div className="flex h-9 shrink-0 items-center justify-between px-3 border-b border-border/30">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg bg-muted/20">
+      <div className="flex h-10 shrink-0 items-center justify-between px-3">
         <span className="flex min-w-0 items-center gap-2 text-muted-foreground text-[11px]">
           <span>{t("audits.bodyEncoding", { encoding })}</span>
           {truncated ? <Badge variant="outline" className="text-[10px]">{t("audits.bodyTruncated")}</Badge> : null}
@@ -757,24 +506,27 @@ function CodePanel({
   );
 }
 
-function HeadersPanel({ headers }: { headers: Record<string, string[]> }) {
+function HeadersPanel({ title, headers, emptyMessage }: { title?: string; headers: Record<string, string[]>; emptyMessage?: string }) {
   const { t } = useTranslation();
-  const entries = useMemo(() => Object.entries(headers), [headers]);
+  const entries = useMemo(() => Object.entries(headers).sort(([left], [right]) => left.localeCompare(right)), [headers]);
   const copyValue = useMemo(() => JSON.stringify(headers, null, 2), [headers]);
-  if (entries.length === 0) return <EmptyPanel icon={<FileText />} message={t("audits.emptyResponseHeaders")} />;
+  if (entries.length === 0) return <EmptyPanel icon={<FileText />} message={emptyMessage ?? t("audits.emptyResponseHeaders")} />;
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md bg-muted/15 border border-border/40">
-      <div className="flex h-9 shrink-0 items-center justify-between px-3 border-b border-border/30">
-        <span className="text-muted-foreground text-[11px]">{t("audits.headerCount", { count: entries.length })}</span>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg bg-muted/15">
+      <div className="flex h-10 shrink-0 items-center justify-between px-3">
+        <span className="flex min-w-0 items-center gap-2 text-[11px]">
+          {title ? <span className="truncate font-medium text-foreground">{title}</span> : null}
+          <span className="text-muted-foreground">{t("audits.headerItemCount", { count: entries.length })}</span>
+        </span>
         <CopyButton value={copyValue} />
       </div>
-      <div className="min-h-0 flex-1 space-y-1 overflow-auto p-2">
-        {entries.map(([name, values]) => (
-          <div key={name} className="grid gap-1 rounded-md px-2 py-1.5 hover:bg-background/60 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4">
+      <div className="min-h-0 flex-1 space-y-0.5 overflow-auto px-2 pb-2">
+        {entries.map(([name, values], entryIndex) => (
+          <div key={name} className={cn("grid gap-1 rounded-md px-2.5 py-2 transition-colors hover:bg-background/70 sm:grid-cols-[180px_minmax(0,1fr)] sm:gap-4", entryIndex % 2 === 0 && "bg-background/35")}>
             <span className="break-all font-mono text-[11px] text-muted-foreground">{name}</span>
             <div className="min-w-0 space-y-1">
               {values.map((value, index) => (
-                <span key={`${name}-${index}`} className="block break-all font-mono text-[11px]">{value}</span>
+                <span key={`${name}-${index}`} className={cn("block break-all font-mono text-[11px]", value === "[REDACTED]" && "font-semibold text-amber-700 dark:text-amber-300")}>{value}</span>
               ))}
             </div>
           </div>
@@ -789,8 +541,8 @@ function ErrorChainPanel({ attempt }: { attempt: AuditAttemptDTO }) {
   const copyValue = useMemo(() => JSON.stringify(attempt.errorChain, null, 2), [attempt.errorChain]);
   if (attempt.errorChain.length === 0) return <EmptyPanel icon={<Network />} message={t("audits.emptyErrorChain")} />;
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md bg-muted/15 border border-border/40">
-      <div className="flex h-9 shrink-0 items-center justify-between px-3 border-b border-border/30">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg bg-muted/15">
+      <div className="flex h-10 shrink-0 items-center justify-between px-3">
         <span className="text-muted-foreground text-[11px]">{t("audits.errorFrameCount", { count: attempt.errorChain.length })}</span>
         <CopyButton value={copyValue} />
       </div>
@@ -811,7 +563,7 @@ function ErrorChainPanel({ attempt }: { attempt: AuditAttemptDTO }) {
 
 function EmptyPanel({ icon, message }: { icon: ReactNode; message: string }) {
   return (
-    <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 rounded-md bg-muted/15 text-muted-foreground [&_svg]:size-6 [&_svg]:stroke-1">
+    <div className="flex h-full min-h-40 flex-col items-center justify-center gap-2 rounded-lg bg-muted/15 px-6 text-center text-muted-foreground [&_svg]:size-6 [&_svg]:stroke-1">
       <span>{icon}</span>
       <p className="text-xs">{message}</p>
     </div>
@@ -822,31 +574,29 @@ function formattedResponseBody(attempt: AuditAttemptDTO): string {
   if (attempt.responseBodyEncoding !== "utf8") return attempt.responseBody;
   const contentType = Object.entries(attempt.responseHeaders).find(([name]) => name.toLowerCase() === "content-type")?.[1].join(";") ?? "";
   if (attempt.stage !== "response_stream" && !contentType.toLowerCase().includes("json")) return attempt.responseBody;
+  return formatJSONBody(attempt.responseBody);
+}
+
+function formatJSONBody(value: string): string {
   try {
-    return JSON.stringify(JSON.parse(attempt.responseBody), null, 2);
+    return JSON.stringify(JSON.parse(value), null, 2);
   } catch {
-    return attempt.responseBody;
+    return value;
   }
 }
 
-function formatByteSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
 function StatusBadge({ statusCode, failed = false }: { statusCode: number; failed?: boolean }) {
-  const className = failed
-    ? "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30"
-    : statusCode >= 500
+  const className = statusCode >= 500
     ? "bg-red-500/10 text-red-700 dark:text-red-300 border-red-500/30"
     : statusCode >= 400
+    ? "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30"
+    : failed
     ? "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/30"
     : statusCode >= 200 && statusCode < 300
     ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30"
     : "bg-muted text-muted-foreground";
   return (
-    <Badge variant="outline" className={cn("min-w-9 justify-center px-1.5 font-mono text-[11px]", className)}>
+    <Badge variant="outline" className={cn("h-5 min-w-8 justify-center px-1.5 text-xs font-normal", className)}>
       {statusCode}
     </Badge>
   );
