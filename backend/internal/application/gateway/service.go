@@ -1059,7 +1059,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				lease.completeSelectorObservation(successful)
 				budget := newFinalizationBudget(string(operation), string(route.Provider))
 				if isUpstreamStreamFailure(errorCode) {
-					status, retryAfter := streamFailureHealthPenalty(errorCode, usage)
+					status, retryAfter := streamFailureHealthPenalty(errorCode, usage, s.qualityRetryConfig().IdleAccountCooldown)
 					if err := budget.run("account_health", finalizationHealthBudget, func(stageCtx context.Context) error {
 						return s.selector.MarkFailureAfterSuccess(stageCtx, credential, status, retryAfter)
 					}); err != nil {
@@ -1536,10 +1536,10 @@ attemptLoop:
 							logPrefix = "quality_peek_empty"
 						}
 						writeCtx, writeCancel := context.WithTimeout(context.WithoutCancel(ctx), finalizationTimeout)
-						if markErr := s.selector.MarkFailureAfterSuccess(writeCtx, credential, http.StatusGatewayTimeout, qualityIdleAccountCooldown); markErr != nil {
+						if markErr := s.selector.MarkFailureAfterSuccess(writeCtx, credential, http.StatusGatewayTimeout, holdCfg.IdleAccountCooldown); markErr != nil {
 							s.logger.Warn(logPrefix+"_cooldown_failed", "request_id", input.RequestID, "account_id", credential.ID, "error", markErr)
 						} else {
-							s.logger.Warn(logPrefix+"_retry", "request_id", input.RequestID, "account_id", credential.ID, "cooldown", qualityIdleAccountCooldown)
+							s.logger.Warn(logPrefix+"_retry", "request_id", input.RequestID, "account_id", credential.ID, "cooldown", holdCfg.IdleAccountCooldown)
 						}
 						writeCancel()
 					}
@@ -1684,9 +1684,12 @@ func isUpstreamStreamFailure(errorCode string) bool {
 	}
 }
 
-func streamFailureHealthPenalty(errorCode string, usage Usage) (int, time.Duration) {
+func streamFailureHealthPenalty(errorCode string, usage Usage, idleCooldown time.Duration) (int, time.Duration) {
 	if errorCode == "upstream_stream_idle_timeout" && !usage.OutputObserved && usage.OutputTokens == 0 && usage.ReasoningTokens == 0 {
-		return http.StatusGatewayTimeout, qualityIdleAccountCooldown
+		if idleCooldown <= 0 {
+			idleCooldown = qualityIdleAccountCooldown
+		}
+		return http.StatusGatewayTimeout, idleCooldown
 	}
 	return 0, 0
 }
