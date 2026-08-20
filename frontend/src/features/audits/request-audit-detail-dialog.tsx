@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+  Bot,
   Check,
   CheckCircle2,
   Code2,
@@ -111,6 +112,10 @@ export function RequestAuditDetailDialog({
                   <Code2 className="size-3.5" />
                   {t("audits.clientRequestBody")}
                 </TabsTrigger>
+                <TabsTrigger value="responseBody" className="gap-1.5 px-3 text-xs">
+                  <Bot className="size-3.5" />
+                  {t("audits.responseBodyTitle")}
+                </TabsTrigger>
                 <TabsTrigger value="attempts" className="gap-1.5 px-3 text-xs">
                   <Server className="size-3.5" />
                   {t("audits.upstreamDiagnostics")}
@@ -129,6 +134,10 @@ export function RequestAuditDetailDialog({
 
             <TabsContent value="requestBody" className="min-h-0 flex-1 overflow-hidden p-4 focus-visible:outline-none">
               <ClientRequestBodyPanel audit={activeAudit} />
+            </TabsContent>
+
+            <TabsContent value="responseBody" className="min-h-0 flex-1 overflow-hidden p-4 focus-visible:outline-none">
+              <ResponseBodyPanel audit={activeAudit} />
             </TabsContent>
 
             <TabsContent value="attempts" className="min-h-0 flex-1 overflow-hidden focus-visible:outline-none">
@@ -407,6 +416,112 @@ function ClientRequestBodyPanel({ audit }: { audit: AuditDTO }) {
             <p className="text-muted-foreground text-[11px] p-2">{t("audits.noRequestHeaders")}</p>
           )
         )}
+      </div>
+    </div>
+  );
+}
+
+function ResponseBodyPanel({ audit }: { audit: AuditDTO }) {
+  const { t } = useTranslation();
+  const [copiedType, setCopiedType] = useState<string | null>(null);
+
+  const rawBody = audit.responseBody ?? "";
+
+  const { formattedJson, isJson, markdownBlock, byteSize } = useMemo(() => {
+    let formatted = rawBody;
+    let jsonValid = false;
+    if (rawBody) {
+      try {
+        const parsed = JSON.parse(rawBody);
+        formatted = JSON.stringify(parsed, null, 2);
+        jsonValid = true;
+      } catch {
+        formatted = rawBody;
+        jsonValid = false;
+      }
+    }
+
+    const md = jsonValid ? "```json\n" + formatted + "\n```" : "```\n" + formatted + "\n```";
+    const size = new Blob([rawBody]).size;
+
+    return {
+      formattedJson: formatted,
+      isJson: jsonValid,
+      markdownBlock: md,
+      byteSize: size,
+    };
+  }, [rawBody]);
+
+  async function handleCopy(type: "raw" | "markdown") {
+    const textToCopy = type === "raw" ? formattedJson : markdownBlock;
+    const ok = await copyToClipboard(textToCopy);
+    if (ok) {
+      setCopiedType(type);
+      setTimeout(() => setCopiedType(null), 1800);
+      toast.success(t("common.copied"));
+    } else {
+      toast.error(t("common.copyFailed"));
+    }
+  }
+
+  if (!rawBody) {
+    return <EmptyPanel icon={<FileText />} message={t("audits.noResponseBody")} />;
+  }
+
+  return (
+    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border/50 bg-muted/20">
+      <div className="flex h-11 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/40 bg-muted/40 px-3">
+        <div className="flex items-center gap-2">
+          {audit.statusCode ? (
+            <StatusBadge statusCode={audit.statusCode} failed={Boolean(audit.errorCode) || audit.statusCode >= 400} />
+          ) : null}
+          {byteSize > 0 ? (
+            <Badge variant="secondary" className="font-mono text-[10px]">
+              {formatByteSize(byteSize)}
+            </Badge>
+          ) : null}
+          {audit.streaming ? (
+            <Badge variant="outline" className="text-[10px] text-muted-foreground">
+              {t("audits.modeStreaming")}
+            </Badge>
+          ) : null}
+          {audit.outputTokens > 0 ? (
+            <Badge variant="outline" className="font-mono text-[10px] text-muted-foreground">
+              {audit.outputTokens} tokens
+            </Badge>
+          ) : null}
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
+            onClick={() => void handleCopy("raw")}
+            title={t("audits.copyResponseRaw")}
+          >
+            {copiedType === "raw" ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+            {copiedType === "raw" ? t("common.copied") : isJson ? t("audits.copyJson") : t("common.copy")}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
+            onClick={() => void handleCopy("markdown")}
+            title={t("audits.copyMarkdownCode")}
+          >
+            {copiedType === "markdown" ? <Check className="size-3.5 text-emerald-500" /> : <FileCode className="size-3.5" />}
+            {copiedType === "markdown" ? t("common.copied") : t("audits.copyMarkdown")}
+          </Button>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        <pre className="font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-all select-text">
+          {formattedJson}
+        </pre>
       </div>
     </div>
   );

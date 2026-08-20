@@ -1243,8 +1243,15 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	usage := gateway.Usage{}
 	responseID := ""
 	errorCode := ""
+	responseBody := ""
 	defer result.Body.Close()
-	defer func() { result.Finalize(usage, responseID, errorCode) }()
+	defer func() {
+		if result.FinalizeWithBody != nil {
+			result.FinalizeWithBody(usage, responseID, errorCode, responseBody)
+		} else {
+			result.Finalize(usage, responseID, errorCode)
+		}
+	}()
 	if isUpstreamCredentialStatus(result.StatusCode) {
 		errorCode = "upstream_unavailable"
 		clientCode := readCredentialErrorCode(result.StatusCode, result.Body)
@@ -1272,13 +1279,13 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	var err error
 	if stream {
 		metadata, copyErr := copyStream(c.Writer, result.Body, protocol, result.MarkFirstToken)
-		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
+		usage, responseID, responseBody, err = metadata.Usage, metadata.ResponseID, metadata.ResponseBody, copyErr
 		if metadata.StreamFailure != nil && result.RecordStreamFailure != nil {
 			result.RecordStreamFailure(*metadata.StreamFailure)
 		}
 	} else {
 		metadata, copyErr := copyJSON(c.Writer, result.Body, protocol)
-		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
+		usage, responseID, responseBody, err = metadata.Usage, metadata.ResponseID, metadata.ResponseBody, copyErr
 	}
 	if err != nil {
 		switch {
@@ -1304,6 +1311,7 @@ type responseMetadata struct {
 	ResponseID               string
 	Model                    string
 	SequenceNumber           int64
+	ResponseBody             string
 	StreamFailure            *gateway.StreamFailureDiagnostic
 }
 
@@ -1546,19 +1554,38 @@ func copyJSON(writer gin.ResponseWriter, source io.Reader, protocol streamProtoc
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				if metadataComplete {
-					return normalizeMetadataUsage(extractMetadata(metadataBody), protocol), nil
+					meta := normalizeMetadataUsage(extractMetadata(metadataBody), protocol)
+					meta.ResponseBody = string(metadataBody)
+					return meta, nil
 				}
-				return responseMetadata{}, nil
+				return responseMetadata{ResponseBody: string(metadataBody)}, nil
 			}
-			return responseMetadata{}, readErr
+			return responseMetadata{ResponseBody: string(metadataBody)}, readErr
 		}
 	}
 }
+
+type streamAccumulator struct {
+	chatContent           strings.Builder
+	chatReasoning         strings.Builder
+	chatRefusal           strings.Builder
+	chatFinishReason      string
+	chatSystemFingerprint string
+	anthropicThinking     strings.Builder
+	anthropicText         strings.Builder
+	anthropicStopReason   string
+	responsesText         strings.Builder
+	responsesReasoning    strings.Builder
+	rawSSE                strings.Builder
+}
+
+const maxStreamAccumulatorBytes = 524288 // 512KB
 
 type responseInspector struct {
 	protocol        streamProtocol
 	pending         []byte
 	metadata        responseMetadata
+	acc             streamAccumulator
 	onFirstToken    func()
 	firstTokenSeen  bool
 	firstTokenReady bool
@@ -1592,6 +1619,10 @@ func (i *responseInspector) Inspect(chunk []byte) {
 			continue
 		}
 		if bytes.HasPrefix(line, []byte("data:")) {
+			if i.acc.rawSSE.Len() < maxStreamAccumulatorBytes {
+				i.acc.rawSSE.Write(line)
+				i.acc.rawSSE.WriteByte('\n')
+			}
 			value := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
 			if containsGeneratedDelta(value, i.protocol) {
 				i.metadata.Usage.OutputObserved = true
@@ -1599,6 +1630,7 @@ func (i *responseInspector) Inspect(chunk []byte) {
 			i.observeFirstToken(value)
 			i.observeTerminal(value)
 			if !bytes.Equal(value, []byte("[DONE]")) {
+				i.accumulateStreamChunk(value)
 				metadata := extractMetadata(value)
 				if hasUsageMetadata(metadata.Usage) {
 					if metadata.Usage.ResponseModel == "" {
@@ -1622,6 +1654,194 @@ func (i *responseInspector) Inspect(chunk []byte) {
 			}
 		}
 	}
+}
+
+func (i *responseInspector) accumulateStreamChunk(data []byte) {
+	switch i.protocol {
+	case streamProtocolChat:
+		var chunk struct {
+			ID                string `json:"id"`
+			Model             string `json:"model"`
+			SystemFingerprint string `json:"system_fingerprint"`
+			Choices           []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					Reasoning        string `json:"reasoning"`
+					ReasoningContent string `json:"reasoning_content"`
+					ThinkingContent  string `json:"thinking_content"`
+					Refusal          string `json:"refusal"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal(data, &chunk) == nil {
+			if chunk.SystemFingerprint != "" {
+				i.acc.chatSystemFingerprint = chunk.SystemFingerprint
+			}
+			for _, choice := range chunk.Choices {
+				if choice.Delta.Content != "" && i.acc.chatContent.Len() < maxStreamAccumulatorBytes {
+					i.acc.chatContent.WriteString(choice.Delta.Content)
+				}
+				reasoning := choice.Delta.ReasoningContent
+				if reasoning == "" {
+					reasoning = choice.Delta.Reasoning
+				}
+				if reasoning == "" {
+					reasoning = choice.Delta.ThinkingContent
+				}
+				if reasoning != "" && i.acc.chatReasoning.Len() < maxStreamAccumulatorBytes {
+					i.acc.chatReasoning.WriteString(reasoning)
+				}
+				if choice.Delta.Refusal != "" && i.acc.chatRefusal.Len() < maxStreamAccumulatorBytes {
+					i.acc.chatRefusal.WriteString(choice.Delta.Refusal)
+				}
+				if choice.FinishReason != "" {
+					i.acc.chatFinishReason = choice.FinishReason
+				}
+			}
+		}
+	case streamProtocolAnthropic:
+		var evt struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type       string `json:"type"`
+				Text       string `json:"text"`
+				Thinking   string `json:"thinking"`
+				StopReason string `json:"stop_reason"`
+			} `json:"delta"`
+		}
+		if json.Unmarshal(data, &evt) == nil {
+			if evt.Delta.Type == "text_delta" && evt.Delta.Text != "" && i.acc.anthropicText.Len() < maxStreamAccumulatorBytes {
+				i.acc.anthropicText.WriteString(evt.Delta.Text)
+			}
+			if evt.Delta.Type == "thinking_delta" && evt.Delta.Thinking != "" && i.acc.anthropicThinking.Len() < maxStreamAccumulatorBytes {
+				i.acc.anthropicThinking.WriteString(evt.Delta.Thinking)
+			}
+			if evt.Delta.StopReason != "" {
+				i.acc.anthropicStopReason = evt.Delta.StopReason
+			}
+		}
+	case streamProtocolResponses:
+		var evt struct {
+			Type  string `json:"type"`
+			Delta string `json:"delta"`
+		}
+		if json.Unmarshal(data, &evt) == nil {
+			if (evt.Type == "response.output_text.delta" || evt.Type == "response.text.delta") && evt.Delta != "" && i.acc.responsesText.Len() < maxStreamAccumulatorBytes {
+				i.acc.responsesText.WriteString(evt.Delta)
+			}
+			if (evt.Type == "response.reasoning_text.delta" || evt.Type == "response.reasoning_summary_text.delta") && evt.Delta != "" && i.acc.responsesReasoning.Len() < maxStreamAccumulatorBytes {
+				i.acc.responsesReasoning.WriteString(evt.Delta)
+			}
+		}
+	}
+}
+
+func (i *responseInspector) buildResponseBody() string {
+	switch i.protocol {
+	case streamProtocolChat:
+		if i.acc.chatContent.Len() > 0 || i.acc.chatReasoning.Len() > 0 || i.acc.chatFinishReason != "" {
+			msg := map[string]any{
+				"role":    "assistant",
+				"content": i.acc.chatContent.String(),
+			}
+			if i.acc.chatReasoning.Len() > 0 {
+				msg["reasoning_content"] = i.acc.chatReasoning.String()
+			}
+			if i.acc.chatRefusal.Len() > 0 {
+				msg["refusal"] = i.acc.chatRefusal.String()
+			}
+			finishReason := i.acc.chatFinishReason
+			if finishReason == "" {
+				finishReason = "stop"
+			}
+			resp := map[string]any{
+				"id":      i.metadata.ResponseID,
+				"object":  "chat.completion",
+				"created": time.Now().Unix(),
+				"model":   i.metadata.Model,
+				"choices": []map[string]any{
+					{
+						"index":         0,
+						"message":       msg,
+						"finish_reason": finishReason,
+					},
+				},
+			}
+			if i.acc.chatSystemFingerprint != "" {
+				resp["system_fingerprint"] = i.acc.chatSystemFingerprint
+			}
+			if i.metadata.Usage.TotalTokens > 0 || i.metadata.Usage.InputTokens > 0 || i.metadata.Usage.OutputTokens > 0 {
+				resp["usage"] = map[string]any{
+					"prompt_tokens":     i.metadata.Usage.InputTokens,
+					"completion_tokens": i.metadata.Usage.OutputTokens,
+					"total_tokens":      i.metadata.Usage.TotalTokens,
+				}
+			}
+			if raw, err := json.MarshalIndent(resp, "", "  "); err == nil {
+				return string(raw)
+			}
+		}
+	case streamProtocolAnthropic:
+		if i.acc.anthropicText.Len() > 0 || i.acc.anthropicThinking.Len() > 0 {
+			blocks := make([]map[string]any, 0, 2)
+			if i.acc.anthropicThinking.Len() > 0 {
+				blocks = append(blocks, map[string]any{
+					"type":     "thinking",
+					"thinking": i.acc.anthropicThinking.String(),
+				})
+			}
+			if i.acc.anthropicText.Len() > 0 {
+				blocks = append(blocks, map[string]any{
+					"type": "text",
+					"text": i.acc.anthropicText.String(),
+				})
+			}
+			stopReason := i.acc.anthropicStopReason
+			if stopReason == "" {
+				stopReason = "end_turn"
+			}
+			resp := map[string]any{
+				"id":          i.metadata.ResponseID,
+				"type":        "message",
+				"role":        "assistant",
+				"content":     blocks,
+				"model":       i.metadata.Model,
+				"stop_reason": stopReason,
+			}
+			if i.metadata.Usage.TotalTokens > 0 || i.metadata.Usage.InputTokens > 0 || i.metadata.Usage.OutputTokens > 0 {
+				resp["usage"] = map[string]any{
+					"input_tokens":  i.metadata.Usage.InputTokens,
+					"output_tokens": i.metadata.Usage.OutputTokens,
+				}
+			}
+			if raw, err := json.MarshalIndent(resp, "", "  "); err == nil {
+				return string(raw)
+			}
+		}
+	case streamProtocolResponses:
+		if i.acc.responsesText.Len() > 0 || i.acc.responsesReasoning.Len() > 0 {
+			resp := map[string]any{
+				"id":          i.metadata.ResponseID,
+				"object":      "response",
+				"model":       i.metadata.Model,
+				"output_text": i.acc.responsesText.String(),
+			}
+			if i.acc.responsesReasoning.Len() > 0 {
+				resp["reasoning_text"] = i.acc.responsesReasoning.String()
+			}
+			if raw, err := json.MarshalIndent(resp, "", "  "); err == nil {
+				return string(raw)
+			}
+		}
+	}
+	return i.acc.rawSSE.String()
+}
+
+func (i *responseInspector) Metadata() responseMetadata {
+	meta := normalizeMetadataUsage(i.metadata, i.protocol)
+	meta.ResponseBody = i.buildResponseBody()
+	return meta
 }
 
 func (i *responseInspector) observeReasoningStart() {
@@ -1738,10 +1958,6 @@ func containsGeneratedDelta(data []byte, protocol streamProtocol) bool {
 		}
 	}
 	return false
-}
-
-func (i *responseInspector) Metadata() responseMetadata {
-	return normalizeMetadataUsage(i.metadata, i.protocol)
 }
 
 func normalizeMetadataUsage(metadata responseMetadata, protocol streamProtocol) responseMetadata {

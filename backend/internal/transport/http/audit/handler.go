@@ -129,6 +129,7 @@ type auditResponse struct {
 	RequestPath             string                    `json:"requestPath,omitempty"`
 	RequestHeaders          map[string][]string       `json:"requestHeaders,omitempty"`
 	RequestBody             string                    `json:"requestBody,omitempty"`
+	ResponseBody            string                    `json:"responseBody,omitempty"`
 	AttemptCount            int                       `json:"attemptCount"`
 	CreatedAt               time.Time                 `json:"createdAt"`
 }
@@ -498,6 +499,7 @@ func newAuditResponse(value auditdomain.Record) auditResponse {
 		RequestPath: value.RequestPath,
 		RequestHeaders: value.RequestHeaders,
 		RequestBody: value.RequestBody,
+		ResponseBody: value.ResponseBody,
 		AttemptCount: value.AttemptCount,
 		CreatedAt: value.CreatedAt,
 	}

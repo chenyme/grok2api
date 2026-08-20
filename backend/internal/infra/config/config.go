@@ -248,6 +248,9 @@ type AuditConfig struct {
 	BatchSize                   int      `yaml:"batchSize"`
 	FlushInterval               Duration `yaml:"flushInterval"`
 	CommitDelay                 Duration `yaml:"commitDelay"`
+	RetentionDays               int      `yaml:"retentionDays"`
+	RecordRequestBody           bool     `yaml:"recordRequestBody"`
+	RecordResponseBody          bool     `yaml:"recordResponseBody"`
 	LedgerMode                  string   `yaml:"ledgerMode"`
 	LedgerFailureThreshold      int      `yaml:"ledgerFailureThreshold"`
 	LedgerUnhealthyGrace        Duration `yaml:"ledgerUnhealthyGrace"`
@@ -920,6 +923,7 @@ func defaultConfig() Config {
 		},
 		Audit: AuditConfig{
 			BufferSize: 16384, BatchSize: 256, FlushInterval: Duration(250 * time.Millisecond), CommitDelay: Duration(5 * time.Millisecond),
+			RetentionDays: 7, RecordRequestBody: true, RecordResponseBody: true,
 			LedgerMode: "enforce", LedgerFailureThreshold: 1,
 			LedgerUnhealthyGrace: Duration(10 * time.Second), LedgerQueueHighWatermarkPct: 90,
 		},

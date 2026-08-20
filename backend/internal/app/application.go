@@ -591,6 +591,17 @@ func (a *Application) Run(ctx context.Context) error {
 		})
 		return nil
 	})
+	startBackground("audit_retention_cleanup", func(taskCtx context.Context) error {
+		a.runPeriodicTask(taskCtx, time.Hour, "audit_retention_cleanup", func(runCtx context.Context) error {
+			retentionDays := a.settings.Get().Config.Audit.RetentionDays
+			if retentionDays <= 0 {
+				retentionDays = 7
+			}
+			_, err := a.audits.PurgeOutdated(runCtx, retentionDays)
+			return err
+		})
+		return nil
+	})
 	startBackground("quota_recovery", func(taskCtx context.Context) error {
 		a.quotaRecovery.Run(taskCtx)
 		return nil

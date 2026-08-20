@@ -152,7 +152,15 @@ export const settingsSchema = z.object({
     }),
   }).refine((value) => durationSeconds(value.cooldownMax) >= durationSeconds(value.cooldownBase), { path: ["cooldownMax"] })
     .refine((value) => value.segmentedSelector.windowSize <= value.segmentedSelector.minCandidates, { path: ["segmentedSelector", "windowSize"] }),
-  audit: z.object({ bufferSize: positiveInteger.max(262_144), batchSize: positiveInteger.max(4_096), flushInterval: auditFlushDuration, commitDelayMS: positiveInteger.max(50) })
+  audit: z.object({
+    bufferSize: positiveInteger.max(262_144),
+    batchSize: positiveInteger.max(4_096),
+    flushInterval: auditFlushDuration,
+    commitDelayMS: positiveInteger.max(50),
+    retentionDays: z.number().int().min(0).max(365),
+    recordRequestBody: z.boolean(),
+    recordResponseBody: z.boolean(),
+  })
     .refine((value) => value.batchSize <= value.bufferSize, { path: ["batchSize"] }),
   clientKeyDefaults: z.object({ rpmLimit: positiveInteger.max(100_000), maxConcurrent: positiveInteger.max(1_024) }),
   accounts: z.object({
@@ -209,7 +217,15 @@ export function toSettingsForm(config: SettingsConfigDTO): SettingsForm {
       accountIsolatedConnections: config.routing.accountIsolatedConnections,
       segmentedSelector: config.routing.segmentedSelector,
     },
-    audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: parseDuration(config.audit.flushInterval), commitDelayMS: config.audit.commitDelayMS },
+    audit: {
+      bufferSize: config.audit.bufferSize,
+      batchSize: config.audit.batchSize,
+      flushInterval: parseDuration(config.audit.flushInterval),
+      commitDelayMS: config.audit.commitDelayMS,
+      retentionDays: config.audit.retentionDays ?? 7,
+      recordRequestBody: config.audit.recordRequestBody ?? true,
+      recordResponseBody: config.audit.recordResponseBody ?? true,
+    },
     clientKeyDefaults: config.clientKeyDefaults,
     accounts: {
       markBuildForbiddenReauth: config.accounts.markBuildForbiddenReauth,
@@ -252,7 +268,15 @@ export function toSettingsDTO(config: SettingsForm): SettingsConfigDTO {
       accountIsolatedConnections: config.routing.accountIsolatedConnections,
       segmentedSelector: config.routing.segmentedSelector,
     },
-    audit: { bufferSize: config.audit.bufferSize, batchSize: config.audit.batchSize, flushInterval: formatDuration(config.audit.flushInterval), commitDelayMS: config.audit.commitDelayMS },
+    audit: {
+      bufferSize: config.audit.bufferSize,
+      batchSize: config.audit.batchSize,
+      flushInterval: formatDuration(config.audit.flushInterval),
+      commitDelayMS: config.audit.commitDelayMS,
+      retentionDays: config.audit.retentionDays,
+      recordRequestBody: config.audit.recordRequestBody,
+      recordResponseBody: config.audit.recordResponseBody,
+    },
     clientKeyDefaults: config.clientKeyDefaults,
     accounts: {
       markBuildForbiddenReauth: config.accounts.markBuildForbiddenReauth,

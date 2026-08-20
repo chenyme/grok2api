@@ -115,6 +115,7 @@ type Record struct {
 	RequestPath             string
 	RequestHeaders          map[string][]string
 	RequestBody             string
+	ResponseBody            string
 	AttemptCount            int
 	Attempts                []Attempt
 	CreatedAt               time.Time

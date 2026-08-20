@@ -116,10 +116,13 @@ type segmentedSelectorConfigDTO struct {
 }
 
 type auditConfigDTO struct {
-	BufferSize    int    `json:"bufferSize"`
-	BatchSize     int    `json:"batchSize"`
-	FlushInterval string `json:"flushInterval"`
-	CommitDelayMS int    `json:"commitDelayMS"`
+	BufferSize         int    `json:"bufferSize"`
+	BatchSize          int    `json:"batchSize"`
+	FlushInterval      string `json:"flushInterval"`
+	CommitDelayMS      int    `json:"commitDelayMS"`
+	RetentionDays      *int   `json:"retentionDays,omitempty"`
+	RecordRequestBody  *bool  `json:"recordRequestBody,omitempty"`
+	RecordResponseBody *bool  `json:"recordResponseBody,omitempty"`
 }
 
 type clientKeyDefaultsConfigDTO struct {
@@ -233,6 +236,12 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 		},
 		Audit: settingsapp.AuditConfig{
 			BufferSize: value.Audit.BufferSize, BatchSize: value.Audit.BatchSize, FlushInterval: value.Audit.FlushInterval, CommitDelayMS: value.Audit.CommitDelayMS,
+			RetentionDays:              intValue(value.Audit.RetentionDays),
+			RetentionDaysProvided:      value.Audit.RetentionDays != nil,
+			RecordRequestBody:          boolValue(value.Audit.RecordRequestBody),
+			RecordRequestBodyProvided:  value.Audit.RecordRequestBody != nil,
+			RecordResponseBody:         boolValue(value.Audit.RecordResponseBody),
+			RecordResponseBodyProvided: value.Audit.RecordResponseBody != nil,
 		},
 		ClientKeyDefaults: settingsapp.ClientKeyDefaultsConfig{
 			RPMLimit: value.ClientKeyDefaults.RPMLimit, MaxConcurrent: value.ClientKeyDefaults.MaxConcurrent,
@@ -317,6 +326,9 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 			},
 			Audit: auditConfigDTO{
 				BufferSize: config.Audit.BufferSize, BatchSize: config.Audit.BatchSize, FlushInterval: config.Audit.FlushInterval, CommitDelayMS: config.Audit.CommitDelayMS,
+				RetentionDays:      intPointer(config.Audit.RetentionDays),
+				RecordRequestBody:  boolPointer(config.Audit.RecordRequestBody),
+				RecordResponseBody: boolPointer(config.Audit.RecordResponseBody),
 			},
 			ClientKeyDefaults: clientKeyDefaultsConfigDTO{
 				RPMLimit: config.ClientKeyDefaults.RPMLimit, MaxConcurrent: config.ClientKeyDefaults.MaxConcurrent,
@@ -357,6 +369,15 @@ func boolValue(value *bool) bool {
 	return *value
 }
 
+func intPointer(value int) *int { return &value }
+
+func intValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
 func stringSliceValue(value *[]string) []string {
 	if value == nil {
 		return nil
@@ -368,3 +389,4 @@ func stringSlicePointer(value []string) *[]string {
 	cloned := append([]string(nil), value...)
 	return &cloned
 }
+

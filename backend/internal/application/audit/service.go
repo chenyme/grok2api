@@ -405,6 +405,16 @@ func (s *Service) Get(ctx context.Context, id uint64) (auditdomain.Record, error
 	return s.audits.Get(ctx, id)
 }
 
+// PurgeOutdated 清理超过指定保留天数的历史审计记录。
+func (s *Service) PurgeOutdated(ctx context.Context, retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
+	return s.audits.PurgeOlderThan(ctx, cutoff)
+}
+
+
 // CursorResult 表示按递减 ID 游标读取的一页审计记录。
 type CursorResult struct {
 	Items      []auditdomain.Record

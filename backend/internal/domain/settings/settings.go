@@ -120,10 +120,13 @@ type SegmentedSelectorConfig struct {
 }
 
 type AuditConfig struct {
-	BufferSize    int
-	BatchSize     int
-	FlushInterval time.Duration
-	CommitDelay   time.Duration
+	BufferSize         int
+	BatchSize          int
+	FlushInterval      time.Duration
+	CommitDelay        time.Duration
+	RetentionDays      int
+	RecordRequestBody  bool
+	RecordResponseBody bool
 }
 
 // ClientKeyDefaultsConfig 定义新建客户端密钥的默认限制。

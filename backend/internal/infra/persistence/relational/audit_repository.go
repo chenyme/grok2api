@@ -376,6 +376,7 @@ func toAuditModels(value audit.Record) (requestAuditModel, []requestAuditAttempt
 		RequestPath: truncate(value.RequestPath, 2048),
 		RequestHeadersJSON: truncate(requestHeadersJSON, 65536),
 		RequestBody: truncate(value.RequestBody, 16777216),
+		ResponseBody: truncate(value.ResponseBody, 16777216),
 		AttemptCount: len(value.Attempts), CreatedAt: value.CreatedAt,
 	}
 	attempts := make([]requestAuditAttemptModel, 0, len(value.Attempts))
@@ -1058,3 +1059,18 @@ func applyAuditQuery(query *gorm.DB, search string, start, end time.Time, filter
 	}
 	return query
 }
+
+func (r *AuditRepository) PurgeOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	var totalDeleted int64
+	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		_ = tx.Exec("DELETE FROM request_audit_attempts WHERE audit_id IN (SELECT id FROM request_audits WHERE created_at < ?)", cutoff).Error
+		res := tx.Where("created_at < ?", cutoff).Delete(&requestAuditModel{})
+		if res.Error != nil {
+			return res.Error
+		}
+		totalDeleted = res.RowsAffected
+		return nil
+	})
+	return totalDeleted, err
+}
+

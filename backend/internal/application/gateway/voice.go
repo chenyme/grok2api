@@ -475,7 +475,7 @@ func (s *Service) executeVoice(
 	}
 	accountID := credential.ID
 	var once sync.Once
-	finalize := func(_ Usage, _ string, errorCode string) {
+	finalizeWithBody := func(_ Usage, _ string, errorCode string, responseBody string) {
 		once.Do(func() {
 			successful := auditRequestSucceeded(response.StatusCode, errorCode)
 			lease.completeSelectorObservation(successful)
@@ -484,6 +484,7 @@ func (s *Service) executeVoice(
 			record := auditBase
 			record.AccountID, record.AccountName, record.StatusCode = &accountID, credential.Name, response.StatusCode
 			record.ErrorCode = errorCode
+			record.ResponseBody = responseBody
 			record.DurationMS, record.CreatedAt = time.Since(startedAt).Milliseconds(), time.Now().UTC()
 			applyAuditEgress(&record, egressTrace, route.Provider)
 			if successful && completedPricing.CostInUSDTicks > 0 {
@@ -517,7 +518,14 @@ func (s *Service) executeVoice(
 			}
 		})
 	}
-	return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, Finalize: finalize}, nil
+	finalize := func(usage Usage, responseID string, errorCode string) {
+		finalizeWithBody(usage, responseID, errorCode, "")
+	}
+	return &Result{
+		StatusCode: response.StatusCode, Status: response.Status, Header: response.Header,
+		Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }},
+		Finalize: finalize, FinalizeWithBody: finalizeWithBody,
+	}, nil
 }
 
 func jsonVoiceResponse(status int, value any) *provider.Response {

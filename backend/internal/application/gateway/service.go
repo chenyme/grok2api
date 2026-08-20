@@ -154,6 +154,7 @@ type Result struct {
 	MarkFirstToken      func()
 	RecordStreamFailure func(StreamFailureDiagnostic)
 	Finalize            func(usage Usage, responseID, errorCode string)
+	FinalizeWithBody    func(usage Usage, responseID, errorCode, responseBody string)
 }
 
 // StreamFailureDiagnostic safely projects a failure termination event returned in-stream after downstream 2xx headers.
@@ -1061,7 +1062,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	handoffResponse := func(response *provider.Response, lease *accountLease, credential accountdomain.Credential, upstreamStartedAt time.Time) *Result {
 		accountID := credential.ID
 		var once sync.Once
-		finalize := func(usage Usage, responseID, errorCode string) {
+		finalizeWithBody := func(usage Usage, responseID, errorCode, responseBody string) {
 			once.Do(func() {
 				// HTTP 状态码保留线上真实值；流在 2xx 响应头之后失败时由 errorCode
 				// 决定最终结果，避免把协议状态与业务结果混为一谈。
@@ -1114,7 +1115,27 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				}
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
+				record.ResponseBody = responseBody
 				attempts := failureAttempts.snapshot()
+				if !successful && len(attempts) == 0 {
+					statusCode := response.StatusCode
+					failureAttempts.append(audit.Attempt{
+						Source:             audit.AttemptSourceUpstreamHTTP,
+						Stage:              "response_stream",
+						AccountID:          auditAccountID(credential.ID),
+						AccountName:        credential.Name,
+						Method:             http.MethodPost,
+						RequestPath:        sanitizeRequestPath(path),
+						UpstreamURL:        sanitizeUpstreamURL(response.UpstreamURL),
+						StartedAt:          upstreamStartedAt.UTC(),
+						DurationMS:         time.Since(upstreamStartedAt).Milliseconds(),
+						UpstreamStatusCode: &statusCode,
+						UpstreamStatus:     response.Status,
+						ResponseHeaders:    sanitizeDiagnosticHeaders(response.Header),
+						TransportError:     errorCode,
+					})
+					attempts = failureAttempts.snapshot()
+				}
 				if !successful || len(attempts) > 0 {
 					record.Attempts = attempts
 				}
@@ -1166,6 +1187,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				timing.finish(s.logger, outcome)
 			})
 		}
+		finalize := func(usage Usage, responseID, errorCode string) {
+			finalizeWithBody(usage, responseID, errorCode, "")
+		}
 		response.Body = &firstByteReadCloser{ReadCloser: response.Body, mark: timing.markFirstBody}
 		recordStreamFailure := func(diagnostic StreamFailureDiagnostic) {
 			failureAttempts.captureStreamFailure(credential, upstreamStartedAt, response, diagnostic)
@@ -1175,7 +1199,12 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			markFirstToken = firstToken.mark
 		}
 		timingHandedOff = true
-		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, MarkFirstToken: markFirstToken, RecordStreamFailure: recordStreamFailure, Finalize: finalize}
+		return &Result{
+			StatusCode: response.StatusCode, Status: response.Status, Header: response.Header,
+			Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }},
+			MarkFirstToken: markFirstToken, RecordStreamFailure: recordStreamFailure,
+			Finalize: finalize, FinalizeWithBody: finalizeWithBody,
+		}
 	}
 	// fail_open retains at most one successful no-thinking stream. The account
 	// lease is released immediately; the read pump applies upstream backpressure
