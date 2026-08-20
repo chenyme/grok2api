@@ -221,6 +221,35 @@ func sanitizeResponsesEvent(event map[string]any, state *responsesCompatState) b
 			}
 		}
 	}
+	if ensureOutputTextAnnotations(event) {
+		changed = true
+	}
+	return changed
+}
+
+// Grok CLI serde requires output_text.annotations even when there are no
+// citations. Missing the field makes a retry fail with
+// "serialization error: missing field `annotations`".
+func ensureOutputTextAnnotations(node any) bool {
+	changed := false
+	switch typed := node.(type) {
+	case map[string]any:
+		if stringAny(typed["type"]) == "output_text" && typed["annotations"] == nil {
+			typed["annotations"] = []any{}
+			changed = true
+		}
+		for _, key := range []string{"item", "part", "response", "content", "output", "delta"} {
+			if ensureOutputTextAnnotations(typed[key]) {
+				changed = true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if ensureOutputTextAnnotations(child) {
+				changed = true
+			}
+		}
+	}
 	return changed
 }
 
