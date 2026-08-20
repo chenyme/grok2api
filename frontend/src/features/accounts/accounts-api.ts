@@ -102,6 +102,7 @@ export type AccountDTO = {
   failureCount: number;
   cooldownUntil?: string;
   lastError?: string;
+  enabledDoesNotClearCooldown?: boolean;
   lastUsedAt?: string;
   linkedAccountId?: string;
   linkedAccountName?: string;
@@ -123,7 +124,7 @@ export type LinkedAccountDTO = {
 
 export type AccountUpdateInput = {
   name: string;
-  enabled: boolean;
+  enabled?: boolean;
   priority: number;
   maxConcurrent: number;
   minimumRemaining: number;
@@ -193,6 +194,7 @@ const accountValidator = hasShape({
   egressNodeId: isOptional(isString), egressAssignmentMode: isOptional(isOneOf("manual", "auto")),
   lastRefreshErrorStatus: isOptional(isNumber), lastRefreshErrorCode: isOptional(isString), lastRefreshErrorMessage: isOptional(isString), lastRefreshErrorResponse: isOptional(isString), priority: isNumber, maxConcurrent: isNumber, minimumRemaining: isNumber,
   failureCount: isNumber, cooldownUntil: isOptional(isString), lastError: isOptional(isString), lastUsedAt: isOptional(isString),
+  enabledDoesNotClearCooldown: isOptional(isBoolean),
   linkedAccountId: isOptional(isString), linkedAccountName: isOptional(isString), linkedProvider: isOptional(isOneOf("grok_build", "grok_web")), linkedAccounts: isOptional(isArrayOf(linkedAccountValidator)),
   createdAt: isString, billing: isOptional(billingValidator), quota: quotaValidator, quotaWindows: isOptional(isArrayOf(quotaWindowValidator)),
 });
@@ -307,6 +309,10 @@ export function refreshAccountBilling(id: string): Promise<BillingDTO> {
 
 export function refreshAccountToken(id: string): Promise<AccountDTO> {
   return apiRequest(`/api/admin/v1/accounts/${id}/refresh-token`, { method: "POST" }, decodeAccount);
+}
+
+export function clearAccountCooldown(id: string): Promise<AccountDTO> {
+  return apiRequest(`/api/admin/v1/accounts/${id}/clear-cooldown`, { method: "POST" }, decodeAccount);
 }
 
 export function acceptWebAccountTerms(id: string): Promise<{ completed: boolean }> {
