@@ -53,6 +53,7 @@ type streamConverter struct {
 	thinkingIndex     int
 	thinkingItemID    string
 	chatReasoningMark bool
+	evidenceMarked    bool
 	reasoningItems    map[string]*reasoningStreamState
 	reasoningOrder    []string
 	activeReasoningID string
@@ -93,6 +94,23 @@ func newStreamConverter(writer io.Writer, operation string, options ResponseOpti
 		deferSearchText:  operation == OperationMessages && options.AnthropicWebSearch,
 		options:          options, stopFilter: newAnthropicStreamStopFilter(options.StopSequences),
 	}
+}
+
+// markReasoningEvidence preserves non-empty upstream encrypted_content for the
+// request-path quality scanner after protocol conversion. SSE clients ignore
+// comments, so Chat and Messages public event payloads remain unchanged.
+func (c *streamConverter) markReasoningEvidence() error {
+	if c.evidenceMarked {
+		return nil
+	}
+	if err := c.start(); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(c.writer, ": grok2api-reasoning-evidence\n\n"); err != nil {
+		return err
+	}
+	c.evidenceMarked = true
+	return nil
 }
 
 // noteWebSearch records a Build web_search_call. Emission is deferred to doneMessages
@@ -314,6 +332,11 @@ func (c *streamConverter) handle(event string, data []byte) error {
 					return err
 				}
 			}
+			if strings.TrimSpace(item.Encrypted) != "" {
+				if err := c.markReasoningEvidence(); err != nil {
+					return err
+				}
+			}
 			return c.thinkingDone(item)
 		}
 		if item.Type == "web_search_call" && c.operation == OperationMessages && c.options.AnthropicWebSearch {
@@ -325,6 +348,13 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		var response responseEnvelope
 		_ = json.Unmarshal(root["response"], &response)
 		c.setResponse(response)
+		for _, item := range response.Output {
+			if item.Type == "reasoning" && strings.TrimSpace(item.Encrypted) != "" {
+				if err := c.markReasoningEvidence(); err != nil {
+					return err
+				}
+			}
+		}
 		if c.operation == OperationMessages && c.options.AnthropicWebSearch {
 			parsed := parseResponse(response)
 			for _, call := range parsed.WebSearch {
