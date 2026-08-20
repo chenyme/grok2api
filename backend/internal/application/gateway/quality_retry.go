@@ -21,14 +21,14 @@ const (
 	qualityRetryFailOpen             = "fail_open"
 	qualityRetryFailClosed           = "fail_closed"
 	defaultQualityMaxAttempts        = 6
-	defaultQualityHoldTimeout        = 3 * time.Second
-	defaultQualityMinOutput          = int64(32)
-	defaultMissingThinkingCooldown   = 24 * time.Hour
+	defaultQualityHoldTimeout        = 30 * time.Second
+	defaultQualityMinOutput          = int64(8)
+	defaultMissingThinkingCooldown   = 12 * time.Hour
 	lastErrorMissingThinking         = accountdomain.LastErrorMissingThinking
 	lastErrorMissingThinkingDisabled = accountdomain.LastErrorMissingThinkingDisabled
 	// An empty stream that idles while held is treated as an account-quality
 	// failure: the request can still rotate before any bytes reach the client.
-	qualityIdleAccountCooldown = 24 * time.Hour
+	qualityIdleAccountCooldown = 15 * time.Minute
 )
 
 var (

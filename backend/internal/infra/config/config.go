@@ -930,15 +930,15 @@ func defaultConfig() Config {
 			LedgerUnhealthyGrace: Duration(10 * time.Second), LedgerQueueHighWatermarkPct: 90,
 		},
 		QualityGuard: QualityGuardConfig{
-			Model: "grok-4.5", Mode: "hybrid",
+			Model: "grok-4.6", Mode: "hybrid",
 			ActiveInterval: Duration(30 * time.Minute), PassivePollInterval: Duration(5 * time.Second),
 			SoftTPS: 500, HardTPS: 1000, ConsecutiveSoft: 2, ConsecutiveErrors: 2,
 			QuarantineDuration: Duration(5 * time.Minute), NoAccountBackoff: Duration(5 * time.Minute),
 			MinimumHealthyNodes: 3, MaxOutputTokens: 384,
 			MinimumGenerationWindow: Duration(time.Second), RotationTimeout: Duration(45 * time.Second),
 			RequestRetry: QualityGuardRequestRetryConfig{
-				MaxAttempts: 6, HoldTimeout: Duration(3 * time.Second), MinOutputTokens: 32, OnExhausted: "fail_closed",
-				AccountCooldown: Duration(24 * time.Hour), IdleAccountCooldown: Duration(24 * time.Hour),
+				MaxAttempts: 6, HoldTimeout: Duration(30 * time.Second), MinOutputTokens: 8, OnExhausted: "fail_closed",
+				AccountCooldown: Duration(12 * time.Hour), IdleAccountCooldown: Duration(15 * time.Minute),
 			},
 		},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},

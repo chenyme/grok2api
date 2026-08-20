@@ -443,8 +443,8 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("interrupted account health = %#v, err=%v", interruptedAccount, err)
 	}
 	remaining := time.Until(*interruptedAccount.CooldownUntil)
-	if remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
-		t.Fatalf("idle stream cooldown = %s, want about 24h", remaining)
+	if remaining < 14*time.Minute || remaining > 15*time.Minute+time.Minute {
+		t.Fatalf("idle stream cooldown = %s, want about 15m", remaining)
 	}
 }
 

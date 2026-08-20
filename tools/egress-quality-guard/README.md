@@ -129,7 +129,7 @@ copy, select, or configure a Client Key for the guard:
 ```yaml
 qualityGuard:
   enabled: true
-  model: "grok-4.5"
+  model: "grok-4.6"
   mode: hybrid
   activeInterval: 30m
   passivePollInterval: 5s

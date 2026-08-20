@@ -838,8 +838,8 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	if emptyAccount.FailureCount != 1 || emptyAccount.CooldownUntil == nil {
 		t.Fatalf("empty stream account was not cooled: %#v", emptyAccount)
 	}
-	if remaining := time.Until(*emptyAccount.CooldownUntil); remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
-		t.Fatalf("empty stream cooldown = %s, want about 24h", remaining)
+	if remaining := time.Until(*emptyAccount.CooldownUntil); remaining < 14*time.Minute || remaining > 15*time.Minute+time.Minute {
+		t.Fatalf("empty stream cooldown = %s, want about 15m", remaining)
 	}
 	noThinkingAccount, err := accountRepo.Get(ctx, credentials[1].ID)
 	if err != nil {
@@ -848,8 +848,8 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	if !noThinkingAccount.Enabled || noThinkingAccount.LastError != lastErrorMissingThinking || noThinkingAccount.CooldownUntil == nil {
 		t.Fatalf("missing-thinking account was not cooled: %#v", noThinkingAccount)
 	}
-	if remaining := time.Until(*noThinkingAccount.CooldownUntil); remaining < 23*time.Hour || remaining > 24*time.Hour+time.Minute {
-		t.Fatalf("missing-thinking cooldown = %s, want about 24h", remaining)
+	if remaining := time.Until(*noThinkingAccount.CooldownUntil); remaining < 11*time.Hour || remaining > 12*time.Hour+time.Minute {
+		t.Fatalf("missing-thinking cooldown = %s, want about 12h", remaining)
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 20)
 	if err != nil {
@@ -1056,7 +1056,7 @@ func TestAttemptLoopQualityFailOpenFallbackAndTotalAttemptCap(t *testing.T) {
 func TestNormalizeQualityRetryDefaults(t *testing.T) {
 	t.Parallel()
 	got := normalizeQualityRetry(QualityRetryRuntime{Enabled: true})
-	if !got.Enabled || got.MaxAttempts != 6 || got.MinOutputTokens != 32 || got.OnExhausted != qualityRetryFailClosed || got.HoldTimeout != 3*time.Second || got.AccountCooldown != 24*time.Hour || got.IdleAccountCooldown != 24*time.Hour {
+	if !got.Enabled || got.MaxAttempts != 6 || got.MinOutputTokens != 8 || got.OnExhausted != qualityRetryFailClosed || got.HoldTimeout != 30*time.Second || got.AccountCooldown != 12*time.Hour || got.IdleAccountCooldown != 15*time.Minute {
 		t.Fatalf("defaults = %#v", got)
 	}
 }
