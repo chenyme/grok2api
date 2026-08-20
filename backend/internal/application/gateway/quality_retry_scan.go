@@ -14,11 +14,12 @@ import (
 )
 
 const (
-	qualityProtocolChat        = "chat"
-	qualityProtocolResponses   = "responses"
-	qualityProtocolAnthropic   = "anthropic"
-	qualityReasoningSSEComment = ": grok2api-reasoning-start"
-	qualityHoldMaxBufferBytes  = 4 << 20
+	qualityProtocolChat                = "chat"
+	qualityProtocolResponses           = "responses"
+	qualityProtocolAnthropic           = "anthropic"
+	qualityReasoningSSEComment         = ": grok2api-reasoning-start"
+	qualityReasoningEvidenceSSEComment = ": grok2api-reasoning-evidence"
+	qualityHoldMaxBufferBytes          = 4 << 20
 )
 
 type qualityScanState struct {
@@ -175,6 +176,13 @@ func ObserveQualityChunk(state *qualityScanState, chunk []byte) {
 			state.reasoningStarted = true
 			continue
 		}
+		if bytes.Equal(line, []byte(qualityReasoningEvidenceSSEComment)) {
+			// Protocol converters cannot expose encrypted_content in every public
+			// JSON contract. This internal SSE comment preserves that evidence.
+			state.reasoningStarted = true
+			state.hasThinking = true
+			continue
+		}
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
 		}
@@ -238,7 +246,7 @@ func observeQualityChat(state *qualityScanState, payload []byte) {
 	}
 	for _, choice := range event.Choices {
 		delta := choice.Delta
-		if delta.Reasoning != "" || delta.ReasoningContent != "" || delta.ThinkingContent != "" {
+		if strings.TrimSpace(delta.Reasoning) != "" || strings.TrimSpace(delta.ReasoningContent) != "" || strings.TrimSpace(delta.ThinkingContent) != "" {
 			state.hasThinking = true
 		}
 		if delta.Content != "" {
@@ -270,14 +278,14 @@ func noteResponsesReasoningItem(state *qualityScanState, item qualityReasoningIt
 
 func observeQualityResponses(state *qualityScanState, payload []byte) {
 	var event struct {
-		Type  string `json:"type"`
-		Delta string `json:"delta"`
-		Item  qualityReasoningItem
+		Type     string `json:"type"`
+		Delta    string `json:"delta"`
+		Item     qualityReasoningItem
 		Response *struct {
 			ID     string                 `json:"id"`
 			Model  string                 `json:"model"`
 			Output []qualityReasoningItem `json:"output"`
-			Usage *struct {
+			Usage  *struct {
 				OutputTokens        int64 `json:"output_tokens"`
 				InputTokens         int64 `json:"input_tokens"`
 				TotalTokens         int64 `json:"total_tokens"`
@@ -294,7 +302,7 @@ func observeQualityResponses(state *qualityScanState, payload []byte) {
 	case "response.completed", "response.incomplete", "response.failed":
 		state.terminal = true
 	case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
-		if event.Delta != "" {
+		if strings.TrimSpace(event.Delta) != "" {
 			state.hasThinking = true
 		}
 	case "response.output_item.added", "response.output_item.done":
@@ -331,9 +339,10 @@ func observeQualityAnthropic(state *qualityScanState, payload []byte) {
 			Type string `json:"type"`
 		} `json:"content_block"`
 		Delta struct {
-			Type     string `json:"type"`
-			Text     string `json:"text"`
-			Thinking string `json:"thinking"`
+			Type      string `json:"type"`
+			Text      string `json:"text"`
+			Thinking  string `json:"thinking"`
+			Signature string `json:"signature"`
 		} `json:"delta"`
 		Usage *struct {
 			OutputTokens        int64 `json:"output_tokens"`
@@ -353,7 +362,13 @@ func observeQualityAnthropic(state *qualityScanState, payload []byte) {
 			state.reasoningStarted = true
 		}
 	case "content_block_delta":
-		if event.Delta.Type == "thinking_delta" && event.Delta.Thinking != "" {
+		if event.Delta.Type == "thinking_delta" && strings.TrimSpace(event.Delta.Thinking) != "" {
+			state.hasThinking = true
+		}
+		if event.Delta.Type == "signature_delta" && strings.TrimSpace(event.Delta.Signature) != "" {
+			// Anthropic Messages represents Responses encrypted_content as a
+			// signature delta. A non-empty signature is encrypted thinking proof.
+			state.reasoningStarted = true
 			state.hasThinking = true
 		}
 		if event.Delta.Type == "text_delta" && event.Delta.Text != "" {

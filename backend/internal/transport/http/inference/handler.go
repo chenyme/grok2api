@@ -1288,7 +1288,7 @@ type responseMetadata struct {
 
 func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol, onFirstToken func()) (responseMetadata, error) {
 	inspector := &responseInspector{protocol: protocol, onFirstToken: onFirstToken}
-	markerFilter := internalSSEMarkerFilter{enabled: protocol == streamProtocolChat}
+	markerFilter := internalSSEMarkerFilter{enabled: protocol == streamProtocolChat || protocol == streamProtocolAnthropic}
 	var compat responsesCompatState
 	buffer := make([]byte, responseCopyBufferBytes)
 	received := 0
@@ -1466,13 +1466,13 @@ func (f *internalSSEMarkerFilter) Filter(chunk []byte, final bool) []byte {
 	if !f.enabled {
 		return chunk
 	}
-	marker := []byte(reasoningStartSSEComment + "\n\n")
 	f.pending = append(f.pending, chunk...)
 	result := make([]byte, 0, len(f.pending))
 	for {
-		if index := bytes.Index(f.pending, marker); index >= 0 {
+		index, markerLength := nextInternalSSEMarker(f.pending)
+		if index >= 0 {
 			result = append(result, f.pending[:index]...)
-			f.pending = f.pending[index+len(marker):]
+			f.pending = f.pending[index+markerLength:]
 			continue
 		}
 		if final {
@@ -1481,17 +1481,32 @@ func (f *internalSSEMarkerFilter) Filter(chunk []byte, final bool) []byte {
 			return result
 		}
 		keep := 0
-		limit := min(len(f.pending), len(marker)-1)
-		for size := limit; size > 0; size-- {
-			if bytes.Equal(f.pending[len(f.pending)-size:], marker[:size]) {
-				keep = size
-				break
+		for _, marker := range internalSSEMarkers {
+			limit := min(len(f.pending), len(marker)-1)
+			for size := limit; size > keep; size-- {
+				if bytes.Equal(f.pending[len(f.pending)-size:], marker[:size]) {
+					keep = size
+					break
+				}
 			}
 		}
 		result = append(result, f.pending[:len(f.pending)-keep]...)
 		f.pending = f.pending[len(f.pending)-keep:]
 		return result
 	}
+}
+
+func nextInternalSSEMarker(value []byte) (int, int) {
+	index := -1
+	length := 0
+	for _, marker := range internalSSEMarkers {
+		candidate := bytes.Index(value, marker)
+		if candidate >= 0 && (index < 0 || candidate < index) {
+			index = candidate
+			length = len(marker)
+		}
+	}
+	return index, length
 }
 
 func copyJSON(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol) (responseMetadata, error) {
@@ -1545,7 +1560,15 @@ type responseInspector struct {
 	terminalFailure bool
 }
 
-const reasoningStartSSEComment = ": grok2api-reasoning-start"
+const (
+	reasoningStartSSEComment    = ": grok2api-reasoning-start"
+	reasoningEvidenceSSEComment = ": grok2api-reasoning-evidence"
+)
+
+var internalSSEMarkers = [][]byte{
+	[]byte(reasoningStartSSEComment + "\n\n"),
+	[]byte(reasoningEvidenceSSEComment + "\n\n"),
+}
 
 func (i *responseInspector) Inspect(chunk []byte) {
 	i.pending = append(i.pending, chunk...)

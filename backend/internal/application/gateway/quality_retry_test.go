@@ -20,6 +20,7 @@ import (
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
@@ -35,6 +36,7 @@ func TestClassifyQualityHold(t *testing.T) {
 		{name: "usage reasoning tokens alone withhold", sig: QualityStreamSignals{ReasoningTokens: 40, VisibleTokens: 80, Terminal: true}, want: QualityWithhold},
 		{name: "visible 32 no think withhold", sig: QualityStreamSignals{VisibleTokens: 32, Terminal: true}, want: QualityWithhold},
 		{name: "output 40 no think withhold", sig: QualityStreamSignals{OutputTokens: 40, Terminal: true}, want: QualityWithhold},
+		{name: "short visible output ignores inflated total", sig: QualityStreamSignals{VisibleTokens: 1, OutputTokens: 80, Terminal: true}, want: QualityDeliver},
 		{name: "short no think delivers", sig: QualityStreamSignals{VisibleTokens: 10, Terminal: true}, want: QualityDeliver},
 		{name: "empty terminal waits for transport handling", sig: QualityStreamSignals{Terminal: true}, want: QualityWait},
 		{name: "midstream enough content withhold", sig: QualityStreamSignals{VisibleTokens: 64}, want: QualityWithhold},
@@ -265,12 +267,102 @@ func TestObserveQualityChunkShortNoThink(t *testing.T) {
 	}
 }
 
+func TestObserveQualityChunkShortNoThinkIgnoresFakeReasoningUsage(t *testing.T) {
+	t.Parallel()
+	state := qualityScanState{protocol: qualityProtocolChat}
+	ObserveQualityChunk(&state, []byte(sse(
+		": grok2api-reasoning-start",
+		`data: {"choices":[{"delta":{"content":"OK"}}]}`,
+		`data: {"usage":{"completion_tokens":80,"completion_tokens_details":{"reasoning_tokens":79}}}`,
+		"data: [DONE]",
+	)))
+	sig := state.signals()
+	if sig.VisibleTokens >= 32 || sig.OutputTokens != 80 || sig.ReasoningTokens != 79 {
+		t.Fatalf("fake-usage short reply signals = %#v", sig)
+	}
+	if got := ClassifyQualityHold(sig, 32); got != QualityDeliver {
+		t.Fatalf("short visible reply must not be withheld by inflated usage: %s (%#v)", got, sig)
+	}
+}
+
+func TestObserveQualityConvertedEncryptedThinking(t *testing.T) {
+	t.Parallel()
+	source := sse(
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"gAAAA-cipher"}}`,
+		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
+	)
+	tests := []struct {
+		name      string
+		operation string
+		protocol  string
+		options   conversation.ResponseOptions
+	}{
+		{name: "chat", operation: conversation.OperationChat, protocol: qualityProtocolChat},
+		{name: "messages", operation: conversation.OperationMessages, protocol: qualityProtocolAnthropic, options: conversation.ResponseOptions{AnthropicThinking: true}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			converted, err := io.ReadAll(conversation.ConvertResponseStreamWithOptions(
+				io.NopCloser(strings.NewReader(source)), test.operation, test.options,
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := qualityScanState{protocol: test.protocol}
+			ObserveQualityChunk(&state, converted)
+			sig := state.signals()
+			if !sig.HasThinking {
+				t.Fatalf("converted encrypted thinking evidence was lost:\n%s", converted)
+			}
+			if got := ClassifyQualityHold(sig, 32); got != QualityDeliver {
+				t.Fatalf("converted encrypted thinking verdict = %s (%#v)", got, sig)
+			}
+		})
+	}
+}
+
+func TestObserveQualityChunkWhitespaceIsNotThinking(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		protocol string
+		fixture  string
+	}{
+		{name: "chat", protocol: qualityProtocolChat, fixture: sse(`data: {"choices":[{"delta":{"reasoning_content":" \n\t"}}]}`)},
+		{name: "responses", protocol: qualityProtocolResponses, fixture: sse(`data: {"type":"response.reasoning_summary_text.delta","delta":" \n\t"}`)},
+		{name: "messages", protocol: qualityProtocolAnthropic, fixture: sse(`data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":" \n\t"}}`)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := qualityScanState{protocol: test.protocol}
+			ObserveQualityChunk(&state, []byte(test.fixture))
+			if sig := state.signals(); sig.HasThinking {
+				t.Fatalf("whitespace-only reasoning counted as thinking: %#v", sig)
+			}
+		})
+	}
+}
+
+func TestObserveQualityChunkAnthropicSignatureIsThinking(t *testing.T) {
+	t.Parallel()
+	state := qualityScanState{protocol: qualityProtocolAnthropic}
+	ObserveQualityChunk(&state, []byte(sse(
+		`data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"gAAAA-cipher"}}`,
+	)))
+	if sig := state.signals(); !sig.HasThinking || !sig.ReasoningStarted {
+		t.Fatalf("non-empty Anthropic signature must count as encrypted thinking: %#v", sig)
+	}
+}
+
 func TestObserveQualityChunkResponsesReasoningItem(t *testing.T) {
 	t.Parallel()
 	fake := qualityScanState{protocol: qualityProtocolResponses}
 	ObserveQualityChunk(&fake, []byte(sse(
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
-		`data: {"type":"response.output_text.delta","delta":"hello hello hello hello hello hello hello hello"}`,
+		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("hello ", 40)+`"}`,
 		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
 	)))
 	fakeSig := fake.signals()
