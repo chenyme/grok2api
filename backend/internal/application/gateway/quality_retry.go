@@ -50,12 +50,16 @@ type QualityRetryRuntime struct {
 // QualityStreamSignals is the hold classifier input. Tests drive this
 // directly and via ObserveQualityChunk on SSE fixtures.
 type QualityStreamSignals struct {
-	HasThinking     bool
-	VisibleTokens   int64
-	ReasoningTokens int64
-	OutputTokens    int64
-	Terminal        bool
-	HoldExpired     bool
+	HasThinking bool
+	// ReasoningStarted is an empty reasoning item or the Chat SSE stub
+	// `: grok2api-reasoning-start`. That is not proof of thinking: 降智
+	// still emits the stub, then dumps visible tokens with usage 0.
+	ReasoningStarted bool
+	VisibleTokens    int64
+	ReasoningTokens  int64
+	OutputTokens     int64
+	Terminal         bool
+	HoldExpired      bool
 }
 
 // QualityVerdict is the hold decision for one upstream stream.
@@ -110,23 +114,37 @@ func (s *Service) qualityRetryConfig() QualityRetryRuntime {
 }
 
 // ClassifyQualityHold decides whether a held stream may be forwarded.
-// Thinking (or reasoning tokens) always delivers. A finished or expired
-// sample with enough visible output and no reasoning is 降智 and withheld.
+// Streamed thinking always delivers: reasoning/summary deltas, or a
+// reasoning item with encrypted_content. Usage.reasoning_tokens alone
+// does not — degraded upstreams fill that field without ciphertext or
+// deltas. A finished sample with enough visible output and no streamed
+// thinking is withheld.
 // Short replies below minOutput are delivered so "ok"/"yes" is not retried.
 // A hold timeout with no visible output is not fail-open: keep waiting for
 // more bytes or a stream abort so an empty hang is not flushed as HTTP 200.
+//
+// An empty reasoning stub is not thinking. Wait for usage/terminal so
+// encrypted thinking (tokens arrive at the end) is not withheld, and so
+// 200 + 推理·高 + reasoning=0 is not delivered the moment the stub appears.
 func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdict {
 	if minOutput <= 0 {
 		minOutput = defaultQualityMinOutput
 	}
-	if sig.HasThinking || sig.ReasoningTokens > 0 {
+	if sig.HasThinking {
 		return QualityDeliver
 	}
-	output := sig.OutputTokens
-	if output < sig.VisibleTokens {
-		output = sig.VisibleTokens
+	// Prefer observed/derived visible output. Total output includes reasoning
+	// tokens, which are deliberately not trusted as quality evidence above. If
+	// the stream exposed no visible count at all, retain OutputTokens as a
+	// compatibility fallback for terminal usage-only responses.
+	output := sig.VisibleTokens
+	if output <= 0 {
+		output = sig.OutputTokens
 	}
 	enough := output >= minOutput
+	if sig.ReasoningStarted && !sig.Terminal && !sig.HoldExpired {
+		return QualityWait
+	}
 	if sig.Terminal {
 		if output <= 0 {
 			return QualityWait
@@ -142,6 +160,9 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 	if sig.HoldExpired {
 		if output <= 0 {
 			return QualityWait
+		}
+		if enough {
+			return QualityWithhold
 		}
 		return QualityDeliver
 	}
