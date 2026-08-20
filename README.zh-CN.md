@@ -359,17 +359,21 @@ Hysteria 与 TUIC 暂未支持。FlareSolverr 仅接受 HTTP/SOCKS 代理地址�
 ```yaml
 qualityGuard:
   enabled: true
-  model: "grok-4.5"
-  # 可选：思考模型缺 reasoning 时先扣住响应，换号再打，不把降智正文发给用户。
+  model: "grok-4.6"
+  # 思考模型缺流式 reasoning 时先扣住响应，换号再打，不把降智正文发给用户。
+  # 最多观察 30 秒；已有 reasoning 起始信号和可见输出的进行中流会在超时后放行，
+  # 空流和终态仍无 thinking 的响应继续换号。
   requestRetry:
-    enabled: false
+    enabled: true
     maxAttempts: 6
-    holdTimeout: 3s
-    minOutputTokens: 32
+    holdTimeout: 30s
+    minOutputTokens: 8
     onExhausted: fail_closed # fail_open | fail_closed
+    accountCooldown: 12h
+    idleAccountCooldown: 15m
 ```
 
-`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。默认关闭。开启后，可见输出达到 `minOutputTokens` 且全程无 reasoning 时**不发给用户**，排除该账号再试；全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。不处理图/视频/工具、stored response 钉账号和 ForcedEgress 探针。
+`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。示例配置默认开启。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**，排除该账号再试；全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。不处理图/视频、stored response 钉账号和 ForcedEgress 探针。Grok TUI 带 tools 的回合仍会 hold，避免 0-thinking 降智流跳过闸门。
 
 ```bash
 docker compose --profile quality-guard up -d --build

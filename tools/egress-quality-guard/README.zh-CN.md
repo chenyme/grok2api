@@ -94,7 +94,7 @@ Webhook，确认出口发生变化，再执行一次真实模型质量检测；�
 ```yaml
 qualityGuard:
   enabled: true
-  model: "grok-4.5"
+  model: "grok-4.6"
   mode: hybrid
   activeInterval: 30m
   passivePollInterval: 5s

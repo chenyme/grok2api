@@ -14,7 +14,7 @@ your own traffic before allowing automatic quarantine.
 
 - Supports Grok Build streaming requests after egress nodes and request audits are configured in grok2api.
 - At least one schedulable Grok Build account must be able to serve the probe model. The account does not have to be bound to every managed node.
-- The built-in thinking guard is enforced only when the backend recognizes the configured Build model as reasoning-capable. Keep the default `grok-4.5` or another verified reasoning model when missing-thinking detection is required; unknown and non-reasoning models retain marker/TPS checks without this signal.
+- The built-in thinking guard is enforced only when the backend recognizes the configured Build model as reasoning-capable. Keep the default `grok-4.6` or another verified reasoning model when missing-thinking detection is required; unknown and non-reasoning models retain marker/TPS checks without this signal.
 - The main service automatically provisions a non-exportable system probe identity. The sidecar reaches only a scoped internal API over the Compose network.
 - Classification is heuristic evidence. It cannot prove that upstream model capability changed and does not replace application-level regression tests.
 
@@ -147,7 +147,7 @@ copy, select, or configure a Client Key for the guard:
 ```yaml
 qualityGuard:
   enabled: true
-  model: "grok-4.5"
+  model: "grok-4.6"
   mode: hybrid
   activeInterval: 30m
   passivePollInterval: 5s
