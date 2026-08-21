@@ -13,6 +13,17 @@ import (
 const (
 	maxDeferredSearchTextBytes       = 8 << 20
 	maxDeferredReasoningSummaryBytes = 8 << 20
+
+	// contentDoomLoopThreshold 连续重复同一可见内容增量时终止流。真正的
+	// 内容循环会消耗配额和客户端上下文，因此远低于推理上限；但仍需容纳
+	// 合法重复：markdown 分隔线与表格边框会以相同单字符增量（"-"、"="、
+	// "|"）连续输出。
+	contentDoomLoopThreshold = 128
+
+	// reasoningDoomLoopThreshold 高于内容阈值：high/xhigh 推理会大量重复
+	// 同一短标记（"so"、"hmm"、"wait"、列表符号）。共用低阈值会过早终止
+	// 有效的深度推理响应。
+	reasoningDoomLoopThreshold = 256
 )
 
 // ConvertResponseStream 将 Responses SSE 转换为 Chat Completions 或 Anthropic Messages SSE。
@@ -68,6 +79,12 @@ type streamConverter struct {
 	stopFilter        *anthropicStreamStopFilter
 	stopSequence      string
 	refused           bool
+	// 循环检测：可见内容与推理各自计数。推理合法地远比可见输出更常重复
+	// 同一短标记，共用一个计数器会过早终止有效的 high/xhigh 响应。
+	lastContentDelta   string
+	contentRepeatCount int
+	lastReasonDelta    string
+	reasonRepeatCount  int
 }
 
 type streamTool struct {
@@ -426,6 +443,9 @@ func (c *streamConverter) reasoningSummaryDelta(itemID, delta string) error {
 	if delta == "" || !c.reasoningOutputEnabled() {
 		return nil
 	}
+	if err := c.trackReasoningRepeat(delta, "model reasoning summary loop detected"); err != nil {
+		return err
+	}
 	_, state := c.ensureReasoningState(itemID)
 	if state.done || state.rawSeen {
 		return nil
@@ -456,7 +476,27 @@ func (c *streamConverter) reasoningTextDelta(itemID, delta string) error {
 	return c.emitReasoningDelta(delta)
 }
 
+// trackReasoningRepeat 统计连续相同的推理增量，超过推理阈值则终止流。
+func (c *streamConverter) trackReasoningRepeat(delta, message string) error {
+	if delta == "" {
+		return nil
+	}
+	if delta != c.lastReasonDelta {
+		c.lastReasonDelta = delta
+		c.reasonRepeatCount = 0
+		return nil
+	}
+	c.reasonRepeatCount++
+	if c.reasonRepeatCount >= reasoningDoomLoopThreshold {
+		return fmt.Errorf("%s (repeated delta %d times)", message, c.reasonRepeatCount)
+	}
+	return nil
+}
+
 func (c *streamConverter) emitReasoningDelta(delta string) error {
+	if err := c.trackReasoningRepeat(delta, "model reasoning loop detected"); err != nil {
+		return err
+	}
 	if c.operation == OperationChat {
 		return c.chatDelta(map[string]any{"reasoning_content": delta})
 	}
@@ -576,6 +616,19 @@ func (c *streamConverter) start() error {
 }
 
 func (c *streamConverter) textDelta(delta string) error {
+	// 循环检测：可见内容重复超过阈值时以错误终止流，避免循环耗尽账号配额
+	// 与客户端上下文窗口。推理增量使用独立且更高的计数器。
+	if delta != "" {
+		if delta == c.lastContentDelta {
+			c.contentRepeatCount++
+			if c.contentRepeatCount >= contentDoomLoopThreshold {
+				return fmt.Errorf("model output loop detected (repeated content delta %d times)", c.contentRepeatCount)
+			}
+		} else {
+			c.lastContentDelta = delta
+			c.contentRepeatCount = 0
+		}
+	}
 	if c.operation == OperationChat {
 		return c.textDeltaChat(delta)
 	}
