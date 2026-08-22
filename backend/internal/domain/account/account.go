@@ -558,12 +558,15 @@ func normalizeBillingPlan(value string) string {
 }
 
 func isPaidBillingPlan(value string) bool {
-	switch normalizeBillingPlan(value) {
-	case "super", "supergrok", "supergrokpro", "supergrokheavy", "supergroklite",
+	normalized := normalizeBillingPlan(value)
+	switch normalized {
+	case "super", "supergrok", "supergrokpro", "supergrokheavy", "supergroklite", "supergrokplus",
 		"grokpro", "xpremium", "xpremiumplus", "apikey":
 		return true
 	default:
-		return false
+		// SuperGrok Plus and later SuperGrok* tiers should stay paid even when
+		// weekly numeric limits are zero and the exact plan name is new.
+		return strings.HasPrefix(normalized, "supergrok")
 	}
 }
 

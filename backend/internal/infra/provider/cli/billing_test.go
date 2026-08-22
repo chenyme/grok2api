@@ -53,6 +53,14 @@ func TestParseBillingMatchesObservedBuildPayloads(t *testing.T) {
 	if !credits.IsPaid() {
 		t.Fatal("explicit SuperGrok tier must remain paid even when numeric limits are zero")
 	}
+
+	plus, err := parseBilling([]byte(`{"onDemandEnabled":false,"subscriptionTier":"SuperGrokPlus","config":{"creditUsagePercent":0,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-08-22T10:54:49.503515+00:00","end":"2026-08-29T10:54:49.503515+00:00"},"onDemandCap":{"val":0},"onDemandUsed":{"val":0},"isUnifiedBillingUser":true,"prepaidBalance":{"val":0},"topUpMethod":"TOP_UP_METHOD_SAVED_PAYMENT_METHOD"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plus.PlanName != "SuperGrokPlus" || !plus.IsPaid() {
+		t.Fatalf("SuperGrokPlus must be paid: %#v", plus)
+	}
 }
 
 func TestParseSubscriptionTierAndJWTFallback(t *testing.T) {
