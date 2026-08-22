@@ -16,6 +16,8 @@ func TestBillingIsPaidMatchesSQLSignals(t *testing.T) {
 		{PrepaidBalance: 5},
 		{PlanName: "SuperGrok"},
 		{PlanName: "SuperGrok Heavy"},
+		{PlanName: "SuperGrokPlus"},
+		{PlanName: "SuperGrok Plus"},
 		{PlanCode: "supergrok_lite"},
 		{PlanName: "X Premium+"},
 	} {
