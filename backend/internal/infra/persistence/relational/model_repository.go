@@ -573,37 +573,58 @@ func (r *ModelRepository) GetByPublicIDIncludingDisabled(ctx context.Context, pu
 }
 
 func findModelRoutesByPublicID(db *gorm.DB, publicID string) ([]modelRouteModel, error) {
-	candidates := model.PublicIDCandidates(publicID)
+	groups := model.PublicIDCandidateGroups(publicID)
 	requested := strings.TrimSpace(publicID)
-	query := db.Session(&gorm.Session{})
-	if len(candidates) > 0 {
-		aliasCandidates := append([]string(nil), candidates...)
-		if requested != "" && !slices.Contains(aliasCandidates, requested) {
-			aliasCandidates = append(aliasCandidates, requested)
+	for index, candidates := range groups {
+		aliasRequested := ""
+		if len(groups) == 1 || index == len(groups)-1 {
+			aliasRequested = requested
 		}
-		query = query.Where(`
-			(model_routes.public_id IN ? OR EXISTS (
-				SELECT 1 FROM model_route_aliases alias
-				WHERE alias.model_route_id = model_routes.id AND alias.alias IN ?
-			))
-		`, candidates, aliasCandidates).Clauses(clause.OrderBy{Expression: clause.Expr{
-			SQL:  "CASE WHEN model_routes.public_id IN ? THEN 0 ELSE 1 END, " + modelProviderPriorityExpression + ", model_routes.id ASC",
-			Vars: []any{candidates},
-		}})
-	} else {
-		query = query.Where(`
-			EXISTS (
-				SELECT 1 FROM model_route_aliases alias
-				WHERE alias.model_route_id = model_routes.id AND alias.alias = ?
-			)
-		`, requested).Order(modelProviderPriorityExpression + ", model_routes.id ASC")
+		rows, err := findModelRoutesByPublicIDGroup(db, candidates, aliasRequested)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) > 0 {
+			return rows, nil
+		}
 	}
+	if len(groups) > 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	query := db.Session(&gorm.Session{})
+	query = query.Where(`
+		EXISTS (
+			SELECT 1 FROM model_route_aliases alias
+			WHERE alias.model_route_id = model_routes.id AND alias.alias = ?
+		)
+	`, requested).Order(modelProviderPriorityExpression + ", model_routes.id ASC")
 	var rows []modelRouteModel
 	if err := query.Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
 		return nil, gorm.ErrRecordNotFound
+	}
+	return rows, nil
+}
+
+func findModelRoutesByPublicIDGroup(db *gorm.DB, candidates []string, requested string) ([]modelRouteModel, error) {
+	aliasCandidates := append([]string(nil), candidates...)
+	if requested != "" && !slices.Contains(aliasCandidates, requested) {
+		aliasCandidates = append(aliasCandidates, requested)
+	}
+	query := db.Session(&gorm.Session{}).Where(`
+		(model_routes.public_id IN ? OR EXISTS (
+			SELECT 1 FROM model_route_aliases alias
+			WHERE alias.model_route_id = model_routes.id AND alias.alias IN ?
+		))
+	`, candidates, aliasCandidates).Clauses(clause.OrderBy{Expression: clause.Expr{
+		SQL:  "CASE WHEN model_routes.public_id IN ? THEN 0 ELSE 1 END, " + modelProviderPriorityExpression + ", model_routes.id ASC",
+		Vars: []any{candidates},
+	}})
+	var rows []modelRouteModel
+	if err := query.Find(&rows).Error; err != nil {
+		return nil, err
 	}
 	return rows, nil
 }

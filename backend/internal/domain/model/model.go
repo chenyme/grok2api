@@ -105,6 +105,34 @@ func NormalizePublicID(provider account.Provider, value string) (string, bool) {
 	return publicID, true
 }
 
+// NormalizeExternalPublicID 将客户端可见名称放入 Provider 的内部命名空间。
+// 与 NormalizePublicID 不同，同来源前缀属于客户端名称本身：例如 Build/grok
+// 会保存为 Build/Build/grok，并由 ExternalPublicID 还原为 Build/grok。
+func NormalizeExternalPublicID(provider account.Provider, value string) (string, bool) {
+	if !provider.IsValid() {
+		return "", false
+	}
+	publicName := strings.TrimSpace(value)
+	if publicName == "" {
+		return "", false
+	}
+	for _, candidate := range account.Providers() {
+		prefix := candidate.ModelNamespace() + "/"
+		if len(publicName) < len(prefix) || !strings.EqualFold(publicName[:len(prefix)], prefix) {
+			continue
+		}
+		if candidate != provider {
+			return "", false
+		}
+		break
+	}
+	publicID := provider.ModelNamespace() + "/" + publicName
+	if len([]rune(publicID)) > MaxPublicIDLength {
+		return "", false
+	}
+	return publicID, true
+}
+
 // IsCanonicalPublicID 判断内部路由 ID 是否已经采用精确的稳定命名空间。
 func IsCanonicalPublicID(provider account.Provider, value string) bool {
 	normalized, ok := NormalizePublicID(provider, value)
@@ -121,9 +149,10 @@ func ExternalPublicID(provider account.Provider, value string) string {
 	return value
 }
 
-// PublicIDCandidates 将下游模型名称展开为按 Provider 优先级排列的内部路由 ID。
-// 已显式携带 Provider 前缀的名称只会匹配指定来源。
-func PublicIDCandidates(value string) []string {
+// PublicIDCandidateGroups 将下游模型名称展开为按匹配优先级排列的内部路由 ID 组。
+// 无前缀名称同时匹配所有 Provider。带前缀名称先按字面对外名称匹配，若不存在，
+// 再回退为历史上的显式 Provider 路由语法。
+func PublicIDCandidateGroups(value string) [][]string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
@@ -131,18 +160,35 @@ func PublicIDCandidates(value string) []string {
 	for _, providerValue := range account.Providers() {
 		prefix := providerValue.ModelNamespace() + "/"
 		if len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix) {
-			normalized, ok := NormalizePublicID(providerValue, value)
-			if !ok {
+			literal, literalOK := NormalizeExternalPublicID(providerValue, value)
+			qualified, qualifiedOK := NormalizePublicID(providerValue, value)
+			if !literalOK || !qualifiedOK {
 				return nil
 			}
-			return []string{normalized}
+			if literal == qualified {
+				return [][]string{{literal}}
+			}
+			return [][]string{{literal}, {qualified}}
 		}
 	}
-	result := make([]string, 0, len(account.Providers()))
+	group := make([]string, 0, len(account.Providers()))
 	for _, providerValue := range account.Providers() {
 		if normalized, ok := NormalizePublicID(providerValue, value); ok {
-			result = append(result, normalized)
+			group = append(group, normalized)
 		}
+	}
+	if len(group) == 0 {
+		return nil
+	}
+	return [][]string{group}
+}
+
+// PublicIDCandidates 返回扁平化的内部路由候选，供无状态解析器按顺序尝试。
+func PublicIDCandidates(value string) []string {
+	groups := PublicIDCandidateGroups(value)
+	result := make([]string, 0, len(account.Providers())+1)
+	for _, group := range groups {
+		result = append(result, group...)
 	}
 	return result
 }
