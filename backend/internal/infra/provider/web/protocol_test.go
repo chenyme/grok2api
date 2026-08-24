@@ -1590,6 +1590,99 @@ func TestTextToVideoPayloadMatchesCapturedMediaGenInputShape(t *testing.T) {
 	}
 }
 
+func TestGenerateVideoRefreshesOnlyReloadStatsigForbidden(t *testing.T) {
+	tests := []struct {
+		name             string
+		forbiddenBody    string
+		wantRequestCalls int
+		wantSuccess      bool
+	}{
+		{
+			name:             "page out of date",
+			forbiddenBody:    `{"code":7,"message":"This page is out of date. Reload to continue.","details":[]}`,
+			wantRequestCalls: 2,
+			wantSuccess:      true,
+		},
+		{
+			name:             "content moderation",
+			forbiddenBody:    `{"error":{"code":"content-moderated","message":"rejected"}}`,
+			wantRequestCalls: 1,
+		},
+		{
+			name:             "definitive account block",
+			forbiddenBody:    `{"code":7,"message":"User is blocked [WKE=unauthorized:blocked-user]","details":[]}`,
+			wantRequestCalls: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			requestCalls := 0
+			signerCalls := 0
+			signatures := make([]string, 0, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.URL.Path {
+				case "/sign":
+					signerCalls++
+					value := base64.RawStdEncoding.EncodeToString(bytes.Repeat([]byte{byte('a' + signerCalls)}, 70))
+					writer.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(writer).Encode(map[string]string{"x-statsig-id": value})
+				case "/rest/app-chat/conversations/new":
+					requestCalls++
+					signatures = append(signatures, request.Header.Get("x-statsig-id"))
+					if requestCalls == 1 {
+						writer.Header().Set("Content-Type", "application/json")
+						writer.WriteHeader(http.StatusForbidden)
+						_, _ = io.WriteString(writer, test.forbiddenBody)
+						return
+					}
+					writer.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(writer, `data: {"result":{"response":{"streamingVideoGenerationResponse":{"progress":100,"videoPostId":"post_1","videoUrl":"/videos/final.mp4"}}}}`+"\n\n")
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			encryptedToken, err := cipher.Encrypt("test-sso")
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter := NewAdapter(Config{
+				BaseURL: server.URL, StatsigMode: "url", StatsigSignerURL: server.URL + "/sign", VideoTimeoutSeconds: 5,
+			}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+			adapter.statsig.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+				return "current-page-meta", nil
+			}
+			adapter.statsig.validateEndpoint = func(context.Context, string) error { return nil }
+
+			result, err := adapter.GenerateVideo(context.Background(), provider.VideoRequest{
+				Credential: account.Credential{ID: 1, Provider: account.ProviderWeb, EncryptedAccessToken: encryptedToken},
+				Prompt:     "test", Duration: 5,
+			})
+			if test.wantSuccess {
+				if err != nil || result.URL != "https://assets.grok.com/videos/final.mp4" {
+					t.Fatalf("result=%#v err=%v", result, err)
+				}
+			} else if err == nil {
+				t.Fatal("structured policy rejection unexpectedly succeeded")
+			}
+			if requestCalls != test.wantRequestCalls || signerCalls != test.wantRequestCalls {
+				t.Fatalf("request calls=%d signer calls=%d, want %d", requestCalls, signerCalls, test.wantRequestCalls)
+			}
+			if len(signatures) != test.wantRequestCalls || signatures[0] == "" {
+				t.Fatalf("signatures = %#v", signatures)
+			}
+			if test.wantRequestCalls == 2 && signatures[0] == signatures[1] {
+				t.Fatalf("rejected Statsig signature was reused: %#v", signatures)
+			}
+		})
+	}
+}
+
 func TestParseVideoStreamPreservesUpstreamStatus(t *testing.T) {
 	response := &http.Response{StatusCode: http.StatusTooManyRequests, Body: io.NopCloser(strings.NewReader("limited"))}
 	_, _, err := parseVideoStream(response, nil)
