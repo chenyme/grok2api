@@ -11,11 +11,10 @@ import (
 	adminapp "github.com/chenyme/grok2api/backend/internal/application/adminauth"
 	admindomain "github.com/chenyme/grok2api/backend/internal/domain/admin"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
+	"github.com/chenyme/grok2api/backend/internal/transport/http/adminsession"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
 )
-
-const refreshCookieName = "grok2api_admin_refresh"
 
 type Handler struct {
 	service       *adminapp.Service
@@ -81,7 +80,7 @@ func (h *Handler) login(c *gin.Context) {
 		response.Error(c, http.StatusUnauthorized, "invalidCredentials", "管理员账号或密码错误")
 		return
 	}
-	h.setRefreshCookie(c, tokens)
+	h.setSessionCookies(c, tokens)
 	response.Success(c, http.StatusOK, gin.H{"admin": newAdminResponse(adminValue), "tokens": newTokenResponse(tokens)})
 }
 
@@ -101,7 +100,7 @@ func (h *Handler) refresh(c *gin.Context) {
 		return
 	}
 	if request.RefreshToken == "" {
-		request.RefreshToken, _ = c.Cookie(refreshCookieName)
+		request.RefreshToken, _ = c.Cookie(adminsession.RefreshCookieName)
 	}
 	if request.RefreshToken == "" {
 		response.Error(c, http.StatusUnauthorized, "invalidRefreshToken", "刷新会话无效")
@@ -116,7 +115,7 @@ func (h *Handler) refresh(c *gin.Context) {
 		response.Error(c, http.StatusUnauthorized, "invalidRefreshToken", "刷新会话无效")
 		return
 	}
-	h.setRefreshCookie(c, tokens)
+	h.setSessionCookies(c, tokens)
 	response.Success(c, http.StatusOK, newTokenResponse(tokens))
 }
 
@@ -127,14 +126,13 @@ func (h *Handler) logout(c *gin.Context) {
 		return
 	}
 	if request.RefreshToken == "" {
-		request.RefreshToken, _ = c.Cookie(refreshCookieName)
+		request.RefreshToken, _ = c.Cookie(adminsession.RefreshCookieName)
 	}
 	if err := h.service.Logout(c.Request.Context(), request.RefreshToken); err != nil {
 		response.Error(c, http.StatusServiceUnavailable, "authRuntimeUnavailable", "管理员认证服务暂不可用")
 		return
 	}
-	c.SetSameSite(http.SameSiteStrictMode)
-	c.SetCookie(refreshCookieName, "", -1, "/api/admin/v1/auth", "", h.secureCookies || c.Request.TLS != nil, true)
+	h.clearSessionCookies(c)
 	response.Success(c, http.StatusOK, gin.H{"loggedOut": true})
 }
 
@@ -179,11 +177,24 @@ func newTokenResponse(value adminapp.Tokens) tokenResponse {
 	return tokenResponse{AccessToken: value.AccessToken, AccessTokenExpiresAt: value.AccessTokenExpiresAt.Format(time.RFC3339), RefreshTokenExpiresAt: value.RefreshTokenExpiresAt.Format(time.RFC3339)}
 }
 
-func (h *Handler) setRefreshCookie(c *gin.Context, value adminapp.Tokens) {
-	maxAge := int(time.Until(value.RefreshTokenExpiresAt).Seconds())
+func (h *Handler) setSessionCookies(c *gin.Context, value adminapp.Tokens) {
+	secure := h.secureCookies || c.Request.TLS != nil
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(adminsession.AccessCookieName, value.AccessToken, cookieMaxAge(value.AccessTokenExpiresAt), adminsession.AccessCookiePath, "", secure, true)
+	c.SetCookie(adminsession.RefreshCookieName, value.RefreshToken, cookieMaxAge(value.RefreshTokenExpiresAt), adminsession.RefreshCookiePath, "", secure, true)
+}
+
+func (h *Handler) clearSessionCookies(c *gin.Context) {
+	secure := h.secureCookies || c.Request.TLS != nil
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(adminsession.AccessCookieName, "", -1, adminsession.AccessCookiePath, "", secure, true)
+	c.SetCookie(adminsession.RefreshCookieName, "", -1, adminsession.RefreshCookiePath, "", secure, true)
+}
+
+func cookieMaxAge(expiresAt time.Time) int {
+	maxAge := int(time.Until(expiresAt).Seconds())
 	if maxAge < 0 {
 		maxAge = 0
 	}
-	c.SetSameSite(http.SameSiteStrictMode)
-	c.SetCookie(refreshCookieName, value.RefreshToken, maxAge, "/api/admin/v1/auth", "", h.secureCookies || c.Request.TLS != nil, true)
+	return maxAge
 }

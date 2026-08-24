@@ -4,11 +4,13 @@ import (
 	"crypto/subtle"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/chenyme/grok2api/backend/internal/application/adminauth"
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/shared/response"
+	"github.com/chenyme/grok2api/backend/internal/transport/http/adminsession"
 	"github.com/gin-gonic/gin"
 )
 
@@ -17,10 +19,10 @@ const (
 	ClientKey = "clientKey"
 )
 
-// AdminAuth 校验管理员 Bearer JWT。
+// AdminAuth 校验管理员 access JWT。
 func AdminAuth(service *adminauth.Service) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		raw, ok := bearerToken(c.GetHeader("Authorization"))
+		raw, ok := adminAccessToken(c.Request)
 		if !ok {
 			response.Error(c, http.StatusUnauthorized, "adminUnauthorized", "管理员登录已失效")
 			return
@@ -37,6 +39,40 @@ func AdminAuth(service *adminauth.Service) gin.HandlerFunc {
 		c.Set(AdminKey, value)
 		c.Next()
 	}
+}
+
+// adminAccessToken prefers the explicit Bearer credential used by the SPA and
+// API clients. The scoped HttpOnly cookie is a browser fallback for deployments
+// whose reverse proxy drops Authorization; unsafe cookie-authenticated requests
+// must still originate from the same host.
+func adminAccessToken(request *http.Request) (string, bool) {
+	header := strings.TrimSpace(request.Header.Get("Authorization"))
+	if header != "" {
+		return bearerToken(header)
+	}
+	cookie, err := request.Cookie(adminsession.AccessCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" || !adminCookieRequestAllowed(request) {
+		return "", false
+	}
+	return strings.TrimSpace(cookie.Value), true
+}
+
+func adminCookieRequestAllowed(request *http.Request) bool {
+	if fetchSite := strings.ToLower(strings.TrimSpace(request.Header.Get("Sec-Fetch-Site"))); fetchSite != "" {
+		return fetchSite == "same-origin"
+	}
+	switch request.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		// Older browsers may omit Fetch Metadata on same-origin reads. SameSite=Strict,
+		// host-only cookies and the browser same-origin policy remain the fallback.
+		return true
+	}
+	origin := strings.TrimSpace(request.Header.Get("Origin"))
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, request.Host)
 }
 
 // QualityGuardAuth accepts only the process-scoped token shared with the
