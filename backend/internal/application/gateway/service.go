@@ -1546,8 +1546,13 @@ attemptLoop:
 			if lastFailure.AccountScoped && !failureHandled {
 				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
 			} else if !lastFailure.AccountScoped && response.StatusCode >= http.StatusInternalServerError {
-				// 5xx 短冷却：本请求已 excluded，跨请求避免立刻再打同一坏号。
-				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
+				// Provider-wide 5xx responses should rotate this request and briefly
+				// isolate the account across requests, but must not grow the durable
+				// account failure count exponentially. Preserve the real status in
+				// health diagnostics while applying the explicit soft policy.
+				if markErr := s.selector.markSoftFailure(ctx, credential, response.StatusCode, retryAfter); markErr != nil {
+					s.logger.Warn("upstream_soft_cooldown_failed", "request_id", input.RequestID, "account_id", credential.ID, "provider", credential.Provider, "status", response.StatusCode, "error", markErr)
+				}
 			}
 			lease.Release()
 			lastErr = fmt.Errorf("上游返回 %d", response.StatusCode)

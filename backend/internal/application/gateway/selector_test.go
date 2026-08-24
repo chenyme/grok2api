@@ -1631,7 +1631,48 @@ func TestMarkFailureSoftNetworkCooldown(t *testing.T) {
 	}
 
 	before = time.Now().UTC()
-	selector.MarkFailure(ctx, hard, 0, 0)
+	if err := selector.markSoftFailure(ctx, hard, http.StatusGatewayTimeout, 0); err != nil {
+		t.Fatal(err)
+	}
+	soft5xx, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if soft5xx.FailureCount != hard.FailureCount {
+		t.Fatalf("soft 5xx failure count = %d, want preserved %d", soft5xx.FailureCount, hard.FailureCount)
+	}
+	if soft5xx.LastError != "upstream status 504" {
+		t.Fatalf("soft 5xx diagnostic = %q", soft5xx.LastError)
+	}
+	if soft5xx.CooldownUntil == nil {
+		t.Fatal("soft 5xx did not set cooldown")
+	}
+	cooldown = soft5xx.CooldownUntil.Sub(before)
+	if cooldown < 4*time.Second || cooldown > 6*time.Second {
+		t.Fatalf("soft 5xx cooldown = %s, want ~5s", cooldown)
+	}
+
+	before = time.Now().UTC()
+	if err := selector.markSoftFailure(ctx, soft5xx, http.StatusServiceUnavailable, 12*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	softRetryAfter, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if softRetryAfter.FailureCount != hard.FailureCount {
+		t.Fatalf("Retry-After soft failure count = %d, want preserved %d", softRetryAfter.FailureCount, hard.FailureCount)
+	}
+	if softRetryAfter.CooldownUntil == nil {
+		t.Fatal("Retry-After soft failure did not set cooldown")
+	}
+	cooldown = softRetryAfter.CooldownUntil.Sub(before)
+	if cooldown < 11*time.Second || cooldown > 13*time.Second {
+		t.Fatalf("Retry-After soft cooldown = %s, want ~12s", cooldown)
+	}
+
+	before = time.Now().UTC()
+	selector.MarkFailure(ctx, softRetryAfter, 0, 0)
 	preserved, err := accounts.Get(ctx, credential.ID)
 	if err != nil {
 		t.Fatal(err)
