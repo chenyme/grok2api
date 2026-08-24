@@ -10,6 +10,7 @@ import (
 	"time"
 
 	_ "github.com/bdandy/go-socks4"
+	"github.com/chenyme/grok2api/backend/internal/infra/buildtransport"
 	"github.com/chenyme/grok2api/backend/internal/pkg/tunnelproxy"
 	xproxy "golang.org/x/net/proxy"
 )
@@ -37,7 +38,7 @@ func newBuildClientWithOptions(proxyURL string, responseHeaderTimeout time.Durat
 		MaxIdleConns:          256,
 		MaxIdleConnsPerHost:   128,
 		MaxConnsPerHost:       256,
-		IdleConnTimeout:       90 * time.Second,
+		IdleConnTimeout:       buildtransport.IdleConnTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: responseHeaderTimeout,
 		ExpectContinueTimeout: time.Second,
@@ -68,6 +69,9 @@ func newBuildClientWithOptions(proxyURL string, responseHeaderTimeout time.Durat
 		default:
 			return nil, fmt.Errorf("Grok Build 不支持代理协议 %q", parsed.Scheme)
 		}
+	}
+	if _, err := buildtransport.ConfigureHTTP2Health(transport); err != nil {
+		return nil, fmt.Errorf("配置 Grok Build HTTP/2 健康探测: %w", err)
 	}
 	return &http.Client{
 		Transport: transport,

@@ -19,6 +19,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
+	"github.com/chenyme/grok2api/backend/internal/infra/buildtransport"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
@@ -31,6 +32,16 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return fn(request)
+}
+
+func TestBuildDirectTransportEnablesHTTP2Health(t *testing.T) {
+	transport := newBuildHTTPTransport(5 * time.Minute)
+	if transport.IdleConnTimeout != buildtransport.IdleConnTimeout {
+		t.Fatalf("idle connection timeout = %s", transport.IdleConnTimeout)
+	}
+	if transport.TLSNextProto["h2"] == nil {
+		t.Fatal("Build direct transport did not install HTTP/2 health checks")
+	}
 }
 
 func TestResponseRequestForcedEgressOverridesCredentialBinding(t *testing.T) {

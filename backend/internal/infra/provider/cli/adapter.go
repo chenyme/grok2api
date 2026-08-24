@@ -24,6 +24,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
+	"github.com/chenyme/grok2api/backend/internal/infra/buildtransport"
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
@@ -191,13 +192,17 @@ func (t *buildDirectTransport) UpdateResponseHeaderTimeout(responseHeaderTimeout
 }
 
 func newBuildHTTPTransport(responseHeaderTimeout time.Duration) *http.Transport {
-	return &http.Transport{
+	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true,
 		MaxIdleConns: 256, MaxIdleConnsPerHost: 128, MaxConnsPerHost: 256,
-		IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 10 * time.Second,
+		IdleConnTimeout: buildtransport.IdleConnTimeout, TLSHandshakeTimeout: 10 * time.Second,
 		ResponseHeaderTimeout: normalizeBuildResponseHeaderTimeout(responseHeaderTimeout),
 		ExpectContinueTimeout: time.Second,
 	}
+	if _, err := buildtransport.ConfigureHTTP2Health(transport); err != nil {
+		slog.Warn("build_http2_health_config_failed", "error", err)
+	}
+	return transport
 }
 
 func normalizeBuildResponseHeaderTimeout(value time.Duration) time.Duration {
