@@ -1498,9 +1498,9 @@ attemptLoop:
 			}
 			failureHandled := false
 			if lease.QuotaMode != "" && response.StatusCode == http.StatusTooManyRequests {
-				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
-				s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
-				failureHandled = reconcileErr == nil && exhausted
+				state, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
+				s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, state, reconcileErr)
+				failureHandled = true
 			} else if used, limit, exhausted := parseFreeQuotaExhaustion(body); exhausted {
 				// The Free subscription signal is account-scoped, but its billing
 				// period is not a reliable reset promise. Probe again after 24 hours.
@@ -2083,6 +2083,23 @@ func isTerminalRequestForbidden(upstreamProvider accountdomain.Provider, failure
 func forcesAccountFailover(status int, upstreamProvider accountdomain.Provider) bool {
 	return upstreamProvider == accountdomain.ProviderBuild &&
 		(status == http.StatusPaymentRequired || status == http.StatusForbidden || status == http.StatusTooManyRequests)
+}
+
+func (s *Service) applyRateLimitReconciliation(ctx context.Context, credential accountdomain.Credential, status int, retryAfter time.Duration, state accountapp.RateLimitReconcileState, reconcileErr error) {
+	s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
+	if reconcileErr == nil && state == accountapp.RateLimitReconcileExhausted {
+		return
+	}
+	if credential.Provider == accountdomain.ProviderConsole && status == http.StatusTooManyRequests {
+		// A Console 429 with available quota, an in-progress cross-instance probe,
+		// or an inconclusive /usage request is transient. Isolate the account for
+		// this Retry-After window without growing its durable failure count.
+		if err := s.selector.markSoftFailure(ctx, credential, status, retryAfter); err != nil {
+			s.logger.Warn("console_rate_limit_soft_cooldown_failed", "account_id", credential.ID, "state", state, "error", err)
+		}
+		return
+	}
+	s.selector.MarkFailure(ctx, credential, status, retryAfter)
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {

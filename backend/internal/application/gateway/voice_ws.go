@@ -179,11 +179,8 @@ func (s *Service) OpenVoiceWebSocket(ctx context.Context, input VoiceWebSocketIn
 					continue
 				case status == http.StatusPaymentRequired || status == http.StatusTooManyRequests:
 					if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
-						exhausted, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, failure.RetryAfter)
-						s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
-						if reconcileErr != nil || !exhausted {
-							s.selector.MarkFailure(ctx, credential, status, failure.RetryAfter)
-						}
+						state, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, failure.RetryAfter)
+						s.applyRateLimitReconciliation(ctx, credential, status, failure.RetryAfter, state, reconcileErr)
 					} else {
 						s.selector.MarkFailure(ctx, credential, status, failure.RetryAfter)
 					}

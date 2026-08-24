@@ -631,6 +631,10 @@ func (a *Application) Run(ctx context.Context) error {
 		a.runConsoleUsageMigration(taskCtx)
 		return nil
 	})
+	startBackground("console_quota_stale_catchup", func(taskCtx context.Context) error {
+		a.runConsoleQuotaCatchup(taskCtx)
+		return nil
+	})
 	startBackground("model_catalog_startup_catchup", func(taskCtx context.Context) error {
 		a.runModelCatalogCatchup(taskCtx)
 		return nil
