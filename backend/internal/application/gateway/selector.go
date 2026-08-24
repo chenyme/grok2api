@@ -1183,24 +1183,31 @@ func (s *Selector) markMissingThinking(ctx context.Context, credential account.C
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {
-	_ = s.markFailure(ctx, credential, credential.FailureCount, credential.FailureCount+1, status, retryAfter)
+	_ = s.markFailure(ctx, credential, credential.FailureCount, credential.FailureCount+1, status, retryAfter, status == 0)
 }
 
 // MarkFailureAfterSuccess records a stream failure from a fresh health baseline.
 // The upstream already returned a successful response header, so failures that
 // preceded this request must not be carried into the new cooldown calculation.
 func (s *Selector) MarkFailureAfterSuccess(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) error {
-	return s.markFailure(ctx, credential, 0, 1, status, retryAfter)
+	return s.markFailure(ctx, credential, 0, 1, status, retryAfter, status == 0)
 }
 
-func (s *Selector) markFailure(ctx context.Context, credential account.Credential, baselineFailureCount, nextFailureCount, status int, retryAfter time.Duration) error {
+// markSoftFailure preserves the real upstream status for diagnostics while
+// applying the bounded, non-accumulating health penalty used for transient
+// network and provider-wide failures.
+func (s *Selector) markSoftFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) error {
+	return s.markFailure(ctx, credential, credential.FailureCount, credential.FailureCount+1, status, retryAfter, true)
+}
+
+func (s *Selector) markFailure(ctx context.Context, credential account.Credential, baselineFailureCount, nextFailureCount, status int, retryAfter time.Duration, soft bool) error {
 	_, cooldownBase, cooldownMax, _ := s.routingConfig()
-	// 网络/超时（status 0）只短隔离本号，不累加失败次数，避免瞬时抖动把号池指数冻空。
-	// 上游返回的 4xx/5xx 仍按原指数冷却：那是上游明确给出的状态，不是本地网络抖动。
-	softNetwork := status == 0
+	// Soft failures only isolate this account briefly and never accumulate the
+	// durable failure count. Hard account-scoped 4xx responses retain the
+	// exponential policy below.
 	effectiveFailureCount := nextFailureCount
 	cooldown := cooldownBase
-	if softNetwork {
+	if soft {
 		effectiveFailureCount = baselineFailureCount
 		cooldown = softNetworkCooldown
 		if retryAfter > cooldown {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	application "github.com/chenyme/grok2api/backend/internal/application/egress"
+	"github.com/chenyme/grok2api/backend/internal/infra/buildtransport"
 	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
@@ -24,6 +25,9 @@ func TestBuildClientUsesConfiguredResponseHeaderTimeout(t *testing.T) {
 	transport := client.Transport.(*http.Transport)
 	if transport.ResponseHeaderTimeout != 7*time.Minute {
 		t.Fatalf("response header timeout = %s", transport.ResponseHeaderTimeout)
+	}
+	if transport.IdleConnTimeout != buildtransport.IdleConnTimeout || transport.TLSNextProto["h2"] == nil {
+		t.Fatalf("Build HTTP/2 health transport not configured: %#v", transport)
 	}
 }
 
@@ -109,7 +113,7 @@ func TestNewBuildClientUsesStandardTransportForEveryProxyFamily(t *testing.T) {
 			if !ok {
 				t.Fatalf("transport = %T, want *http.Transport", client.Transport)
 			}
-			if transport.ForceAttemptHTTP2 != true || transport.DialContext == nil {
+			if transport.ForceAttemptHTTP2 != true || transport.DialContext == nil || transport.TLSNextProto["h2"] == nil {
 				t.Fatalf("standard transport not fully configured: %#v", transport)
 			}
 			if (transport.Proxy != nil) != test.httpProxy {
