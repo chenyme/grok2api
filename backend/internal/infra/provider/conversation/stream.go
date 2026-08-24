@@ -7,12 +7,24 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
 	maxDeferredSearchTextBytes       = 8 << 20
 	maxDeferredReasoningSummaryBytes = 8 << 20
+
+	// contentDoomLoopThreshold 连续重复同一可见内容增量时终止流。真正的
+	// 内容循环会消耗配额和客户端上下文，因此远低于推理上限；但仍需容纳
+	// 合法重复：markdown 分隔线与表格边框会以相同单字符增量（"-"、"="、
+	// "|"）连续输出。
+	contentDoomLoopThreshold = 128
+
+	// reasoningDoomLoopThreshold 高于内容阈值：high/xhigh 推理会大量重复
+	// 同一短标记（"so"、"hmm"、"wait"、列表符号）。共用低阈值会过早终止
+	// 有效的深度推理响应。
+	reasoningDoomLoopThreshold = 256
 )
 
 // ConvertResponseStream 将 Responses SSE 转换为 Chat Completions 或 Anthropic Messages SSE。
@@ -23,11 +35,12 @@ func ConvertResponseStream(source io.ReadCloser, operation string) io.ReadCloser
 // ConvertResponseStreamWithOptions 按下游协议选项生成 Chat 或 Anthropic SSE。
 func ConvertResponseStreamWithOptions(source io.ReadCloser, operation string, options ResponseOptions) io.ReadCloser {
 	if operation == OperationResponses {
-		return source
+		return guardResponseStream(source)
 	}
 	reader, writer := io.Pipe()
+	stream := newStreamPipeReadCloser(reader, source)
 	go func() {
-		defer source.Close()
+		defer stream.closeSource()
 		converter := newStreamConverter(writer, operation, options)
 		err := consumeSSE(source, converter.handle)
 		if err == nil {
@@ -35,7 +48,7 @@ func ConvertResponseStreamWithOptions(source io.ReadCloser, operation string, op
 		}
 		_ = writer.CloseWithError(err)
 	}()
-	return reader
+	return stream
 }
 
 type streamConverter struct {
@@ -68,6 +81,45 @@ type streamConverter struct {
 	stopFilter        *anthropicStreamStopFilter
 	stopSequence      string
 	refused           bool
+	repeatTracker     streamRepeatTracker
+}
+
+// streamRepeatTracker 在协议转换、缓冲和 stop filter 之前跟踪上游增量，
+// 避免任一下游路径绕过循环保护。
+type streamRepeatTracker struct {
+	lastContentDelta   string
+	contentRepeatCount int
+	lastReasonDelta    string
+	reasonRepeatCount  int
+}
+
+// streamPipeReadCloser ensures a downstream cancellation immediately closes the
+// upstream body, including while the forwarding goroutine is blocked in Read.
+type streamPipeReadCloser struct {
+	*io.PipeReader
+	source    io.ReadCloser
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func newStreamPipeReadCloser(reader *io.PipeReader, source io.ReadCloser) *streamPipeReadCloser {
+	return &streamPipeReadCloser{PipeReader: reader, source: source}
+}
+
+func (r *streamPipeReadCloser) Close() error {
+	readerErr := r.PipeReader.Close()
+	sourceErr := r.closeSource()
+	if readerErr != nil {
+		return readerErr
+	}
+	return sourceErr
+}
+
+func (r *streamPipeReadCloser) closeSource() error {
+	r.closeOnce.Do(func() {
+		r.closeErr = r.source.Close()
+	})
+	return r.closeErr
 }
 
 type streamTool struct {
@@ -229,16 +281,12 @@ func (c *streamConverter) handle(event string, data []byte) error {
 	if c.finished {
 		return nil
 	}
-	if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+	typeName, root, ok := parseSSEEvent(event, data)
+	if !ok {
 		return nil
 	}
-	var root map[string]json.RawMessage
-	if json.Unmarshal(data, &root) != nil {
-		return nil
-	}
-	typeName := event
-	if raw := root["type"]; typeName == "" {
-		_ = json.Unmarshal(raw, &typeName)
+	if err := c.repeatTracker.trackEvent(typeName, root); err != nil {
+		return err
 	}
 	if c.stopSequence != "" && typeName != "response.completed" && typeName != "response.incomplete" && typeName != "response.failed" && typeName != "error" {
 		return nil
@@ -710,4 +758,88 @@ func consumeSSE(source io.Reader, handle func(string, []byte) error) error {
 			return err
 		}
 	}
+}
+
+func parseSSEEvent(event string, data []byte) (string, map[string]json.RawMessage, bool) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+		return "", nil, false
+	}
+	var root map[string]json.RawMessage
+	if json.Unmarshal(data, &root) != nil {
+		return "", nil, false
+	}
+	typeName := event
+	if typeName == "" {
+		_ = json.Unmarshal(root["type"], &typeName)
+	}
+	return typeName, root, true
+}
+
+func (t *streamRepeatTracker) trackEvent(typeName string, root map[string]json.RawMessage) error {
+	var delta string
+	switch typeName {
+	case "response.output_text.delta":
+		_ = json.Unmarshal(root["delta"], &delta)
+		return t.trackContent(delta)
+	case "response.reasoning_summary_text.delta":
+		_ = json.Unmarshal(root["delta"], &delta)
+		return t.trackReasoning(delta, "model reasoning summary loop detected")
+	case "response.reasoning_text.delta":
+		_ = json.Unmarshal(root["delta"], &delta)
+		return t.trackReasoning(delta, "model reasoning loop detected")
+	default:
+		return nil
+	}
+}
+
+func (t *streamRepeatTracker) trackContent(delta string) error {
+	if delta == "" {
+		return nil
+	}
+	if delta != t.lastContentDelta {
+		t.lastContentDelta = delta
+		t.contentRepeatCount = 1
+		return nil
+	}
+	t.contentRepeatCount++
+	if t.contentRepeatCount > contentDoomLoopThreshold {
+		return fmt.Errorf("model output loop detected (repeated content delta %d times)", t.contentRepeatCount)
+	}
+	return nil
+}
+
+func (t *streamRepeatTracker) trackReasoning(delta, message string) error {
+	if delta == "" {
+		return nil
+	}
+	if delta != t.lastReasonDelta {
+		t.lastReasonDelta = delta
+		t.reasonRepeatCount = 1
+		return nil
+	}
+	t.reasonRepeatCount++
+	if t.reasonRepeatCount > reasoningDoomLoopThreshold {
+		return fmt.Errorf("%s (repeated delta %d times)", message, t.reasonRepeatCount)
+	}
+	return nil
+}
+
+// guardResponseStream 保持 native Responses SSE 的原始字节不变，同时在读取时
+// 解析事件并在检测到循环时关闭上游。
+func guardResponseStream(source io.ReadCloser) io.ReadCloser {
+	reader, writer := io.Pipe()
+	stream := newStreamPipeReadCloser(reader, source)
+	go func() {
+		defer stream.closeSource()
+		tracker := streamRepeatTracker{}
+		err := consumeSSE(io.TeeReader(source, writer), func(event string, data []byte) error {
+			typeName, root, ok := parseSSEEvent(event, data)
+			if !ok {
+				return nil
+			}
+			return tracker.trackEvent(typeName, root)
+		})
+		_ = writer.CloseWithError(err)
+	}()
+	return stream
 }
