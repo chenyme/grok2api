@@ -80,6 +80,49 @@ func TestMultiplePublicIDsCanShareUpstream(t *testing.T) {
 	}
 }
 
+func TestProviderPrefixedPublicNameTakesPriorityAndKeepsQualifiedFallback(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+	accounts := NewAccountRepository(database)
+	buildAccount, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "provider-prefixed", SourceKey: "provider-prefixed",
+		EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.ReplaceAccountCapabilities(ctx, buildAccount.ID, []string{"grok-4.5"}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := repo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-4.5"}); err != nil {
+		t.Fatal(err)
+	}
+	literal, err := repo.Create(ctx, model.Route{
+		PublicID: "Build/Build/grok-4.5", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
+		Capability: model.CapabilityResponses, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := model.ExternalPublicID(literal.Provider, literal.PublicID); got != "Build/grok-4.5" {
+		t.Fatalf("literal external name = %q", got)
+	}
+
+	routes, err := repo.GetByPublicIDCandidates(ctx, "Build/grok-4.5")
+	if err != nil || len(routes) != 1 || routes[0].ID != literal.ID {
+		t.Fatalf("literal routes = %#v, err = %v", routes, err)
+	}
+	if err := repo.Delete(ctx, literal.ID); err != nil {
+		t.Fatal(err)
+	}
+	routes, err = repo.GetByPublicIDCandidates(ctx, "Build/grok-4.5")
+	if err != nil || len(routes) != 1 || routes[0].PublicID != "Build/grok-4.5" {
+		t.Fatalf("qualified fallback routes = %#v, err = %v", routes, err)
+	}
+}
+
 func TestSharedUpstreamRoutesKeepAccountBindingsIsolated(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

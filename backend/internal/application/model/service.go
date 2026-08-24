@@ -256,7 +256,7 @@ func (s *Service) GetByProviderUpstream(ctx context.Context, providerValue accou
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (modeldomain.Route, error) {
-	publicID, validPublicID := modeldomain.NormalizePublicID(input.Provider, input.PublicID)
+	publicID, validPublicID := modeldomain.NormalizeExternalPublicID(input.Provider, input.PublicID)
 	if !validPublicID {
 		return modeldomain.Route{}, invalidInput("publicId 不能为空、不能携带其他 Provider 前缀，且长度不能超过 255 个字符")
 	}
@@ -289,7 +289,7 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (mod
 		return modeldomain.Route{}, mapRepositoryError(err)
 	}
 	if input.PublicID != nil {
-		publicID, ok := modeldomain.NormalizePublicID(value.Provider, *input.PublicID)
+		publicID, ok := modeldomain.NormalizeExternalPublicID(value.Provider, *input.PublicID)
 		if !ok {
 			return modeldomain.Route{}, invalidInput("publicId 不能为空、不能携带其他 Provider 前缀，且长度不能超过 255 个字符")
 		}

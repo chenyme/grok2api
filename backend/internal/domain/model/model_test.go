@@ -31,6 +31,30 @@ func TestNormalizePublicIDUsesStableProviderNamespace(t *testing.T) {
 	}
 }
 
+func TestNormalizeExternalPublicIDPreservesSameProviderPrefix(t *testing.T) {
+	tests := []struct {
+		provider account.Provider
+		input    string
+		want     string
+	}{
+		{provider: account.ProviderBuild, input: "grok-4.5", want: "Build/grok-4.5"},
+		{provider: account.ProviderBuild, input: "Build/grok-4.5", want: "Build/Build/grok-4.5"},
+		{provider: account.ProviderWeb, input: " web/grok-chat-fast ", want: "Web/web/grok-chat-fast"},
+	}
+	for _, test := range tests {
+		got, ok := NormalizeExternalPublicID(test.provider, test.input)
+		if !ok || got != test.want {
+			t.Fatalf("NormalizeExternalPublicID(%q, %q) = %q, %v; want %q", test.provider, test.input, got, ok, test.want)
+		}
+	}
+	if _, ok := NormalizeExternalPublicID(account.ProviderBuild, "Web/grok-chat-fast"); ok {
+		t.Fatal("cross-provider external prefix was accepted")
+	}
+	if _, ok := NormalizeExternalPublicID(account.ProviderBuild, strings.Repeat("x", MaxPublicIDLength)); ok {
+		t.Fatal("overlong external public ID was accepted")
+	}
+}
+
 func TestIsCanonicalPublicIDRequiresExactNamespace(t *testing.T) {
 	if !IsCanonicalPublicID(account.ProviderBuild, "Build/grok-4.3") {
 		t.Fatal("canonical Build model was rejected")
@@ -56,8 +80,15 @@ func TestExternalPublicIDAndCandidatesSeparateClientAndRouteNames(t *testing.T) 
 			t.Fatalf("candidate %d = %q; want %q", index, got[index], want[index])
 		}
 	}
-	if got := PublicIDCandidates("Console/grok-4.5"); len(got) != 1 || got[0] != "Console/grok-4.5" {
+	if got := ExternalPublicID(account.ProviderBuild, "Build/Build/grok-4.5"); got != "Build/grok-4.5" {
+		t.Fatalf("provider-prefixed external public ID = %q", got)
+	}
+	if got := PublicIDCandidates("Console/grok-4.5"); len(got) != 2 || got[0] != "Console/Console/grok-4.5" || got[1] != "Console/grok-4.5" {
 		t.Fatalf("qualified candidates = %#v", got)
+	}
+	groups := PublicIDCandidateGroups("Build/grok-4.5")
+	if len(groups) != 2 || len(groups[0]) != 1 || groups[0][0] != "Build/Build/grok-4.5" || len(groups[1]) != 1 || groups[1][0] != "Build/grok-4.5" {
+		t.Fatalf("qualified candidate groups = %#v", groups)
 	}
 }
 
