@@ -79,7 +79,14 @@ func TestSyncQuotaFetchesWeeklyOnlyAfterPaidTierIsConfirmed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/rest/media/imagine/quota_info":
-			writeEmptyImagineQuota(writer)
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{
+				"image":{"available":true,"windowSizeSeconds":64800},
+				"imagePro":{"available":true,"windowSizeSeconds":64800},
+				"imageEdit":{"available":true,"windowSizeSeconds":64800},
+				"video":{"available":true,"windowSizeSeconds":64800},
+				"video720p":{"available":true,"windowSizeSeconds":64800}
+			}`))
 		case "/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig":
 			weeklyCalls.Add(1)
 			writer.Header().Set("Content-Type", "application/grpc-web+proto")
@@ -118,6 +125,58 @@ func TestSyncQuotaFetchesWeeklyOnlyAfterPaidTierIsConfirmed(t *testing.T) {
 	}
 	if snapshot.Tier != account.WebTierSuper || len(snapshot.Windows) != 1 || snapshot.Windows[0].Mode != weeklyQuotaMode || weeklyCalls.Load() != 1 {
 		t.Fatalf("snapshot = %#v, weekly calls = %d", snapshot, weeklyCalls.Load())
+	}
+}
+
+func TestSyncQuotaFailsWhenPaidWeeklySnapshotIsUnavailable(t *testing.T) {
+	var weeklyCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/rest/media/imagine/quota_info":
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{
+				"image":{"available":true,"windowSizeSeconds":64800},
+				"imagePro":{"available":true,"windowSizeSeconds":64800},
+				"imageEdit":{"available":true,"windowSizeSeconds":64800},
+				"video":{"available":true,"windowSizeSeconds":64800},
+				"video720p":{"available":true,"windowSizeSeconds":64800}
+			}`))
+		case "/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig":
+			weeklyCalls.Add(1)
+			http.Error(writer, "temporary weekly failure", http.StatusServiceUnavailable)
+		case "/rest/rate-limits":
+			var payload struct {
+				ModelName string `json:"modelName"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Errorf("quota payload: %v", err)
+			}
+			total := map[string]int{"auto": 50, "fast": 140}[payload.ModelName]
+			_ = json.NewEncoder(writer).Encode(map[string]any{
+				"windowSizeSeconds": 7200, "remainingQueries": total, "totalQueries": total,
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{
+		BaseURL: server.URL, StatsigMode: "manual", StatsigManualValue: "test-signature",
+	}, infraegress.NewManager(egressRepositoryStub{}, cipher), cipher, nil, nil)
+	if _, err := adapter.SyncQuota(context.Background(), account.Credential{ID: 2, WebTier: account.WebTierAuto, EncryptedAccessToken: encrypted}); err == nil {
+		t.Fatal("expected the paid weekly failure to reject the partial snapshot")
+	}
+	if weeklyCalls.Load() != 1 {
+		t.Fatalf("weekly calls = %d", weeklyCalls.Load())
 	}
 }
 
@@ -514,10 +573,41 @@ func TestDecodeImagineQuotaSnapshotAcceptsExplicitUnavailableProduct(t *testing.
 	}
 }
 
-func TestDecodeImagineQuotaSnapshotRejectsIncompleteAvailableProduct(t *testing.T) {
+func TestDecodeImagineQuotaSnapshotAcceptsAvailabilityOnlySharedWeeklyProducts(t *testing.T) {
+	now := time.Now().UTC()
+	windows, err := decodeImagineQuotaSnapshot([]byte(`{
+		"image":{"available":true,"windowSizeSeconds":64800},
+		"imagePro":{"available":true,"windowSizeSeconds":64800},
+		"imageEdit":{"available":true,"windowSizeSeconds":64800},
+		"video":{"available":true,"windowSizeSeconds":64800},
+		"video720p":{"available":true,"windowSizeSeconds":64800}
+	}`), 42, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windows) != 0 {
+		t.Fatalf("availability-only products must use the shared weekly pool, got %#v", windows)
+	}
+}
+
+func TestDecodeImagineQuotaSnapshotRequiresWindowForIndependentCounter(t *testing.T) {
 	now := time.Now().UTC()
 	_, err := decodeImagineQuotaSnapshot([]byte(`{
-		"image":null,"imageEdit":null,"imagePro":{"available":true},"video":null,"video720p":null
+		"image":null,"imageEdit":null,
+		"imagePro":{"available":true,"remainingQueries":2},
+		"video":null,"video720p":null
+	}`), 42, now)
+	if err == nil || !strings.Contains(err.Error(), "imagePro") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDecodeImagineQuotaSnapshotRequiresWindowForAvailabilityOnlyProduct(t *testing.T) {
+	now := time.Now().UTC()
+	_, err := decodeImagineQuotaSnapshot([]byte(`{
+		"image":null,"imageEdit":null,
+		"imagePro":{"available":true},
+		"video":null,"video720p":null
 	}`), 42, now)
 	if err == nil || !strings.Contains(err.Error(), "imagePro") {
 		t.Fatalf("err = %v", err)

@@ -745,9 +745,13 @@ func TestSelectorWebCatalogCapabilityStillEnforcesTier(t *testing.T) {
 }
 
 func TestImageQuotaFinalizationKeepsEffectiveConsumptionFence(t *testing.T) {
-	refreshMode, decrementMode := quotaFinalizationModes(account.QuotaModeWebImagePro, account.QuotaGroupWebImagine)
-	if refreshMode != account.QuotaGroupWebImagine || decrementMode != account.QuotaModeWebImagePro {
-		t.Fatalf("refresh=%q decrement=%q", refreshMode, decrementMode)
+	refreshMode, decrementMode, availabilityMode := quotaFinalizationModes(account.QuotaModeWebImagePro, account.QuotaGroupWebImagine)
+	if refreshMode != account.QuotaGroupWebImagine || decrementMode != account.QuotaModeWebImagePro || availabilityMode != "" {
+		t.Fatalf("refresh=%q decrement=%q availability=%q", refreshMode, decrementMode, availabilityMode)
+	}
+	refreshMode, decrementMode, availabilityMode = quotaFinalizationModes("weekly", account.QuotaGroupWebImagine)
+	if refreshMode != "weekly" || decrementMode != "weekly" || availabilityMode != account.QuotaGroupWebImagine {
+		t.Fatalf("shared weekly refresh=%q decrement=%q availability=%q", refreshMode, decrementMode, availabilityMode)
 	}
 }
 

@@ -130,6 +130,7 @@ func TestRoutingProjectionMapsWebImageEditQuotaByTier(t *testing.T) {
 			t.Fatal(createErr)
 		}
 		if saveErr := accounts.SaveQuotaWindows(ctx, value.ID, tier, now, []account.QuotaWindow{
+			{AccountID: value.ID, Mode: "weekly", Remaining: 11, SyncedAt: &now, Source: account.QuotaSourceUpstream},
 			{AccountID: value.ID, Mode: account.QuotaModeWebImagePro, Remaining: 3, SyncedAt: &now, Source: account.QuotaSourceUpstream},
 			{AccountID: value.ID, Mode: account.QuotaModeWebImageEdit, Remaining: 7, SyncedAt: &now, Source: account.QuotaSourceUpstream},
 		}); saveErr != nil {
@@ -152,6 +153,56 @@ func TestRoutingProjectionMapsWebImageEditQuotaByTier(t *testing.T) {
 	}
 	if got := byID[super.ID].QuotaWindow; got == nil || got.Mode != account.QuotaModeWebImageEdit || got.Remaining != 7 {
 		t.Fatalf("Super image-edit quota = %#v", got)
+	}
+}
+
+func TestRoutingProjectionFallsBackToWeeklyForPaidWebImagine(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "routing-web-imagine-weekly.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := NewAccountRepository(database)
+	now := time.Now().UTC()
+	create := func(name string, tier account.WebTier) account.Credential {
+		value, _, createErr := accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: name, SourceKey: name,
+			EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, WebTier: tier,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if saveErr := accounts.SaveQuotaWindows(ctx, value.ID, tier, now, []account.QuotaWindow{{
+			AccountID: value.ID, Mode: "weekly", Remaining: 9, Total: 10,
+			SyncedAt: &now, Source: account.QuotaSourceUpstream,
+		}}); saveErr != nil {
+			t.Fatal(saveErr)
+		}
+		return value
+	}
+	basic := create("basic-weekly", account.WebTierBasic)
+	super := create("super-weekly", account.WebTierSuper)
+	heavy := create("heavy-weekly", account.WebTierHeavy)
+
+	bases, err := accounts.ListRoutingAccountBases(ctx, account.ProviderWeb, account.QuotaModeWebImagePro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[uint64]account.RoutingAccountBase, len(bases))
+	for _, base := range bases {
+		byID[base.Credential.ID] = base
+	}
+	if got := byID[basic.ID].QuotaWindow; got != nil {
+		t.Fatalf("Basic must not inherit paid weekly Imagine quota: %#v", got)
+	}
+	for _, value := range []account.Credential{super, heavy} {
+		if got := byID[value.ID].QuotaWindow; got == nil || got.Mode != "weekly" || got.Remaining != 9 {
+			t.Fatalf("paid Imagine weekly fallback for %d = %#v", value.ID, got)
+		}
 	}
 }
 

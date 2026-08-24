@@ -49,13 +49,18 @@ func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) 
 		// Basic/未知账号没有付费周池，避免为每次完整同步额外访问付费端点。
 		// 只有模式额度已经确认付费等级时才读取 weekly 作为权威额度。
 		if tier == account.WebTierSuper || tier == account.WebTierHeavy {
-			if weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential); weeklyErr == nil {
-				// 周池覆盖 chat 模式窗口，但保留 imagine 窗口供前端展示与触顶判定。
-				kept := make([]account.QuotaWindow, 0, 1+len(imagineSnapshot.Windows))
-				kept = append(kept, weekly)
-				kept = append(kept, imagineSnapshot.Windows...)
-				windows = kept
+			weekly, weeklyErr := a.syncWeeklyCredits(ctx, credential)
+			if weeklyErr != nil {
+				// Paid Web routing is governed by the shared weekly pool. Returning a
+				// partial successful snapshot would make the application replace and
+				// erase the last authoritative weekly window.
+				return provider.QuotaSnapshot{}, weeklyErr
 			}
+			// 周池覆盖 chat 模式窗口，但保留 imagine 窗口供前端展示与触顶判定。
+			kept := make([]account.QuotaWindow, 0, 1+len(imagineSnapshot.Windows))
+			kept = append(kept, weekly)
+			kept = append(kept, imagineSnapshot.Windows...)
+			windows = kept
 		}
 		if windows == nil {
 			windows = append(chatWindows, imagineSnapshot.Windows...)
@@ -182,11 +187,26 @@ func decodeImagineQuotaSnapshot(body []byte, accountID uint64, now time.Time) ([
 		if item.mode == "" {
 			continue
 		}
-		if *product.Available && (product.RemainingQueries == nil || product.WindowSizeSeconds == nil) {
+		// Paid Web tiers can use the shared weekly pool. For those accounts the
+		// Imagine endpoint reports only product availability and a window size,
+		// without an independent remainingQueries counter. Absence of that counter
+		// means "no product-specific window", not zero remaining quota. Omitting the
+		// row lets routing use the paid account's weekly window and atomically
+		// removes any stale per-product counter from an older response shape.
+		if *product.Available && product.RemainingQueries == nil {
+			if product.WindowSizeSeconds == nil {
+				return nil, fmt.Errorf("Grok Web Imagine 配额字段 %s 结构不完整", item.field)
+			}
+			if *product.WindowSizeSeconds <= 0 {
+				return nil, fmt.Errorf("Grok Web Imagine 配额字段 %s 的 windowSizeSeconds 无效", item.field)
+			}
+			continue
+		}
+		if *product.Available && product.WindowSizeSeconds == nil {
 			return nil, fmt.Errorf("Grok Web Imagine 配额字段 %s 结构不完整", item.field)
 		}
 		remaining := 0
-		if product.RemainingQueries != nil {
+		if *product.Available && product.RemainingQueries != nil {
 			remaining = max(0, *product.RemainingQueries)
 		}
 		windowSeconds := 86400
@@ -290,6 +310,9 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 			if w.Mode == mode {
 				return w, nil
 			}
+		}
+		if credential.WebTier == account.WebTierSuper || credential.WebTier == account.WebTierHeavy {
+			return a.syncWeeklyCredits(ctx, credential)
 		}
 		return account.QuotaWindow{}, fmt.Errorf("imagine 配额响应缺少 %s", mode)
 	}

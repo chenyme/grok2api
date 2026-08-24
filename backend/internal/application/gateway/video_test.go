@@ -47,9 +47,13 @@ func TestVideoQuotaModeUsesWeb720pProduct(t *testing.T) {
 }
 
 func TestVideoQuotaFinalizationKeepsEffectiveConsumptionFence(t *testing.T) {
-	refreshMode, decrementMode := quotaFinalizationModes(account.QuotaModeWebVideo720p, account.QuotaGroupWebImagine)
-	if refreshMode != account.QuotaGroupWebImagine || decrementMode != account.QuotaModeWebVideo720p {
-		t.Fatalf("refresh=%q decrement=%q", refreshMode, decrementMode)
+	refreshMode, decrementMode, availabilityMode := quotaFinalizationModes(account.QuotaModeWebVideo720p, account.QuotaGroupWebImagine)
+	if refreshMode != account.QuotaGroupWebImagine || decrementMode != account.QuotaModeWebVideo720p || availabilityMode != "" {
+		t.Fatalf("refresh=%q decrement=%q availability=%q", refreshMode, decrementMode, availabilityMode)
+	}
+	refreshMode, decrementMode, availabilityMode = quotaFinalizationModes("weekly", account.QuotaGroupWebImagine)
+	if refreshMode != "weekly" || decrementMode != "weekly" || availabilityMode != account.QuotaGroupWebImagine {
+		t.Fatalf("shared weekly refresh=%q decrement=%q availability=%q", refreshMode, decrementMode, availabilityMode)
 	}
 }
 
