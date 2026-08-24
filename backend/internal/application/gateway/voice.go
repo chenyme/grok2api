@@ -440,11 +440,8 @@ func (s *Service) executeVoice(
 		if response.StatusCode == http.StatusPaymentRequired || response.StatusCode == http.StatusTooManyRequests {
 			retryAfter := parseRetryAfter(response.Header.Get("Retry-After"), time.Now().UTC())
 			if quotaKind, _ := s.providers.QuotaKind(credential.Provider); quotaKind == provider.QuotaRemoteWindow && lease.QuotaMode != "" {
-				exhausted, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
-				s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
-				if reconcileErr != nil || !exhausted {
-					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
-				}
+				state, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
+				s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, state, reconcileErr)
 			} else {
 				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
 			}

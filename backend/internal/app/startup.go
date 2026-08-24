@@ -24,6 +24,9 @@ const (
 	webQuotaCatchupEvery       = 30 * time.Minute
 	consoleUsageMigrationEvery = 24 * time.Hour
 	consoleUsageMigrationRetry = 5 * time.Minute
+	consoleQuotaStaleAfter     = 6 * time.Hour
+	consoleQuotaCatchupEvery   = time.Minute
+	consoleQuotaCatchupBatch   = 10
 	modelCatalogStaleAfter     = 24 * time.Hour
 	modelCatalogCatchupEvery   = 6 * time.Hour
 )
@@ -439,6 +442,33 @@ func (a *Application) runConsoleUsageMigration(ctx context.Context) {
 			a.logger.Info("console_usage_migration_completed", "succeeded", succeeded, "failed", failed)
 		}
 		resetTimer(timer, nextRun)
+	}
+}
+
+func (a *Application) runConsoleQuotaCatchup(ctx context.Context) {
+	timer := time.NewTimer(time.Minute)
+	defer timer.Stop()
+	var afterID uint64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		succeeded, failed, nextAfterID, err := a.accounts.SyncStaleConsoleQuotas(runCtx, time.Now().UTC().Add(-consoleQuotaStaleAfter), afterID, consoleQuotaCatchupBatch)
+		cancel()
+		if err == nil {
+			afterID = nextAfterID
+		}
+		if err != nil && ctx.Err() == nil {
+			a.logger.Warn("console_quota_stale_catchup_failed", "succeeded", succeeded, "failed", failed, "error", err)
+		} else if failed > 0 {
+			a.logger.Warn("console_quota_stale_catchup_incomplete", "succeeded", succeeded, "failed", failed)
+		} else if succeeded > 0 {
+			a.logger.Info("console_quota_stale_catchup_completed", "succeeded", succeeded)
+		}
+		resetTimer(timer, consoleQuotaCatchupEvery)
 	}
 }
 

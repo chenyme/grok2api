@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -360,6 +361,202 @@ func TestRefreshQuotaModeDoesNotTriggerFullProviderSyncForAutoTier(t *testing.T)
 	}
 }
 
+func TestReconcileConsoleRateLimitVerifiesUsageBeforeExhausting(t *testing.T) {
+	tests := []struct {
+		name      string
+		remaining int
+		wantState RateLimitReconcileState
+	}{
+		{name: "transient rate limit keeps available quota", remaining: 9, wantState: RateLimitReconcileAvailable},
+		{name: "confirmed zero quota remains exhausted", remaining: 0, wantState: RateLimitReconcileExhausted},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-rate-limit.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = database.Close() })
+			if err := database.InitializeSchema(ctx); err != nil {
+				t.Fatal(err)
+			}
+			accounts := relational.NewAccountRepository(database)
+			credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+				Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+				Name: "console-rate-limit", SourceKey: "console-rate-limit", EncryptedAccessToken: "encrypted",
+				Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			oldSyncedAt := time.Now().UTC().Add(-24 * time.Hour)
+			if err := accounts.ReplaceQuotaWindows(ctx, credential.ID, "", oldSyncedAt, []accountdomain.QuotaWindow{
+				{Mode: "console", Remaining: 10, Total: 10, SyncedAt: &oldSyncedAt, Source: accountdomain.QuotaSourceUpstream},
+				{Mode: "console_image", Remaining: 5, Total: 5, SyncedAt: &oldSyncedAt, Source: accountdomain.QuotaSourceUpstream},
+				{Mode: "console_video", Remaining: 2, Total: 2, SyncedAt: &oldSyncedAt, Source: accountdomain.QuotaSourceUpstream},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			adapter := &rateLimitConsoleQuotaAdapter{remaining: test.remaining}
+			service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+			service.SetQuotaRecoveryQueue(memory.NewQuotaRecoveryQueue())
+
+			state, err := service.ReconcileRateLimit(ctx, credential.ID, "console", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state != test.wantState || adapter.calls.Load() != 1 {
+				t.Fatalf("state=%s calls=%d, want state=%s", state, adapter.calls.Load(), test.wantState)
+			}
+			stored, err := accounts.GetQuotaWindows(ctx, []uint64{credential.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			window, ok := quotaWindowByMode(stored[credential.ID], "console")
+			if !ok || window.Remaining != test.remaining {
+				t.Fatalf("stored Console window = %#v, want remaining=%d", window, test.remaining)
+			}
+		})
+	}
+}
+
+func TestReconcileConsoleRateLimitQueuesRetryWhenUsageProbeFails(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-rate-limit-retry.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "console-rate-limit-retry", SourceKey: "console-rate-limit-retry", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accounts.ReplaceQuotaWindows(ctx, credential.ID, "", now, []accountdomain.QuotaWindow{
+		{Mode: "console", Remaining: 9, Total: 10, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream},
+		{Mode: "console_image", Remaining: 5, Total: 5, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream},
+		{Mode: "console_video", Remaining: 2, Total: 2, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &rateLimitConsoleQuotaAdapter{err: errors.New("usage temporarily rate limited")}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	if state, err := service.ReconcileRateLimit(ctx, credential.ID, "console", 0); err == nil || state != RateLimitReconcileInconclusive {
+		t.Fatalf("state=%s err=%v", state, err)
+	}
+	stored, err := accounts.GetQuotaWindows(ctx, []uint64{credential.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, ok := quotaWindowByMode(stored[credential.ID], "console")
+	if !ok || window.Remaining != 9 {
+		t.Fatalf("failed probe overwrote last snapshot: %#v", window)
+	}
+	service.quotaRefreshMu.Lock()
+	state := service.quotaRefreshes[strconv.FormatUint(credential.ID, 10)+":console"]
+	service.quotaRefreshMu.Unlock()
+	if state == nil || !state.pending {
+		t.Fatalf("retry state = %#v", state)
+	}
+}
+
+func TestReconcileConsoleRateLimitDoesNotQueueWhenAnotherReplicaIsRefreshing(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-rate-limit-busy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "console-rate-limit-busy", SourceKey: "console-rate-limit-busy", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &rateLimitConsoleQuotaAdapter{remaining: 9}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	service.refreshLock = deniedQuotaRefreshLock{}
+
+	state, err := service.ReconcileRateLimit(ctx, credential.ID, "console", 0)
+	if err != nil || state != RateLimitReconcileRefreshing {
+		t.Fatalf("state=%s err=%v, want refreshing without error", state, err)
+	}
+	if adapter.calls.Load() != 0 {
+		t.Fatalf("busy refresh made %d upstream calls", adapter.calls.Load())
+	}
+	service.quotaRefreshMu.Lock()
+	queued := service.quotaRefreshes[strconv.FormatUint(credential.ID, 10)+":console"]
+	service.quotaRefreshMu.Unlock()
+	if queued != nil {
+		t.Fatalf("busy refresh queued duplicate work: %#v", queued)
+	}
+}
+
+func TestConsoleImmediateAndQueuedRefreshUseSameDistributedLock(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-rate-limit-lock-key.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "console-rate-limit-lock-key", SourceKey: "console-rate-limit-lock-key", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSyncedAt := time.Now().UTC().Add(-time.Hour)
+	if err := accounts.ReplaceQuotaWindows(ctx, credential.ID, "", oldSyncedAt, []accountdomain.QuotaWindow{
+		{Mode: "console", Remaining: 9, Total: 10, SyncedAt: &oldSyncedAt, Source: accountdomain.QuotaSourceUpstream},
+		{Mode: "console_image", Remaining: 5, Total: 5, SyncedAt: &oldSyncedAt, Source: accountdomain.QuotaSourceUpstream},
+		{Mode: "console_video", Remaining: 2, Total: 2, SyncedAt: &oldSyncedAt, Source: accountdomain.QuotaSourceUpstream},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &rateLimitConsoleQuotaAdapter{err: errors.New("usage temporarily unavailable")}
+	refreshLock := &recordingQuotaRefreshLock{}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	service.refreshLock = refreshLock
+
+	if state, err := service.ReconcileRateLimit(ctx, credential.ID, "console", 0); err == nil || state != RateLimitReconcileInconclusive {
+		t.Fatalf("state=%s err=%v", state, err)
+	}
+	request := <-service.quotaRefreshQueue
+	service.runQuotaRefresh(ctx, request)
+
+	keys := refreshLock.snapshot()
+	want := consoleQuotaRefreshLockKey(credential.ID)
+	if len(keys) < 2 {
+		t.Fatalf("lock keys = %v, want immediate and queued acquisitions", keys)
+	}
+	for _, key := range keys {
+		if key != want {
+			t.Fatalf("lock key = %q, want %q (all keys: %v)", key, want, keys)
+		}
+	}
+}
+
 func TestRefreshWebImagineQuotaModeAtomicallyReplacesGroup(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "imagine-quota-group.db"))
@@ -630,8 +827,97 @@ func TestSyncIncompleteConsoleQuotasMigratesOnlyLegacySnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if succeeded != 0 || failed != 1 {
+	if succeeded != 1 || failed != 0 {
 		t.Fatalf("locked migration succeeded=%d failed=%d for account %d", succeeded, failed, blockedID)
+	}
+}
+
+func TestSyncStaleConsoleQuotasRefreshesOnlyOldCompleteSnapshots(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-quota-stale.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	now := time.Now().UTC()
+	staleAt := now.Add(-7 * time.Hour)
+	createComplete := func(name string, syncedAt time.Time) uint64 {
+		credential, _, createErr := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+			Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+			Name: name, SourceKey: name, EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if replaceErr := accounts.ReplaceQuotaWindows(ctx, credential.ID, "", syncedAt, []accountdomain.QuotaWindow{
+			{Mode: "console", Remaining: 9, Total: 10, SyncedAt: &syncedAt, Source: accountdomain.QuotaSourceUpstream},
+			{Mode: "console_image", Remaining: 5, Total: 5, SyncedAt: &syncedAt, Source: accountdomain.QuotaSourceUpstream},
+			{Mode: "console_video", Remaining: 2, Total: 2, SyncedAt: &syncedAt, Source: accountdomain.QuotaSourceUpstream},
+		}); replaceErr != nil {
+			t.Fatal(replaceErr)
+		}
+		return credential.ID
+	}
+	staleID := createComplete("stale-console", staleAt)
+	secondStaleID := createComplete("second-stale-console", staleAt)
+	freshID := createComplete("fresh-console", now)
+	legacy, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "legacy-console", SourceKey: "legacy-console", EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accounts.ReplaceQuotaWindows(ctx, legacy.ID, "", staleAt, []accountdomain.QuotaWindow{{
+		Mode: "console", Remaining: 20, Total: 20, SyncedAt: &staleAt, Source: accountdomain.QuotaSourceDefault,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter := &consoleQuotaSnapshotAdapter{}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	succeeded, failed, nextAfterID, err := service.SyncStaleConsoleQuotas(ctx, now.Add(-6*time.Hour), 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succeeded != 1 || failed != 0 || adapter.fullCalls.Load() != 1 {
+		t.Fatalf("catch-up succeeded=%d failed=%d calls=%d", succeeded, failed, adapter.fullCalls.Load())
+	}
+	if nextAfterID != staleID {
+		t.Fatalf("first scan cursor = %d, want %d", nextAfterID, staleID)
+	}
+	succeeded, failed, nextAfterID, err = service.SyncStaleConsoleQuotas(ctx, now.Add(-6*time.Hour), nextAfterID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succeeded != 1 || failed != 0 || adapter.fullCalls.Load() != 2 {
+		t.Fatalf("second catch-up succeeded=%d failed=%d calls=%d", succeeded, failed, adapter.fullCalls.Load())
+	}
+	if nextAfterID != secondStaleID {
+		t.Fatalf("second scan cursor = %d, want %d", nextAfterID, secondStaleID)
+	}
+	stored, err := accounts.GetQuotaWindows(ctx, []uint64{staleID, secondStaleID, freshID, legacy.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleWindow, _ := quotaWindowByMode(stored[staleID], "console")
+	secondStaleWindow, _ := quotaWindowByMode(stored[secondStaleID], "console")
+	freshWindow, _ := quotaWindowByMode(stored[freshID], "console")
+	if staleWindow.SyncedAt == nil || !staleWindow.SyncedAt.After(now.Add(-6*time.Hour)) {
+		t.Fatalf("stale snapshot was not refreshed: %#v", staleWindow)
+	}
+	if secondStaleWindow.SyncedAt == nil || !secondStaleWindow.SyncedAt.After(now.Add(-6*time.Hour)) {
+		t.Fatalf("second stale snapshot was not refreshed: %#v", secondStaleWindow)
+	}
+	if freshWindow.SyncedAt == nil || !freshWindow.SyncedAt.Equal(now) {
+		t.Fatalf("fresh snapshot was unexpectedly refreshed: %#v", freshWindow)
+	}
+	if completeConsoleUsageSnapshot(stored[legacy.ID]) {
+		t.Fatalf("legacy snapshot must remain owned by migration: %#v", stored[legacy.ID])
 	}
 }
 
@@ -939,6 +1225,24 @@ func (deniedQuotaRefreshLock) Acquire(context.Context, string, time.Duration) (f
 	return nil, false, nil
 }
 
+type recordingQuotaRefreshLock struct {
+	mu   sync.Mutex
+	keys []string
+}
+
+func (l *recordingQuotaRefreshLock) Acquire(_ context.Context, key string, _ time.Duration) (func(), bool, error) {
+	l.mu.Lock()
+	l.keys = append(l.keys, key)
+	l.mu.Unlock()
+	return func() {}, true, nil
+}
+
+func (l *recordingQuotaRefreshLock) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.keys...)
+}
+
 type quotaCountingAdapter struct {
 	modeCalls     atomic.Int64
 	fullCalls     atomic.Int64
@@ -1025,6 +1329,40 @@ type consoleQuotaSnapshotAdapter struct {
 	modeCalls   atomic.Int64
 	fullStarted chan struct{}
 	fullRelease chan struct{}
+}
+
+type rateLimitConsoleQuotaAdapter struct {
+	calls     atomic.Int64
+	remaining int
+	err       error
+}
+
+func (a *rateLimitConsoleQuotaAdapter) Provider() accountdomain.Provider {
+	return accountdomain.ProviderConsole
+}
+
+func (a *rateLimitConsoleQuotaAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: accountdomain.ProviderConsole, ModelNamespace: accountdomain.ProviderConsole.ModelNamespace(),
+		Quota: provider.QuotaRemoteWindow, Credential: provider.CredentialSurface{AuthType: accountdomain.AuthTypeSSO},
+	}
+}
+
+func (a *rateLimitConsoleQuotaAdapter) SyncQuota(_ context.Context, credential accountdomain.Credential) (provider.QuotaSnapshot, error) {
+	a.calls.Add(1)
+	if a.err != nil {
+		return provider.QuotaSnapshot{}, a.err
+	}
+	now := time.Now().UTC()
+	return provider.QuotaSnapshot{SyncedAt: now, Windows: []accountdomain.QuotaWindow{
+		{AccountID: credential.ID, Mode: "console", Remaining: a.remaining, Total: 10, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: "console_image", Remaining: 5, Total: 5, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: "console_video", Remaining: 2, Total: 2, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now},
+	}}, nil
+}
+
+func (a *rateLimitConsoleQuotaAdapter) SyncQuotaMode(context.Context, accountdomain.Credential, string) (accountdomain.QuotaWindow, error) {
+	return accountdomain.QuotaWindow{}, errors.New("unexpected single-mode Console sync")
 }
 
 func (a *consoleQuotaSnapshotAdapter) Provider() accountdomain.Provider {

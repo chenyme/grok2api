@@ -46,6 +46,15 @@ var (
 var ErrCredentialRefreshPermanent = errors.New("OAuth refresh token 已永久失效")
 var errQuotaRefreshBusy = errors.New("额度同步已由其他实例执行")
 
+type RateLimitReconcileState string
+
+const (
+	RateLimitReconcileInconclusive RateLimitReconcileState = "inconclusive"
+	RateLimitReconcileRefreshing   RateLimitReconcileState = "refreshing"
+	RateLimitReconcileAvailable    RateLimitReconcileState = "available"
+	RateLimitReconcileExhausted    RateLimitReconcileState = "exhausted"
+)
+
 const (
 	// estimatedFreeTokenLimit is only a fallback until an upstream exhaustion
 	// response supplies the account-specific actual/limit pair.
@@ -3019,14 +3028,35 @@ func preserveActiveQuotaWindows(existing, incoming []accountdomain.QuotaWindow, 
 	return result
 }
 
-// ReconcileRateLimit 根据额度模式核实 429；Web 周池继续以上游快照为准。
-func (s *Service) ReconcileRateLimit(ctx context.Context, id uint64, mode string, retryAfter time.Duration) (bool, error) {
-	if mode == "weekly" {
-		window, err := s.RefreshQuotaMode(ctx, id, mode)
-		if err != nil {
-			return false, err
+// ReconcileRateLimit 根据额度模式核实 429。Web 周池和 Console
+// 均以上游快照为准；Console 的 resource-exhausted 还可能表示瞬时
+// RPS/RPM 限流，不能在未查询 /usage 时直接将账号冻结 24 小时。
+func (s *Service) ReconcileRateLimit(ctx context.Context, id uint64, mode string, retryAfter time.Duration) (RateLimitReconcileState, error) {
+	if mode == "weekly" || isConsoleUsageQuotaMode(mode) {
+		var window accountdomain.QuotaWindow
+		var err error
+		if isConsoleUsageQuotaMode(mode) {
+			window, err = s.refreshConsoleQuotaModeLocked(ctx, id, mode)
+		} else {
+			window, err = s.RefreshQuotaMode(ctx, id, mode)
 		}
-		return window.Remaining == 0 || window.UsagePercent >= 100, nil
+		if err != nil {
+			if isConsoleUsageQuotaMode(mode) {
+				if errors.Is(err, errQuotaRefreshBusy) {
+					return RateLimitReconcileRefreshing, nil
+				}
+				// Keep the last known snapshot on an inconclusive probe and let the
+				// bounded refresh worker retry. The gateway will still apply its normal
+				// account cooldown and rotate this request to another account.
+				s.QueueQuotaRefresh(id, mode)
+				s.logger.Warn("console_rate_limit_quota_probe_failed", "account_id", id, "mode", mode, "error", err)
+			}
+			return RateLimitReconcileInconclusive, err
+		}
+		if window.Remaining == 0 || window.UsagePercent >= 100 {
+			return RateLimitReconcileExhausted, nil
+		}
+		return RateLimitReconcileAvailable, nil
 	}
 	var resetAt *time.Time
 	if retryAfter > 0 {
@@ -3034,13 +3064,14 @@ func (s *Service) ReconcileRateLimit(ctx context.Context, id uint64, mode string
 		resetAt = &value
 	}
 	if err := s.ExhaustQuota(ctx, id, mode, resetAt); err != nil {
-		return false, err
+		return RateLimitReconcileInconclusive, err
 	}
-	return true, nil
+	return RateLimitReconcileExhausted, nil
 }
 
 func (s *Service) ReconcileWebRateLimit(ctx context.Context, id uint64, mode string, retryAfter time.Duration) (bool, error) {
-	return s.ReconcileRateLimit(ctx, id, mode, retryAfter)
+	state, err := s.ReconcileRateLimit(ctx, id, mode, retryAfter)
+	return state == RateLimitReconcileExhausted, err
 }
 
 func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
@@ -3501,13 +3532,13 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		acquired := true
 		var release func()
 		if !skipUpstream && s.refreshLock != nil {
-			effectiveKey := strconv.FormatUint(request.accountID, 10) + ":" + refreshMode
+			lockKey := "quota-refresh:" + strconv.FormatUint(request.accountID, 10) + ":" + refreshMode
 			if consoleMode {
 				// Every Console mode reads the same /usage snapshot. Serialize all
 				// three kinds across instances to avoid duplicate upstream probes.
-				effectiveKey = "console:" + strconv.FormatUint(request.accountID, 10)
+				lockKey = consoleQuotaRefreshLockKey(request.accountID)
 			}
-			release, acquired, refreshErr = s.refreshLock.Acquire(ctx, "quota-refresh:"+effectiveKey, quotaRefreshTimeout)
+			release, acquired, refreshErr = s.refreshLock.Acquire(ctx, lockKey, quotaRefreshTimeout)
 		}
 		if !skipUpstream && refreshErr == nil && acquired {
 			if err := s.syncPool.Do(ctx, func(workCtx context.Context) error {
@@ -3856,23 +3887,7 @@ func (s *Service) SyncIncompleteConsoleQuotas(ctx context.Context) (int, int, er
 		}
 		var batchSucceeded, batchFailed int
 		if len(pending) > 0 {
-			batchSucceeded, batchFailed, err = s.runAccountBatch(ctx, "console_usage_migration", pending, s.syncPool, nil, func(workCtx context.Context, id uint64) error {
-				var release func()
-				if s.refreshLock != nil {
-					var acquired bool
-					var lockErr error
-					release, acquired, lockErr = s.refreshLock.Acquire(workCtx, "quota-refresh:"+strconv.FormatUint(id, 10)+":console", 2*quotaRefreshTimeout)
-					if lockErr != nil {
-						return lockErr
-					}
-					if !acquired {
-						return errQuotaRefreshBusy
-					}
-					defer release()
-				}
-				_, refreshErr := s.RefreshQuotaMode(workCtx, id, "console")
-				return refreshErr
-			})
+			batchSucceeded, batchFailed, err = s.syncConsoleQuotaAccounts(ctx, "console_usage_migration", pending)
 		}
 		succeeded += batchSucceeded
 		failed += batchFailed
@@ -3884,6 +3899,110 @@ func (s *Service) SyncIncompleteConsoleQuotas(ctx context.Context) (int, int, er
 			return succeeded, failed, nil
 		}
 	}
+}
+
+// SyncStaleConsoleQuotas refreshes a bounded batch of complete but old /usage
+// snapshots. Active accounts are already refreshed after successful requests;
+// this catch-up covers idle pools without turning a large deployment into a
+// periodic upstream request burst.
+func (s *Service) SyncStaleConsoleQuotas(ctx context.Context, before time.Time, afterID uint64, limit int) (int, int, uint64, error) {
+	if limit <= 0 || limit > accountTaskBatchSize {
+		limit = 50
+	}
+	pending := make([]uint64, 0, limit)
+	nextAfterID := afterID
+	reachedEnd := false
+	for len(pending) < limit {
+		values, _, err := s.accounts.ListProviderAccountBatch(ctx, accountdomain.ProviderConsole, nextAfterID, accountTaskBatchSize)
+		if err != nil {
+			return 0, 0, nextAfterID, err
+		}
+		if len(values) == 0 {
+			reachedEnd = true
+			break
+		}
+		ids := make([]uint64, 0, len(values))
+		for _, value := range values {
+			if value.Enabled && value.AuthStatus == accountdomain.AuthStatusActive {
+				ids = append(ids, value.ID)
+			}
+		}
+		windows, err := s.accounts.GetQuotaWindows(ctx, ids)
+		if err != nil {
+			return 0, 0, nextAfterID, err
+		}
+		for _, value := range values {
+			nextAfterID = value.ID
+			if value.Enabled && value.AuthStatus == accountdomain.AuthStatusActive && staleCompleteConsoleUsageSnapshot(windows[value.ID], before) {
+				pending = append(pending, value.ID)
+				if len(pending) == limit {
+					break
+				}
+			}
+		}
+		if len(values) < accountTaskBatchSize {
+			reachedEnd = len(pending) < limit
+			break
+		}
+	}
+	if reachedEnd {
+		nextAfterID = 0
+	}
+	if len(pending) == 0 {
+		return 0, 0, nextAfterID, nil
+	}
+	succeeded, failed, err := s.syncConsoleQuotaAccounts(ctx, "console_quota_stale_catchup", pending)
+	return succeeded, failed, nextAfterID, err
+}
+
+func staleCompleteConsoleUsageSnapshot(windows []accountdomain.QuotaWindow, before time.Time) bool {
+	if !completeConsoleUsageSnapshot(windows) {
+		return false
+	}
+	for _, window := range windows {
+		if !isConsoleUsageQuotaMode(window.Mode) {
+			continue
+		}
+		if window.SyncedAt == nil || window.SyncedAt.Before(before) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) syncConsoleQuotaAccounts(ctx context.Context, operation string, ids []uint64) (int, int, error) {
+	return s.runAccountBatch(ctx, operation, ids, s.syncPool, nil, func(workCtx context.Context, id uint64) error {
+		_, refreshErr := s.refreshConsoleQuotaModeLocked(workCtx, id, "console")
+		if errors.Is(refreshErr, errQuotaRefreshBusy) {
+			// Another replica already owns the refresh. Treat that as accepted work:
+			// queuing the same account locally only creates a trailing duplicate probe.
+			return nil
+		}
+		if refreshErr != nil && workCtx.Err() == nil {
+			s.QueueQuotaRefresh(id, "console")
+		}
+		return refreshErr
+	})
+}
+
+func (s *Service) refreshConsoleQuotaModeLocked(ctx context.Context, id uint64, mode string) (accountdomain.QuotaWindow, error) {
+	var release func()
+	if s.refreshLock != nil {
+		acquiredRelease, acquired, err := s.refreshLock.Acquire(ctx, consoleQuotaRefreshLockKey(id), 2*quotaRefreshTimeout)
+		if err != nil {
+			return accountdomain.QuotaWindow{}, err
+		}
+		if !acquired {
+			return accountdomain.QuotaWindow{}, errQuotaRefreshBusy
+		}
+		release = acquiredRelease
+		defer release()
+	}
+	return s.RefreshQuotaMode(ctx, id, mode)
+}
+
+func consoleQuotaRefreshLockKey(id uint64) string {
+	return "quota-refresh:console:" + strconv.FormatUint(id, 10)
 }
 
 func completeConsoleUsageSnapshot(windows []accountdomain.QuotaWindow) bool {
