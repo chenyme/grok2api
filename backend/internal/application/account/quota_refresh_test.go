@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -408,6 +409,57 @@ func TestRefreshWebImagineQuotaModeAtomicallyReplacesGroup(t *testing.T) {
 	}
 	if _, exists := byMode[accountdomain.QuotaModeWebVideo720p]; exists {
 		t.Fatalf("stale video_720p window survived group replacement: %#v", stored[credential.ID])
+	}
+}
+
+func TestRefreshPaidWebImagineFallsBackToSharedWeeklyQuota(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "imagine-shared-weekly.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderWeb, AuthType: accountdomain.AuthTypeSSO, WebTier: accountdomain.WebTierSuper,
+		Name: "web-imagine-weekly", SourceKey: "web-imagine-weekly", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := accounts.SaveQuotaWindows(ctx, credential.ID, accountdomain.WebTierSuper, now, []accountdomain.QuotaWindow{
+		{AccountID: credential.ID, Mode: "weekly", Remaining: 50, Total: 100, UpdatedAt: now},
+		{AccountID: credential.ID, Mode: accountdomain.QuotaModeWebImagePro, Remaining: 4, UpdatedAt: now},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter := &sharedWeeklyImagineAdapter{}
+	service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+	window, err := service.RefreshQuotaMode(ctx, credential.ID, accountdomain.QuotaModeWebImagePro)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if window.Mode != "weekly" || window.Remaining != 80 || adapter.groupCalls.Load() != 1 || adapter.modeCalls.Load() != 1 {
+		t.Fatalf("window = %#v, group calls = %d, mode calls = %d", window, adapter.groupCalls.Load(), adapter.modeCalls.Load())
+	}
+	stored, err := accounts.GetQuotaWindows(ctx, []uint64{credential.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byMode := make(map[string]accountdomain.QuotaWindow)
+	for _, current := range stored[credential.ID] {
+		byMode[current.Mode] = current
+	}
+	if byMode["weekly"].Remaining != 80 {
+		t.Fatalf("weekly quota was not refreshed: %#v", stored[credential.ID])
+	}
+	if _, exists := byMode[accountdomain.QuotaModeWebImagePro]; exists {
+		t.Fatalf("stale product quota survived availability-only refresh: %#v", stored[credential.ID])
 	}
 }
 
@@ -898,6 +950,48 @@ type quotaCountingAdapter struct {
 
 type imagineQuotaGroupAdapter struct {
 	calls atomic.Int64
+}
+
+type sharedWeeklyImagineAdapter struct {
+	groupCalls atomic.Int64
+	modeCalls  atomic.Int64
+}
+
+func (a *sharedWeeklyImagineAdapter) Provider() accountdomain.Provider {
+	return accountdomain.ProviderWeb
+}
+
+func (a *sharedWeeklyImagineAdapter) Definition() provider.Definition {
+	return provider.Definition{
+		Provider: accountdomain.ProviderWeb, ModelNamespace: accountdomain.ProviderWeb.ModelNamespace(),
+		Quota: provider.QuotaRemoteWindow, Credential: provider.CredentialSurface{AuthType: accountdomain.AuthTypeSSO},
+	}
+}
+
+func (a *sharedWeeklyImagineAdapter) SyncQuota(context.Context, accountdomain.Credential) (provider.QuotaSnapshot, error) {
+	return provider.QuotaSnapshot{}, errors.New("unexpected full quota sync")
+}
+
+func (a *sharedWeeklyImagineAdapter) SyncQuotaMode(_ context.Context, credential accountdomain.Credential, mode string) (accountdomain.QuotaWindow, error) {
+	a.modeCalls.Add(1)
+	if mode != "weekly" {
+		return accountdomain.QuotaWindow{}, fmt.Errorf("unexpected quota mode %q", mode)
+	}
+	now := time.Now().UTC()
+	return accountdomain.QuotaWindow{
+		AccountID: credential.ID, Mode: mode, Remaining: 80, Total: 100,
+		SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now,
+	}, nil
+}
+
+func (a *sharedWeeklyImagineAdapter) SyncQuotaGroup(_ context.Context, _ accountdomain.Credential, group string) (provider.QuotaGroupSnapshot, error) {
+	a.groupCalls.Add(1)
+	if group != accountdomain.QuotaGroupWebImagine {
+		return provider.QuotaGroupSnapshot{}, fmt.Errorf("unexpected quota group %q", group)
+	}
+	return provider.QuotaGroupSnapshot{
+		Group: group, Modes: accountdomain.WebImagineQuotaModes(), SyncedAt: time.Now().UTC(),
+	}, nil
 }
 
 func (a *imagineQuotaGroupAdapter) Provider() accountdomain.Provider {

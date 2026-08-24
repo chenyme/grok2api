@@ -3064,9 +3064,9 @@ func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) 
 			return accountdomain.QuotaWindow{}, err
 		}
 	}
-	window, ok := quotaWindowByMode(refreshed.Windows, mode)
-	if !ok {
-		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider usage 响应缺少 %s 额度", mode)
+	window, err := s.resolveRefreshedQuotaWindow(ctx, id, mode, refreshed)
+	if err != nil {
+		return accountdomain.QuotaWindow{}, err
 	}
 	if len(refreshed.Modes) == 0 && refreshed.Credential.Provider == accountdomain.ProviderConsole {
 		// One Console request refreshes all three authoritative windows. Reconcile
@@ -3076,6 +3076,13 @@ func (s *Service) RefreshQuotaMode(ctx context.Context, id uint64, mode string) 
 			return window, err
 		}
 	} else if len(refreshed.Modes) == 0 {
+		if err := s.reconcileQuotaRecoveryWindow(ctx, refreshed.Credential.Provider, id, window); err != nil {
+			return window, err
+		}
+	} else if window.Mode == "weekly" {
+		// The requested Imagine product was availability-only and resolved to
+		// the paid shared pool. Reconcile the authoritative weekly window too;
+		// the group reconciliation above only covers product-specific modes.
 		if err := s.reconcileQuotaRecoveryWindow(ctx, refreshed.Credential.Provider, id, window); err != nil {
 			return window, err
 		}
@@ -3102,11 +3109,26 @@ func (s *Service) ProbeQuotaMode(ctx context.Context, id uint64, mode string) (a
 	if !ok {
 		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider 模式额度探测返回类型无效")
 	}
-	window, ok := quotaWindowByMode(refreshed.Windows, mode)
-	if !ok {
-		return accountdomain.QuotaWindow{}, fmt.Errorf("Provider usage 响应缺少 %s 额度", mode)
+	return s.resolveRefreshedQuotaWindow(ctx, id, mode, refreshed)
+}
+
+func (s *Service) resolveRefreshedQuotaWindow(ctx context.Context, id uint64, mode string, refreshed quotaRefreshResult) (accountdomain.QuotaWindow, error) {
+	if window, ok := quotaWindowByMode(refreshed.Windows, mode); ok {
+		return window, nil
 	}
-	return window, nil
+	credential := refreshed.Credential
+	paidWebImagine := credential.Provider == accountdomain.ProviderWeb && isWebImagineQuotaMode(mode) &&
+		(credential.WebTier == accountdomain.WebTierSuper || credential.WebTier == accountdomain.WebTierHeavy)
+	if paidWebImagine {
+		weekly, err := s.refreshQuotaMode(ctx, id, "weekly")
+		if err != nil {
+			return accountdomain.QuotaWindow{}, err
+		}
+		if window, ok := quotaWindowByMode(weekly.Windows, "weekly"); ok {
+			return window, nil
+		}
+	}
+	return accountdomain.QuotaWindow{}, fmt.Errorf("Provider usage 响应缺少 %s 额度", mode)
 }
 
 func (s *Service) refreshQuotaGroup(ctx context.Context, id uint64, group string) (quotaRefreshResult, error) {
