@@ -7,6 +7,20 @@ import (
 	"testing"
 )
 
+type blockingStreamSource struct {
+	closed chan struct{}
+}
+
+func (s *blockingStreamSource) Read([]byte) (int, error) {
+	<-s.closed
+	return 0, io.EOF
+}
+
+func (s *blockingStreamSource) Close() error {
+	close(s.closed)
+	return nil
+}
+
 // repeatSSE builds an SSE stream that emits the same delta count times using
 // the given event name and payload template.
 func repeatSSE(event, payloadTemplate string, count int, trailer ...string) string {
@@ -36,6 +50,47 @@ func TestConvertResponsesStreamTerminatesContentDoomLoop(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "model output loop detected") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestConvertResponsesStreamAllowsExactlyContentThreshold(t *testing.T) {
+	stream := repeatSSE("response.output_text.delta",
+		`{"type":"response.output_text.delta","delta":"loop"}`,
+		contentDoomLoopThreshold)
+	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
+	if err != nil {
+		t.Fatalf("the content ceiling itself must remain valid: %v", err)
+	}
+	if !strings.Contains(string(converted), "data: [DONE]") {
+		t.Fatalf("stream did not complete: %s", converted)
+	}
+}
+
+func TestConvertResponsesStreamProtectsDeferredWebSearchText(t *testing.T) {
+	stream := repeatSSE("response.output_text.delta",
+		`{"type":"response.output_text.delta","delta":"loop"}`,
+		contentDoomLoopThreshold+8)
+	_, err := io.ReadAll(ConvertResponseStreamWithOptions(
+		io.NopCloser(strings.NewReader(stream)),
+		OperationMessages,
+		ResponseOptions{AnthropicWebSearch: true},
+	))
+	if err == nil || !strings.Contains(err.Error(), "model output loop detected") {
+		t.Fatalf("deferred web-search text must retain loop protection: %v", err)
+	}
+}
+
+func TestConvertResponsesStreamProtectsAfterStopSequence(t *testing.T) {
+	stream := repeatSSE("response.output_text.delta",
+		`{"type":"response.output_text.delta","delta":"STOP"}`,
+		contentDoomLoopThreshold+8)
+	_, err := io.ReadAll(ConvertResponseStreamWithOptions(
+		io.NopCloser(strings.NewReader(stream)),
+		OperationChat,
+		ResponseOptions{StopSequences: []string{"STOP"}},
+	))
+	if err == nil || !strings.Contains(err.Error(), "model output loop detected") {
+		t.Fatalf("discarded post-stop deltas must retain loop protection: %v", err)
 	}
 }
 
@@ -89,6 +144,113 @@ func TestConvertResponsesStreamTerminatesReasoningDoomLoop(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestConvertResponsesStreamTracksSuppressedReasoning(t *testing.T) {
+	stream := repeatSSE("response.reasoning_text.delta",
+		`{"type":"response.reasoning_text.delta","item_id":"rs_1","delta":"hmm"}`,
+		reasoningDoomLoopThreshold+8)
+	_, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationMessages))
+	if err == nil || !strings.Contains(err.Error(), "model reasoning loop detected") {
+		t.Fatalf("reasoning hidden from the downstream protocol must still be guarded: %v", err)
+	}
+}
+
+func TestConvertResponsesStreamDoesNotCountFlushedSummaryTwice(t *testing.T) {
+	repeats := (contentDoomLoopThreshold + reasoningDoomLoopThreshold) / 2
+	lines := []string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6","status":"in_progress"}}`, "",
+	}
+	for i := 0; i < repeats; i++ {
+		itemID := fmt.Sprintf("rs_%d", i)
+		lines = append(lines,
+			`event: response.reasoning_summary_text.delta`,
+			fmt.Sprintf(`data: {"type":"response.reasoning_summary_text.delta","item_id":%q,"delta":"hmm"}`, itemID), "",
+			`event: response.output_item.done`,
+			fmt.Sprintf(`data: {"type":"response.output_item.done","item":{"id":%q,"type":"reasoning"}}`, itemID), "",
+		)
+	}
+	lines = append(lines,
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`, "", "")
+	converted, err := io.ReadAll(ConvertResponseStream(
+		io.NopCloser(strings.NewReader(strings.Join(lines, "\n"))), OperationChat,
+	))
+	if err != nil {
+		t.Fatalf("flushing buffered summaries must not increment the upstream repeat counter: %v", err)
+	}
+	if !strings.Contains(string(converted), "data: [DONE]") {
+		t.Fatalf("stream did not complete: %s", converted)
+	}
+}
+
+func TestConvertResponsesStreamSharesReasoningCounterAcrossEventTypes(t *testing.T) {
+	lines := []string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6","status":"in_progress"}}`, "",
+	}
+	for i := 0; i < reasoningDoomLoopThreshold/2; i++ {
+		lines = append(lines,
+			`event: response.reasoning_summary_text.delta`,
+			`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"hmm"}`, "")
+	}
+	for i := 0; i <= reasoningDoomLoopThreshold/2; i++ {
+		lines = append(lines,
+			`event: response.reasoning_text.delta`,
+			`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","delta":"hmm"}`, "")
+	}
+	_, err := io.ReadAll(ConvertResponseStream(
+		io.NopCloser(strings.NewReader(strings.Join(lines, "\n"))), OperationChat,
+	))
+	if err == nil || !strings.Contains(err.Error(), "model reasoning loop detected") {
+		t.Fatalf("summary and raw reasoning must share one upstream counter: %v", err)
+	}
+}
+
+func TestConvertResponseStreamGuardsNativeResponsesWithoutRewriting(t *testing.T) {
+	t.Run("passthrough", func(t *testing.T) {
+		source := ": keep-this-comment\r\n\r\n" + repeatSSE("response.output_text.delta",
+			`{"type":"response.output_text.delta","delta":"answer"}`, 1)
+		converted, err := io.ReadAll(ConvertResponseStream(
+			io.NopCloser(strings.NewReader(source)), OperationResponses,
+		))
+		if err != nil {
+			t.Fatalf("native response passthrough failed: %v", err)
+		}
+		if string(converted) != source {
+			t.Fatalf("native response bytes changed:\nwant %q\n got %q", source, converted)
+		}
+	})
+
+	t.Run("doom loop", func(t *testing.T) {
+		stream := repeatSSE("response.output_text.delta",
+			`{"type":"response.output_text.delta","delta":"loop"}`,
+			contentDoomLoopThreshold+8)
+		_, err := io.ReadAll(ConvertResponseStream(
+			io.NopCloser(strings.NewReader(stream)), OperationResponses,
+		))
+		if err == nil || !strings.Contains(err.Error(), "model output loop detected") {
+			t.Fatalf("native responses must retain loop protection: %v", err)
+		}
+	})
+}
+
+func TestConvertResponseStreamCloseImmediatelyClosesUpstream(t *testing.T) {
+	for _, operation := range []string{OperationChat, OperationResponses} {
+		t.Run(operation, func(t *testing.T) {
+			source := &blockingStreamSource{closed: make(chan struct{})}
+			stream := ConvertResponseStream(source, operation)
+			if err := stream.Close(); err != nil {
+				t.Fatalf("close converted stream: %v", err)
+			}
+			select {
+			case <-source.closed:
+			default:
+				t.Fatal("closing the downstream stream did not close the upstream source")
 			}
 		})
 	}
