@@ -22,6 +22,7 @@ func TestStripReasoningEncryptedContentPreservesOnlyPortableHistory(t *testing.T
 			{"type":"reasoning","id":"rs_empty","status":"completed","summary":[],"encrypted_content":"opaque-empty"},
 			{"type":"reasoning","summary":[{"type":"summary_text","text":""}],"encrypted_content":"opaque-blank"},
 			{"type":"reasoning","id":"rs_summary","status":"completed","summary":[{"type":"summary_text","text":"readable"}],"encrypted_content":"opaque-summary"},
+			{"type":"compaction","id":"cmp_1","encrypted_content":"opaque-compaction"},
 			{"type":"message","role":"assistant","content":"answer","encrypted_content":"message-value"},
 			{"type":"message","role":"user","content":"continue"}
 		]
@@ -34,14 +35,16 @@ func TestStripReasoningEncryptedContentPreservesOnlyPortableHistory(t *testing.T
 		Input []map[string]any `json:"input"`
 	}
 	if json.Unmarshal(downgraded, &payload) != nil || len(payload.Input) != 3 {
-		t.Fatalf("downgraded = %s", downgraded)
+		t.Fatalf("downgraded = %s, len=%d", downgraded, len(payload.Input))
 	}
-	reasoning := payload.Input[0]
-	if reasoning["type"] != "reasoning" || reasoning["id"] != nil || reasoning["status"] != nil || reasoning["encrypted_content"] != nil {
-		t.Fatalf("reasoning = %#v", reasoning)
+	if payload.Input[0]["type"] != "message" || payload.Input[0]["role"] != "developer" {
+		t.Fatalf("compaction boundary item = %#v", payload.Input[0])
 	}
 	if payload.Input[1]["encrypted_content"] != "message-value" {
 		t.Fatalf("non-reasoning encrypted content changed: %#v", payload.Input[1])
+	}
+	if payload.Input[2]["role"] != "user" {
+		t.Fatalf("user message changed: %#v", payload.Input[2])
 	}
 }
 
@@ -466,3 +469,30 @@ type reasoningRecoveryFallbackMarker struct{}
 func (reasoningRecoveryFallbackMarker) MarkBuildAPIFallback(context.Context, uint64, bool) error {
 	return nil
 }
+
+func TestRecoverReasoningDecodeFailureCompactionBlob(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		if call == 1 {
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"code":"invalid-argument","error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+		}
+		return jsonHTTPResponse(request, http.StatusOK, `{"id":"resp_ok","status":"completed","output":[]}`), nil
+	})
+
+	body := []byte(`{"model":"grok-4.6","messages":[{"role":"user","content":"hello"}]}`)
+	resp, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 131, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.6", PromptCacheKey: "session-compaction-test",
+		NormalizeBody: true, Operation: conversation.OperationChat, Body: body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+}
+

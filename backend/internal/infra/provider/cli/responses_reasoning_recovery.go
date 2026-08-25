@@ -15,6 +15,11 @@ import (
 var reasoningDecodeFailureMarkers = [][]byte{
 	[]byte("could not decode the compaction blob"),
 	[]byte("could not decrypt the provided encrypted_content"),
+	[]byte("invalid_encrypted_content"),
+	[]byte("could not be decrypted or parsed"),
+	[]byte("could not decrypt"),
+	[]byte("decode the compaction blob"),
+	[]byte("compaction blob"),
 }
 
 type reasoningRecoveryOutcome struct {
@@ -239,9 +244,12 @@ func isReasoningDecodeFailure(body []byte) bool {
 	return false
 }
 
-// stripReasoningEncryptedContent removes opaque reasoning state while
-// preserving any readable summary/content. An encrypted-only reasoning item
-// becomes empty after stripping and is removed entirely.
+// stripReasoningEncryptedContent removes undecodable opaque reasoning and compaction
+// states so Grok Build does not fail on server-side decryption.
+// In Grok Build Responses API, type: "reasoning" is exclusively used for opaque encrypted replay;
+// sending type: "reasoning" without encrypted_content is rejected by the upstream.
+// Any reasoning item (whether it contains encrypted_content or bare summary) is removed, and any
+// compaction item is converted to a compatibility boundary message.
 func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 	var payload map[string]any
 	if json.Unmarshal(body, &payload) != nil {
@@ -255,23 +263,21 @@ func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 	rebuilt := make([]any, 0, len(input))
 	for _, raw := range input {
 		item, ok := raw.(map[string]any)
-		if !ok || stringField(item, "type") != "reasoning" {
+		if !ok {
 			rebuilt = append(rebuilt, raw)
 			continue
 		}
-		encrypted, ok := item["encrypted_content"].(string)
-		if !ok || strings.TrimSpace(encrypted) == "" {
-			rebuilt = append(rebuilt, raw)
+		itemType := stringField(item, "type")
+		if itemType == "reasoning" {
+			changed = true
 			continue
 		}
-		cleaned := cloneJSONObject(item)
-		delete(cleaned, "encrypted_content")
-		delete(cleaned, "id")
-		delete(cleaned, "status")
-		changed = true
-		if hasReadableReasoningContent(cleaned) {
-			rebuilt = append(rebuilt, cleaned)
+		if itemType == "compaction" {
+			changed = true
+			rebuilt = append(rebuilt, compatibilityBoundaryMessage("A prior compacted context could not be decoded by upstream. Continue from the retained conversation messages."))
+			continue
 		}
+		rebuilt = append(rebuilt, raw)
 	}
 	if !changed {
 		return body, false
@@ -282,19 +288,6 @@ func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 		return body, false
 	}
 	return encoded, true
-}
-
-func hasReadableReasoningContent(item map[string]any) bool {
-	for _, field := range []string{"summary", "content"} {
-		parts, _ := item[field].([]any)
-		for _, raw := range parts {
-			part, _ := raw.(map[string]any)
-			if strings.TrimSpace(stringField(part, "text")) != "" {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func appendCompatibilityWarning(header http.Header, warning string) {

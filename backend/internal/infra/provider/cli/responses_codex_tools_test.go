@@ -404,7 +404,7 @@ func TestNativeBuildHistoryItemsArePreservedAndSanitized(t *testing.T) {
 	}
 }
 
-func TestReasoningWithoutEncryptedContentRemainsNative(t *testing.T) {
+func TestReasoningWithoutEncryptedContentBecomesBoundary(t *testing.T) {
 	normalized, _, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":[
 			{"type":"reasoning","id":"rs_1","status":"completed","summary":[{"type":"summary_text","text":"who am I"}],"content":null,"encrypted_content":null,"internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
@@ -421,12 +421,8 @@ func TestReasoningWithoutEncryptedContentRemainsNative(t *testing.T) {
 	}
 	items := request["input"].([]any)
 	first := items[0].(map[string]any)
-	if first["type"] != "reasoning" || first["status"] != nil || first["encrypted_content"] != nil || first["content"] != nil {
-		t.Fatalf("reasoning history = %#v", first)
-	}
-	summary := first["summary"].([]any)[0].(map[string]any)
-	if summary["text"] != "who am I" {
-		t.Fatalf("reasoning summary = %#v", first["summary"])
+	if first["type"] != "message" || first["role"] != "developer" {
+		t.Fatalf("unencrypted reasoning should become boundary, got %#v", first)
 	}
 	if items[1].(map[string]any)["content"] != "hi" {
 		t.Fatalf("assistant history = %#v", items[1])

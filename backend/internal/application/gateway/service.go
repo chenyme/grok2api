@@ -2092,8 +2092,35 @@ func isRetryable(status int) bool {
 	return status == 402 || status == 403 || status == 429 || status >= 500
 }
 
+func isReasoningRecoveryFailedResponse(response *provider.Response) bool {
+	if response == nil {
+		return false
+	}
+	warnings := response.Header.Get("X-Grok2api-Compatibility-Warnings")
+	if strings.Contains(warnings, "reasoning_recovery_failed") {
+		return true
+	}
+	if response.Diagnostic != nil {
+		lower := strings.ToLower(string(response.Diagnostic.Body))
+		if strings.Contains(lower, "compaction blob") ||
+			strings.Contains(lower, "encrypted_content") ||
+			strings.Contains(lower, "could not decrypt") ||
+			strings.Contains(lower, "could not decode") ||
+			strings.Contains(lower, "invalid_encrypted_content") {
+			return true
+		}
+	}
+	return false
+}
+
 func isRetryableResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
-	if response == nil || !isRetryable(response.StatusCode) {
+	if response == nil {
+		return false
+	}
+	if response.StatusCode == http.StatusBadRequest && isReasoningRecoveryFailedResponse(response) {
+		return true
+	}
+	if !isRetryable(response.StatusCode) {
 		return false
 	}
 	// Account-scoped payment failures must always rotate accounts.
