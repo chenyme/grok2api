@@ -13,6 +13,12 @@ const responseHeaderTimeoutMarker = "timeout awaiting response headers"
 // configured idle window.
 var ErrUpstreamStreamIdleTimeout = errors.New("upstream stream idle timeout")
 
+// ErrUpstreamResponseEmpty identifies a successful upstream response whose
+// body reached EOF before producing any bytes. It is separate from malformed
+// JSON and client cancellation so callers may apply the empty-response health
+// policy without penalizing ordinary request aborts.
+var ErrUpstreamResponseEmpty = errors.New("upstream response body is empty")
+
 // ErrBuildStreamIdleTimeout is retained as a compatibility alias for callers
 // introduced before stream-idle protection became provider-neutral.
 var ErrBuildStreamIdleTimeout = ErrUpstreamStreamIdleTimeout
@@ -40,4 +46,27 @@ func IsBuildStreamIdleTimeout(err error) bool {
 // provider stream-idle timeout sentinel.
 func IsUpstreamStreamIdleTimeout(err error) bool {
 	return errors.Is(err, ErrUpstreamStreamIdleTimeout)
+}
+
+// IsUpstreamResponseEmpty reports whether a successful upstream response
+// completed without a response body.
+func IsUpstreamResponseEmpty(err error) bool {
+	return errors.Is(err, ErrUpstreamResponseEmpty)
+}
+
+// IdleTimeoutError retains whether any response bytes arrived before an idle
+// deadline. A zero-byte idle may use the long account cooldown; a partial
+// response should receive only the ordinary transient failure penalty.
+type IdleTimeoutError struct {
+	DataObserved bool
+}
+
+func (e *IdleTimeoutError) Error() string { return ErrUpstreamStreamIdleTimeout.Error() }
+func (e *IdleTimeoutError) Unwrap() error { return ErrUpstreamStreamIdleTimeout }
+
+// IdleTimeoutObservedData returns true only for an idle timeout that records
+// response-body progress before the deadline.
+func IdleTimeoutObservedData(err error) bool {
+	var idle *IdleTimeoutError
+	return errors.As(err, &idle) && idle.DataObserved
 }

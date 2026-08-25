@@ -48,6 +48,27 @@ func TestReadCloserResetsDeadlineOnProgress(t *testing.T) {
 	}
 }
 
+func TestReadCloserReportsProgressBeforeIdleTimeout(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	reader, writer := io.Pipe()
+	wrapper := New(reader, 30*time.Millisecond, cancel)
+	defer wrapper.Close()
+
+	go func() {
+		_, _ = writer.Write([]byte("{"))
+		<-ctx.Done()
+		_ = writer.CloseWithError(ctx.Err())
+	}()
+
+	buffer := make([]byte, 1)
+	if n, err := wrapper.Read(buffer); n != 1 || err != nil {
+		t.Fatalf("first read = (%d, %v), want one byte", n, err)
+	}
+	if _, err := wrapper.Read(buffer); !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) || !neterror.IdleTimeoutObservedData(err) {
+		t.Fatalf("idle error = %#v, observed=%t", err, neterror.IdleTimeoutObservedData(err))
+	}
+}
+
 type pacedReader struct {
 	chunks int
 	gap    time.Duration

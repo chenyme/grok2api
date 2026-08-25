@@ -18,6 +18,7 @@ type ReadCloser struct {
 	timer    *time.Timer
 	cancel   context.CancelCauseFunc
 	timedOut atomic.Bool
+	observed atomic.Bool
 }
 
 func New(body io.ReadCloser, idle time.Duration, cancel context.CancelCauseFunc) *ReadCloser {
@@ -32,10 +33,11 @@ func New(body io.ReadCloser, idle time.Duration, cancel context.CancelCauseFunc)
 func (r *ReadCloser) Read(buffer []byte) (int, error) {
 	n, err := r.ReadCloser.Read(buffer)
 	if n > 0 {
+		r.observed.Store(true)
 		r.timer.Reset(r.idle)
 	}
 	if err != nil && r.timedOut.Load() {
-		return n, neterror.ErrUpstreamStreamIdleTimeout
+		return n, &neterror.IdleTimeoutError{DataObserved: r.observed.Load()}
 	}
 	return n, err
 }

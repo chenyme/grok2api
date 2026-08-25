@@ -1,6 +1,7 @@
 package inference
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -1259,6 +1260,27 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 		}
 		return
 	}
+	body := io.Reader(result.Body)
+	if !stream && result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices {
+		var peekErr error
+		body, peekErr = peekNonEmptyJSONBody(result.Body)
+		if peekErr != nil {
+			status, code, message := http.StatusBadGateway, "stream_interrupted", "读取上游响应失败"
+			switch {
+			case neterror.IsUpstreamStreamIdleTimeout(peekErr):
+				status, code, message = http.StatusGatewayTimeout, "upstream_stream_idle_timeout", "上游响应长时间无数据"
+			case neterror.IsUpstreamResponseEmpty(peekErr):
+				status, code, message = http.StatusBadGateway, "upstream_response_empty", "上游响应为空"
+			}
+			errorCode = code
+			if anthropic {
+				writeAnthropicError(c, status, "api_error", message, code)
+			} else {
+				writeOpenAIError(c, status, code, message)
+			}
+			return
+		}
+	}
 	transferLimit := int64(maxJSONResponseTransferBytes)
 	if stream {
 		transferLimit = maxStreamResponseTransferBytes
@@ -1281,7 +1303,7 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 			result.RecordStreamFailure(*metadata.StreamFailure)
 		}
 	} else {
-		metadata, copyErr := copyJSON(c.Writer, result.Body, protocol)
+		metadata, copyErr := copyJSON(c.Writer, body, protocol)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
 	}
 	if err != nil {
@@ -1294,12 +1316,29 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 			errorCode = "upstream_stream_incomplete"
 		case errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout):
 			errorCode = "upstream_stream_idle_timeout"
+		case errors.Is(err, neterror.ErrUpstreamResponseEmpty):
+			errorCode = "upstream_response_empty"
 		case errors.Is(err, errUpstreamStreamRead):
 			errorCode = "upstream_stream_interrupted"
 		default:
 			errorCode = "stream_interrupted"
 		}
 	}
+}
+
+// peekNonEmptyJSONBody delays the downstream 2xx status until the upstream has
+// produced at least one response byte. This lets an idle/empty non-streaming
+// response become a real 502/504 instead of an empty 200 while preserving a
+// streaming copy for large valid JSON bodies.
+func peekNonEmptyJSONBody(source io.Reader) (io.Reader, error) {
+	reader := bufio.NewReaderSize(source, responseCopyBufferBytes)
+	if _, err := reader.Peek(1); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, neterror.ErrUpstreamResponseEmpty
+		}
+		return nil, err
+	}
+	return reader, nil
 }
 
 type responseMetadata struct {
@@ -1577,12 +1616,15 @@ func copyJSON(writer gin.ResponseWriter, source io.Reader, protocol streamProtoc
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
+				if transferred == 0 {
+					return responseMetadata{}, neterror.ErrUpstreamResponseEmpty
+				}
 				if metadataComplete {
 					return normalizeMetadataUsage(extractMetadata(metadataBody), protocol), nil
 				}
 				return responseMetadata{}, nil
 			}
-			return responseMetadata{}, readErr
+			return responseMetadata{Usage: gateway.Usage{OutputObserved: transferred > 0}}, readErr
 		}
 	}
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"io"
+	"sync"
 	"time"
 
 	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
@@ -32,4 +33,18 @@ type idleTimeoutReadCloser = providerstreamidle.ReadCloser
 
 func newIdleTimeoutReadCloser(body io.ReadCloser, idle time.Duration, cancel context.CancelCauseFunc) *idleTimeoutReadCloser {
 	return providerstreamidle.New(body, idle, cancel)
+}
+
+// cancelOnCloseReadCloser keeps a derived HTTP request context alive while a
+// non-success response body is inspected, then releases it with the body.
+// Successful inference bodies use idleTimeoutReadCloser instead.
+type cancelOnCloseReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelCauseFunc
+	once   sync.Once
+}
+
+func (r *cancelOnCloseReadCloser) Close() error {
+	r.once.Do(func() { r.cancel(nil) })
+	return r.ReadCloser.Close()
 }

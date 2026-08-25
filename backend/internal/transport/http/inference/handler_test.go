@@ -424,6 +424,35 @@ func TestDirectUpstreamCredentialResponsesAreRewritten(t *testing.T) {
 	}
 }
 
+func TestNonStreamingEmptyAndIdleResponsesFailBeforeCommittingSuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	for _, test := range []struct {
+		name       string
+		body       io.ReadCloser
+		wantStatus int
+		wantCode   string
+	}{
+		{name: "empty", body: io.NopCloser(strings.NewReader("")), wantStatus: http.StatusBadGateway, wantCode: "upstream_response_empty"},
+		{name: "idle", body: io.NopCloser(idleErrorReader{}), wantStatus: http.StatusGatewayTimeout, wantCode: "upstream_stream_idle_timeout"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			finalCode := ""
+			result := &gateway.Result{
+				StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"application/json"}}, Body: test.body,
+				Finalize: func(_ gateway.Usage, _, code string) { finalCode = code },
+			}
+			router := gin.New()
+			router.GET("/", func(c *gin.Context) { handler.writeResult(c, result, false, streamProtocolResponses) })
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+			if recorder.Code != test.wantStatus || finalCode != test.wantCode || !strings.Contains(recorder.Body.String(), `"`+test.wantCode+`"`) {
+				t.Fatalf("status=%d body=%s finalize=%q", recorder.Code, recorder.Body.String(), finalCode)
+			}
+		})
+	}
+}
+
 func TestMediaResultRejectsActiveContentAndRedirects(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewHandler(nil, nil, 1<<20)
