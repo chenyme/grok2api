@@ -369,7 +369,7 @@ func (h *Handler) degradeAccounts(c *gin.Context) {
 		accounts = append(accounts, degradeAccountResponse{
 			ID: strconv.FormatUint(account.ID, 10), Name: account.Name, Email: account.Email, Hits: account.Hits,
 			MaxTPS: account.MaxTPS, Classes: account.Classes, Nodes: account.Nodes, Last: account.Last,
-			Enabled: account.Enabled, Found: account.Found, BFS: account.BFS,
+			Enabled: account.Enabled, Found: account.Found, BFS: account.BFS, LeaseCooldownUntil: account.LeaseCooldownUntil,
 		})
 	}
 	events := make([]degradeEventResponse, 0, len(result.Events))
@@ -442,17 +442,18 @@ type degradeTotalsResponse struct {
 }
 
 type degradeAccountResponse struct {
-	ID      string           `json:"id"`
-	Name    string           `json:"name"`
-	Email   string           `json:"email"`
-	Hits    int64            `json:"hits"`
-	MaxTPS  float64          `json:"maxTPS"`
-	Classes map[string]int64 `json:"classes"`
-	Nodes   []string         `json:"nodes"`
-	Last    time.Time        `json:"last"`
-	Enabled bool             `json:"enabled"`
-	Found   bool             `json:"found"`
-	BFS     int              `json:"bfs"`
+	ID                 string           `json:"id"`
+	Name               string           `json:"name"`
+	Email              string           `json:"email"`
+	Hits               int64            `json:"hits"`
+	MaxTPS             float64          `json:"maxTPS"`
+	Classes            map[string]int64 `json:"classes"`
+	Nodes              []string         `json:"nodes"`
+	Last               time.Time        `json:"last"`
+	Enabled            bool             `json:"enabled"`
+	Found              bool             `json:"found"`
+	BFS                int              `json:"bfs"`
+	LeaseCooldownUntil *time.Time       `json:"leaseQuarantinedUntil,omitempty"`
 }
 
 type degradeEventResponse struct {

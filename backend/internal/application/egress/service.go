@@ -202,7 +202,7 @@ func (s *Service) ProbeQuality(ctx context.Context, nodeID uint64, input Quality
 			return QualityProbeResult{}, fmt.Errorf("%w: 账号定向探测仅支持按账号派生代理的节点", ErrInvalidInput)
 		}
 		credential, loadErr := s.qualityLeases.Get(ctx, input.AccountID)
-		if loadErr != nil || credential.Provider != accountdomain.ProviderBuild || !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || credential.EgressNodeID != nodeID {
+		if loadErr != nil || credential.Provider != accountdomain.ProviderBuild || !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || !qualityLeaseCredentialMayUseNode(credential, nodeID) {
 			return QualityProbeResult{}, ErrQualityProbeNoAccount
 		}
 	}
@@ -333,7 +333,7 @@ func (s *Service) QuarantineQualityLease(ctx context.Context, input QualityLease
 		return accountdomain.EgressLeaseBlock{}, ErrInvalidInput
 	}
 	credential, err := s.qualityLeases.Get(ctx, input.AccountID)
-	if err != nil || credential.Provider != accountdomain.ProviderBuild || !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || credential.EgressNodeID != input.NodeID {
+	if err != nil || credential.Provider != accountdomain.ProviderBuild || !credential.Enabled || credential.AuthStatus != accountdomain.AuthStatusActive || !qualityLeaseCredentialMayUseNode(credential, input.NodeID) {
 		return accountdomain.EgressLeaseBlock{}, ErrQualityLeaseConflict
 	}
 	version, err := security.NewOpaqueToken(18)
@@ -376,6 +376,14 @@ func qualityLeaseReasonAllowed(value string) bool {
 	default:
 		return false
 	}
+}
+
+// An unbound Build account may be assigned an account-derived proxy node by
+// the runtime pool. In that case the quality audit's node ID is the observed
+// lease owner. A concrete binding remains authoritative and must never be
+// quarantined or probed through a different node.
+func qualityLeaseCredentialMayUseNode(credential accountdomain.Credential, nodeID uint64) bool {
+	return nodeID != 0 && (credential.EgressNodeID == 0 || credential.EgressNodeID == nodeID)
 }
 
 func (s *Service) UpdateDefaults(browserUA string) {

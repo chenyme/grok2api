@@ -18,6 +18,7 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
+	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
@@ -445,6 +446,90 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	remaining := time.Until(*interruptedAccount.CooldownUntil)
 	if remaining < 14*time.Minute || remaining > 15*time.Minute+time.Minute {
 		t.Fatalf("idle stream cooldown = %s, want about 15m", remaining)
+	}
+}
+
+func TestQualityProbeForcesObservedNodeForUnboundAccountAndRejectsConflictingBinding(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quality-probe-unbound.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	nodes := relational.NewEgressRepository(database)
+	observedNode, err := nodes.CreateEgressNode(ctx, egressdomain.Node{
+		Name: "observed", Scope: egressdomain.ScopeBuild, Enabled: true, EncryptedProxyURL: "encrypted-observed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherNode, err := nodes.CreateEgressNode(ctx, egressdomain.Node{
+		Name: "other", Scope: egressdomain.ScopeBuild, Enabled: true, EncryptedProxyURL: "encrypted-other",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbound, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "unbound", SourceKey: "quality-unbound", EncryptedAccessToken: "encrypted",
+		ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundElsewhere, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "bound-elsewhere", SourceKey: "quality-bound", EncryptedAccessToken: "encrypted",
+		ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1, EgressNodeID: otherNode.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-test"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{unbound.ID, boundElsewhere.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-test"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "quality-probe", Prefix: "quality", SecretHash: strings.Repeat("7", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &forcedQualityProbeAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 1)
+
+	result, err := service.ProbeEgressQuality(ctx, observedNode.ID, egressapp.QualityProbeInput{
+		AccountID: unbound.ID, ClientKeyID: key.ID, Model: "grok-test", Prompt: "probe", Expected: "ok", MatchMode: "contains", MaxOutputTokens: 16,
+	})
+	if err != nil {
+		t.Fatalf("unbound account did not reach the observed node: %v", err)
+	}
+	if !result.ExpectedMatched || adapter.Attempts() != 1 || adapter.LastAccountID() != unbound.ID || adapter.LastForcedNodeID() != observedNode.ID {
+		t.Fatalf("probe result=%#v attempts=%d account=%d forcedNode=%d", result, adapter.Attempts(), adapter.LastAccountID(), adapter.LastForcedNodeID())
+	}
+
+	_, err = service.ProbeEgressQuality(ctx, observedNode.ID, egressapp.QualityProbeInput{
+		AccountID: boundElsewhere.ID, ClientKeyID: key.ID, Model: "grok-test", Prompt: "probe", Expected: "ok", MatchMode: "contains", MaxOutputTokens: 16,
+	})
+	if !errors.Is(err, egressapp.ErrQualityProbeNoAccount) {
+		t.Fatalf("conflicting explicit binding returned %v", err)
+	}
+	if adapter.Attempts() != 1 {
+		t.Fatalf("conflicting binding reached upstream; attempts=%d", adapter.Attempts())
 	}
 }
 
@@ -3897,6 +3982,52 @@ type scriptedBuildResponse struct {
 	status int
 	body   string
 	header http.Header
+}
+
+type forcedQualityProbeAdapter struct {
+	mu           sync.Mutex
+	attempts     int
+	accountID    uint64
+	forcedNodeID uint64
+}
+
+func (a *forcedQualityProbeAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *forcedQualityProbeAdapter) Definition() provider.Definition {
+	definition := testConversationDefinition(account.ProviderBuild)
+	definition.Credential.Refresh = false
+	return definition
+}
+func (a *forcedQualityProbeAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.attempts++
+	a.accountID = request.Credential.ID
+	a.forcedNodeID = request.ForcedEgressNodeID
+	a.mu.Unlock()
+	body := strings.Join([]string{
+		`data: {"id":"quality-response","model":"grok-test","choices":[{"delta":{"content":"ok"}}]}`,
+		`data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	return &provider.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(body)),
+	}, nil
+}
+func (a *forcedQualityProbeAdapter) Attempts() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.attempts
+}
+func (a *forcedQualityProbeAdapter) LastAccountID() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.accountID
+}
+func (a *forcedQualityProbeAdapter) LastForcedNodeID() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.forcedNodeID
 }
 
 type barePermissionEgressAdapter struct {

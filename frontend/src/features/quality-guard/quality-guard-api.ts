@@ -248,6 +248,7 @@ export type DegradeAccountDTO = {
   enabled: boolean;
   found: boolean;
   bfs: number;
+  leaseQuarantinedUntil?: string;
 };
 
 export type DegradeEventDTO = {
@@ -287,6 +288,7 @@ const decodeDegradeSummary = createObjectDecoder<DegradeSummaryDTO>("degrade acc
   accounts: isArrayOf(hasShape({
     id: isString, name: isString, email: isString, hits: isNumber, maxTPS: isNumber,
     classes: isObject, nodes: isArrayOf(isString), last: isString, enabled: isBoolean, found: isBoolean, bfs: isNumber,
+    leaseQuarantinedUntil: isOptional(isString),
   })),
   accountPage: hasShape({ page: isNumber, pageSize: isNumber, total: isNumber, hasMore: isBoolean }),
   events: isArrayOf(hasShape({

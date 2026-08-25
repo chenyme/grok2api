@@ -1235,7 +1235,10 @@ attemptLoop:
 				err = &SelectionUnavailableError{Reason: SelectionNoAccounts}
 			} else {
 				lease, err = s.selector.AcquirePinnedForQualityProbe(ctx, route.Provider, input.ForcedAccountID, route.ID, route.UpstreamModel, quotaMode, accountScope)
-				if err == nil && lease.Credential.EgressNodeID != input.ForcedEgressNodeID {
+				// An unbound account can still have reached the observed node through
+				// runtime pool selection. The Provider request below carries the forced
+				// node explicitly; only a conflicting concrete binding is invalid.
+				if err == nil && lease.Credential.EgressNodeID != 0 && lease.Credential.EgressNodeID != input.ForcedEgressNodeID {
 					lease.Release()
 					lease = nil
 					err = &SelectionUnavailableError{Reason: SelectionNoAccounts}
