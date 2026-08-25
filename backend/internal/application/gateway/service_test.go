@@ -30,6 +30,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -590,6 +591,113 @@ func TestGatewayBuildResponseHeaderTimeoutDoesNotSwitchAccounts(t *testing.T) {
 	}
 	if latest.FailureCount != 0 || latest.CooldownUntil != nil {
 		t.Fatalf("ambiguous response-header timeout changed account health: %#v", latest)
+	}
+}
+
+func TestGatewayNonStreamingEmptyIdleCoolsAccountAndSwitches(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-non-stream-idle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"empty-idle", "healthy"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: "encrypted-" + name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index*100, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	const model = "grok-non-stream-idle"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "non-stream-idle", Prefix: "idle", SecretHash: strings.Repeat("8", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &failoverAdapter{transportErrorIDs: map[uint64]error{credentials[0].ID: &neterrorpkg.IdleTimeoutError{}}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+	service.UpdateQualityRetry(QualityRetryRuntime{Enabled: false, IdleAccountCooldown: 7 * time.Minute})
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-non-stream-idle", ClientKey: key, PublicModel: model,
+		Body: []byte(`{"model":"grok-non-stream-idle","input":"hello","stream":false}`), Streaming: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "resp-non-stream-idle", "")
+	_ = result.Body.Close()
+	if len(adapter.attempts) != 2 || adapter.attempts[0] != credentials[0].ID || adapter.attempts[1] != credentials[1].ID {
+		t.Fatalf("attempts = %#v", adapter.attempts)
+	}
+	cooled, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cooled.FailureCount != 1 || cooled.CooldownUntil == nil || cooled.LastError != "upstream status 504" {
+		t.Fatalf("cooled account = %#v", cooled)
+	}
+	remaining := time.Until(*cooled.CooldownUntil)
+	if remaining < 6*time.Minute || remaining > 8*time.Minute {
+		t.Fatalf("idle cooldown = %s, want about 7m", remaining)
+	}
+
+	// The same health penalty must apply without replaying a hosted tool, whose
+	// execution may already have started upstream before the response went idle.
+	if err := accountRepo.UpdateHealth(ctx, credentials[0].ID, account.ProviderBuild, 0, nil, "", false); err != nil {
+		t.Fatal(err)
+	}
+	adapter.resetAttempts()
+	unsafeSticky := memory.NewStickyStore()
+	unsafeAccountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), unsafeSticky, registry, testCipher(t), nil)
+	unsafeSelector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), unsafeSticky, registry, time.Hour, time.Second, time.Minute)
+	unsafeService := NewService(modelRepo, auditRepo, unsafeAccountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, unsafeSelector, responseRepo, 3)
+	unsafeService.UpdateQualityRetry(QualityRetryRuntime{Enabled: false, IdleAccountCooldown: 7 * time.Minute})
+
+	_, err = unsafeService.CreateResponse(ctx, Input{
+		RequestID: "req-non-stream-idle-hosted-tool", ClientKey: key, PublicModel: model,
+		Body: []byte(`{"model":"grok-non-stream-idle","input":"hello","stream":false,"tools":[{"type":"web_search"}]}`), Streaming: false,
+	})
+	if err == nil {
+		t.Fatal("expected hosted-tool idle failure")
+	}
+	if len(adapter.attempts) != 1 || adapter.attempts[0] != credentials[0].ID {
+		t.Fatalf("hosted-tool attempts = %#v, want only account %d", adapter.attempts, credentials[0].ID)
+	}
+	cooled, err = accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cooled.CooldownUntil == nil || cooled.LastError != "upstream status 504" {
+		t.Fatalf("hosted-tool account health = %#v", cooled)
 	}
 }
 
@@ -4565,6 +4673,9 @@ func TestIsUpstreamStreamFailureIncludesIdleTimeout(t *testing.T) {
 	if !isUpstreamStreamFailure("upstream_stream_interrupted") || !isUpstreamStreamFailure("upstream_stream_incomplete") {
 		t.Fatal("existing stream-failure codes must stay classified")
 	}
+	if !isUpstreamStreamFailure("upstream_response_empty") {
+		t.Fatal("empty non-streaming response must update account health after handoff")
+	}
 	if isUpstreamStreamFailure("") || isUpstreamStreamFailure("quality_degraded") {
 		t.Fatal("non-stream codes must not look like mid-stream failures")
 	}
@@ -4589,5 +4700,27 @@ func TestStreamFailureHealthPenaltyOnlyLongCoolsTrulyEmptyIdle(t *testing.T) {
 		if status != 0 || cooldown != 0 {
 			t.Fatalf("non-empty idle usage %#v received long penalty (%d, %s)", usage, status, cooldown)
 		}
+	}
+	status, cooldown = streamFailureHealthPenalty("upstream_response_empty", Usage{}, 15*time.Minute)
+	if status != http.StatusBadGateway || cooldown != 15*time.Minute {
+		t.Fatalf("empty response penalty = (%d, %s)", status, cooldown)
+	}
+}
+
+func TestUpstreamResponseErrorHealthPenaltyDistinguishesPartialIdle(t *testing.T) {
+	status, cooldown, ok := upstreamResponseErrorHealthPenalty(&neterrorpkg.IdleTimeoutError{}, 15*time.Minute)
+	if !ok || status != http.StatusGatewayTimeout || cooldown != 15*time.Minute {
+		t.Fatalf("empty idle penalty = (%d, %s, %t)", status, cooldown, ok)
+	}
+	status, cooldown, ok = upstreamResponseErrorHealthPenalty(&neterrorpkg.IdleTimeoutError{DataObserved: true}, 15*time.Minute)
+	if !ok || status != 0 || cooldown != 0 {
+		t.Fatalf("partial idle penalty = (%d, %s, %t)", status, cooldown, ok)
+	}
+	status, cooldown, ok = upstreamResponseErrorHealthPenalty(neterrorpkg.ErrUpstreamResponseEmpty, 15*time.Minute)
+	if !ok || status != http.StatusBadGateway || cooldown != 15*time.Minute {
+		t.Fatalf("empty body penalty = (%d, %s, %t)", status, cooldown, ok)
+	}
+	if _, _, ok = upstreamResponseErrorHealthPenalty(context.DeadlineExceeded, 15*time.Minute); ok {
+		t.Fatal("ordinary timeout must not look like a confirmed response-body failure")
 	}
 }

@@ -1324,8 +1324,24 @@ attemptLoop:
 			if !isRetryableTransportFailure(credential.Provider, err) {
 				break
 			}
-			if !neterrorpkg.IsUpstreamStreamIdleTimeout(err) {
+			responseFailure := false
+			if status, retryAfter, classified := upstreamResponseErrorHealthPenalty(err, holdCfg.IdleAccountCooldown); classified {
+				responseFailure = true
+				writeCtx, writeCancel := context.WithTimeout(context.WithoutCancel(ctx), finalizationTimeout)
+				markErr := s.selector.MarkFailureAfterSuccess(writeCtx, credential, status, retryAfter)
+				writeCancel()
+				if markErr != nil {
+					s.logger.Warn("upstream_response_health_write_failed", "request_id", input.RequestID, "account_id", credential.ID, "error", markErr)
+				} else {
+					s.logger.Warn("upstream_response_health_retry", "request_id", input.RequestID, "account_id", credential.ID, "status", status, "minimum_cooldown", retryAfter)
+				}
+			} else {
 				s.selector.MarkFailure(ctx, credential, 0, 0)
+			}
+			// The failed response is safe to retry on another account only when
+			// doing so cannot repeat an upstream-hosted tool side effect.
+			if responseFailure && qualityRequestHasReplayUnsafeHostedTools(input.Body) {
+				break attemptLoop
 			}
 			if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 				break
@@ -1729,7 +1745,7 @@ attemptLoop:
 
 func isUpstreamStreamFailure(errorCode string) bool {
 	switch errorCode {
-	case "upstream_stream_incomplete", "upstream_stream_interrupted", "upstream_stream_idle_timeout":
+	case "upstream_stream_incomplete", "upstream_stream_interrupted", "upstream_stream_idle_timeout", "upstream_response_empty":
 		return true
 	default:
 		return false
@@ -1737,13 +1753,37 @@ func isUpstreamStreamFailure(errorCode string) bool {
 }
 
 func streamFailureHealthPenalty(errorCode string, usage Usage, idleCooldown time.Duration) (int, time.Duration) {
-	if errorCode == "upstream_stream_idle_timeout" && !usage.OutputObserved && usage.OutputTokens == 0 && usage.ReasoningTokens == 0 {
+	if (errorCode == "upstream_stream_idle_timeout" || errorCode == "upstream_response_empty") && !usage.OutputObserved && usage.OutputTokens == 0 && usage.ReasoningTokens == 0 {
 		if idleCooldown <= 0 {
 			idleCooldown = qualityIdleAccountCooldown
+		}
+		if errorCode == "upstream_response_empty" {
+			return http.StatusBadGateway, idleCooldown
 		}
 		return http.StatusGatewayTimeout, idleCooldown
 	}
 	return 0, 0
+}
+
+// upstreamResponseErrorHealthPenalty classifies failures that happen after a
+// successful response header but before a usable non-streaming body exists.
+// A truly empty response receives the configured long cooldown. If some body
+// bytes arrived before an idle timeout, retain only the ordinary short network
+// cooldown by returning a zero status/retry pair.
+func upstreamResponseErrorHealthPenalty(err error, idleCooldown time.Duration) (int, time.Duration, bool) {
+	switch {
+	case neterrorpkg.IsUpstreamResponseEmpty(err):
+		status, cooldown := streamFailureHealthPenalty("upstream_response_empty", Usage{}, idleCooldown)
+		return status, cooldown, true
+	case neterrorpkg.IsUpstreamStreamIdleTimeout(err):
+		if neterrorpkg.IdleTimeoutObservedData(err) {
+			return 0, 0, true
+		}
+		status, cooldown := streamFailureHealthPenalty("upstream_stream_idle_timeout", Usage{}, idleCooldown)
+		return status, cooldown, true
+	default:
+		return 0, 0, false
+	}
 }
 
 // auditRequestSucceeded keeps transport truth (the HTTP status) separate from

@@ -31,6 +31,13 @@ func TestTransportUpstreamFailureClassifiesProviderStreamIdleTimeout(t *testing.
 	}
 }
 
+func TestTransportUpstreamFailureClassifiesEmptyResponse(t *testing.T) {
+	failure := newTransportUpstreamFailure(neterror.ErrUpstreamResponseEmpty, 42, "build")
+	if failure.HTTPStatus != http.StatusBadGateway || failure.Code != "upstream_response_empty" || failure.AccountScoped {
+		t.Fatalf("failure = %#v", failure)
+	}
+}
+
 func TestTransportUpstreamFailureClassifiesResponseHeaderTimeout(t *testing.T) {
 	failure := newTransportUpstreamFailure(responseHeaderTimeoutTestError{}, 42, "build")
 	if failure.HTTPStatus != http.StatusGatewayTimeout || failure.Code != "upstream_header_timeout" || failure.PublicMessage != "等待上游响应头超时" || failure.AuditCode() != "upstream_header_timeout" {

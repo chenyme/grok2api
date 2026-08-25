@@ -28,7 +28,9 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
+	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/pkg/reasoningreplay"
 )
 
@@ -421,6 +423,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			if readErr != nil {
 				return nil, readErr
 			}
+			if len(bytes.TrimSpace(data)) == 0 {
+				return nil, neterrorpkg.ErrUpstreamResponseEmpty
+			}
 			if len(data) > maxCompatibleResponseBytes {
 				return nil, fmt.Errorf("上游兼容 Responses 响应超过 128 MiB")
 			}
@@ -450,6 +455,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			_ = resp.Body.Close()
 			if readErr != nil {
 				return nil, readErr
+			}
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 && len(bytes.TrimSpace(data)) == 0 {
+				return nil, neterrorpkg.ErrUpstreamResponseEmpty
 			}
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 && len(data) > 64<<20 {
 				return nil, fmt.Errorf("上游对话响应超过 64 MiB")
@@ -553,9 +561,34 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 	if request.IdempotencyID != "" {
 		req.Header.Set("Idempotency-Key", request.IdempotencyID)
 	}
+	// Streaming requests already receive transport/semantic idle protection.
+	// Non-streaming text inference needs its own cancel-cause-aware body timer:
+	// ResponseHeaderTimeout stops once headers arrive and cannot interrupt a
+	// server that then leaves the JSON body silent indefinitely. Create the
+	// derived context only after every fallible request-construction step so
+	// every remaining path either cancels it or transfers ownership to the body.
+	var responseIdleCancel context.CancelCauseFunc
+	responseIdle := a.config().StreamIdleTimeout
+	if !request.Streaming && responseIdle > 0 {
+		requestCtx, responseIdleCancel = context.WithCancelCause(requestCtx)
+		req = req.WithContext(requestCtx)
+	}
 	resp, err := a.http.Do(req)
 	if err != nil {
+		if responseIdleCancel != nil {
+			responseIdleCancel(nil)
+		}
 		return nil, "", err
+	}
+	if responseIdleCancel != nil {
+		switch {
+		case resp.Body == nil:
+			responseIdleCancel(nil)
+		case isHTTPSuccess(resp.StatusCode):
+			resp.Body = providerstreamidle.New(resp.Body, responseIdle, responseIdleCancel)
+		default:
+			resp.Body = &cancelOnCloseReadCloser{ReadCloser: resp.Body, cancel: responseIdleCancel}
+		}
 	}
 	return resp, req.URL.String(), nil
 }
