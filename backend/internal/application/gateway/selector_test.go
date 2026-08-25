@@ -171,6 +171,59 @@ func TestSelectorQualityProbePinsAccountToRequestedEgressNode(t *testing.T) {
 	}
 }
 
+func TestSelectorCoolsUnboundAccountOnObservedLeaseAndAllowsRecoveryProbe(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-dynamic-egress.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	egressNodes := relational.NewEgressRepository(database)
+	node, err := egressNodes.CreateEgressNode(ctx, egressdomain.Node{
+		Name: "dynamic", Scope: egressdomain.ScopeBuild, Enabled: true, EncryptedProxyURL: "encrypted",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "unbound", SourceKey: "unbound", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.EgressNodeID != 0 {
+		t.Fatalf("test account unexpectedly bound to node %d", credential.EgressNodeID)
+	}
+	if _, err := accounts.UpsertEgressLeaseBlock(ctx, account.EgressLeaseBlock{
+		AccountID: credential.ID, NodeID: node.ID, Reason: "hard_tps", Version: "selector-dynamic-0001", CooldownUntil: time.Now().UTC().Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	if _, err := selector.AcquirePinnedForKey(ctx, account.ProviderBuild, credential.ID, 0, "grok-test", "", true, clientkeydomain.AccountScope{}); err == nil {
+		t.Fatal("ordinary inference ignored the unbound account's active observed lease")
+	} else {
+		var unavailable *SelectionUnavailableError
+		if !errors.As(err, &unavailable) || unavailable.Reason != SelectionCooling {
+			t.Fatalf("ordinary pinned error = %v", err)
+		}
+	}
+	recoveryLease, err := selector.AcquirePinnedForQualityProbe(ctx, account.ProviderBuild, credential.ID, 0, "grok-test", "", clientkeydomain.AccountScope{})
+	if err != nil {
+		t.Fatalf("quality recovery did not bypass the observed lease block: %v", err)
+	}
+	defer recoveryLease.Release()
+	if recoveryLease.Credential.ID != credential.ID || recoveryLease.Credential.EgressNodeID != 0 {
+		t.Fatalf("quality recovery lease = %#v", recoveryLease.Credential)
+	}
+}
+
 func TestSelectorQualityProbeBorrowsHealthyAccountForUnavailableNode(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-egress-fallback.db"))

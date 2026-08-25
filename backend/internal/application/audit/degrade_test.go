@@ -10,6 +10,7 @@ import (
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	auditdomain "github.com/chenyme/grok2api/backend/internal/domain/audit"
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 )
 
@@ -230,6 +231,56 @@ func TestDegradeSummarySearchesEveryAccountIdentityField(t *testing.T) {
 	}
 	if summary.AccountPage.Total != 1 || len(summary.Accounts) != 1 || summary.Accounts[0].ID != accountValue.ID {
 		t.Fatalf("account search result = %#v", summary)
+	}
+}
+
+func TestDegradeSummaryReportsActiveLeaseQuarantineForEnabledAccount(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "degrade-lease.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "lease-isolated", SourceKey: "lease-isolated",
+		EncryptedAccessToken: "encrypted", AuthStatus: accountdomain.AuthStatusActive, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := relational.NewEgressRepository(database).CreateEgressNode(ctx, egressdomain.Node{
+		Name: "dynamic", Scope: egressdomain.ScopeBuild, Enabled: true, EncryptedProxyURL: "encrypted",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	cooldownUntil := now.Add(time.Hour)
+	if _, err := accounts.UpsertEgressLeaseBlock(ctx, accountdomain.EgressLeaseBlock{
+		AccountID: credential.ID, NodeID: node.ID, Reason: "hard_tps", Version: "degrade-lease-0001", CooldownUntil: cooldownUntil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first := int64(100)
+	if err := relational.NewAuditRepository(database).Create(ctx, auditdomain.Record{
+		RequestID: "lease-anomaly", ClientKeyID: 1, ModelRouteID: 1, Provider: "grok_build",
+		AccountID: &credential.ID, AccountName: credential.Name, EgressNodeName: node.Name,
+		StatusCode: 200, Streaming: true, OutputTokens: 2_000, FirstTokenMS: &first, DurationMS: 1_100, CreatedAt: now.Add(-time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(relational.NewAuditRepository(database), slog.Default(), 8, 4, time.Second)
+	service.now = func() time.Time { return now }
+	summary, err := service.DegradeSummary(ctx, "1h", DegradeThresholds{}, DegradeAccountFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Accounts) != 1 || !summary.Accounts[0].Enabled || summary.Accounts[0].LeaseCooldownUntil == nil || !summary.Accounts[0].LeaseCooldownUntil.Equal(cooldownUntil) {
+		t.Fatalf("lease-isolated account = %#v", summary.Accounts)
 	}
 }
 

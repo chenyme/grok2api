@@ -84,17 +84,18 @@ type DegradeNode struct {
 }
 
 type DegradeAccount struct {
-	ID      uint64
-	Name    string
-	Email   string
-	Hits    int64
-	MaxTPS  float64
-	Classes map[string]int64
-	Nodes   []string
-	Last    time.Time
-	Enabled bool
-	Found   bool
-	BFS     int
+	ID                 uint64
+	Name               string
+	Email              string
+	Hits               int64
+	MaxTPS             float64
+	Classes            map[string]int64
+	Nodes              []string
+	Last               time.Time
+	Enabled            bool
+	Found              bool
+	BFS                int
+	LeaseCooldownUntil *time.Time
 }
 
 type DegradeEventView struct {
@@ -212,6 +213,7 @@ func buildDegradeSummary(window string, now time.Time, thresholds DegradeThresho
 				auditdomain.DegradeClassThinking: value.Thinking,
 			},
 			Nodes: value.Nodes, Last: value.Last, Enabled: value.Enabled, Found: value.Found, BFS: value.BuildBotFlagSource,
+			LeaseCooldownUntil: value.LeaseCooldownUntil,
 		})
 	}
 	nodes := make([]DegradeNode, 0, len(data.Nodes))
