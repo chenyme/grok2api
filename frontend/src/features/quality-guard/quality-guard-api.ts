@@ -1,5 +1,6 @@
 import { apiRequest } from "@/shared/api/client";
 import { createObjectDecoder, hasShape, isArrayOf, isBoolean, isNumber, isObject, isOneOf, isOptional, isRecordOf, isString } from "@/shared/api/decoder";
+import { qualityGuardStatusPath } from "./quality-guard-query";
 
 export type QualityGuardPolicy = {
   mode: "active" | "passive" | "hybrid";
@@ -108,6 +109,7 @@ export type QualityGuardStatus = {
     min_generation_ms: number;
   };
   nodes?: Record<string, QualityGuardNodeState>;
+  nodeSummary?: { total: number; quarantined: number; quarantinedLeases: number };
   protectedNodeIds?: string[];
   recentEvents?: QualityGuardEvent[];
   statistics?: QualityGuardStatistics;
@@ -158,6 +160,9 @@ const statisticsValidator = hasShape({
   passive: detectionStatsValidator,
   actions: hasShape({ quarantined: isNumber, restored: isNumber, suppressed: isNumber }),
 });
+const nodeSummaryValidator = hasShape({
+  total: isNumber, quarantined: isNumber, quarantinedLeases: isNumber,
+});
 
 const decodeStatus = (value: unknown): QualityGuardStatus => {
   if (hasShape({ available: isBoolean })(value) && (value as QualityGuardStatus).available === false) {
@@ -170,7 +175,7 @@ const decodeStatus = (value: unknown): QualityGuardStatus => {
       id: isString, name: isString, built_in: isBoolean, match_mode: isString, has_expected: isBoolean,
       require_thinking: isBoolean,
     }))),
-    config: configValidator, nodes: isRecordOf(nodeStateValidator),
+    config: configValidator, nodes: isRecordOf(nodeStateValidator), nodeSummary: isOptional(nodeSummaryValidator),
     protectedNodeIds: isOptional(isArrayOf(isString)),
     recentEvents: isArrayOf(eventValidator), statistics: isOptional(statisticsValidator),
   })(value);
@@ -183,8 +188,8 @@ const decodeQualityTest = createObjectDecoder<QualityTestResult>("quality test",
   thinkingRequired: isBoolean,
 });
 
-export function getQualityGuardStatus(): Promise<QualityGuardStatus> {
-  return apiRequest("/api/admin/v1/egress-quality-guard", {}, decodeStatus);
+export function getQualityGuardStatus(nodeIds?: string[]): Promise<QualityGuardStatus> {
+  return apiRequest(qualityGuardStatusPath(nodeIds), {}, decodeStatus);
 }
 
 export function runQualityTest(nodeId: string, status: QualityGuardStatus, profileId?: string): Promise<QualityTestResult> {

@@ -3,6 +3,7 @@ package egress
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -173,6 +174,70 @@ func TestQualityGuardStatusReadsOnlyPublicState(t *testing.T) {
 	}
 }
 
+func TestQualityGuardStatusFiltersNodeDetailsAndKeepsGlobalSummary(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	state := `{"version":1,"started_at":10,"updated_at":20,"guard":{"mode":"hybrid","model":"grok-4.5","node_ids":["8","9"],"active_interval_seconds":1800,"passive_poll_seconds":5,"soft_tps":500,"hard_tps":1000,"consecutive_soft":2,"consecutive_errors":2,"quarantine_seconds":300,"min_healthy_nodes":1,"max_output_tokens":384},"nodes":{"8":{"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":0,"disabled_by_guard":false,"last_reason":"","last_probe_at":15,"last_observed_at":19,"last_source":"passive","last_classification":"healthy","last_output_tps":42.5,"last_output_tokens":100,"last_first_token_ms":900,"last_duration_ms":4000},"9":{"quarantined_lease_count":2,"active_soft_strikes":0,"passive_soft_strikes":0,"error_strikes":0,"quarantined_until":30,"disabled_by_guard":true,"last_reason":"hard_tps","last_probe_at":16,"last_observed_at":20,"last_source":"active","last_classification":"hard","last_output_tps":5,"last_output_tokens":20,"last_first_token_ms":1200,"last_duration_ms":5000}}}`
+	if err := os.WriteFile(path, []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest("GET", "/egress-quality-guard?nodeId=8", nil)
+	NewHandler(nil, path).qualityGuardStatus(context)
+	if recorder.Code != 200 {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	type statusPayload struct {
+		Data struct {
+			Nodes       map[string]qualityGuardNodeState `json:"nodes"`
+			NodeSummary struct {
+				Total             int `json:"total"`
+				Quarantined       int `json:"quarantined"`
+				QuarantinedLeases int `json:"quarantinedLeases"`
+			} `json:"nodeSummary"`
+		} `json:"data"`
+	}
+	var payload statusPayload
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Data.Nodes) != 1 || payload.Data.Nodes["8"].LastClassification != "healthy" {
+		t.Fatalf("filtered nodes = %#v", payload.Data.Nodes)
+	}
+	if payload.Data.NodeSummary.Total != 2 || payload.Data.NodeSummary.Quarantined != 1 || payload.Data.NodeSummary.QuarantinedLeases != 2 {
+		t.Fatalf("node summary = %#v", payload.Data.NodeSummary)
+	}
+
+	emptyRecorder := httptest.NewRecorder()
+	emptyContext, _ := gin.CreateTestContext(emptyRecorder)
+	emptyContext.Request = httptest.NewRequest("GET", "/egress-quality-guard?nodeId=", nil)
+	NewHandler(nil, path).qualityGuardStatus(emptyContext)
+	if emptyRecorder.Code != 200 {
+		t.Fatalf("empty page status=%d body=%s", emptyRecorder.Code, emptyRecorder.Body.String())
+	}
+	var emptyPayload statusPayload
+	if err := json.Unmarshal(emptyRecorder.Body.Bytes(), &emptyPayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(emptyPayload.Data.Nodes) != 0 || emptyPayload.Data.NodeSummary.Total != 2 {
+		t.Fatalf("empty page nodes=%#v summary=%#v", emptyPayload.Data.Nodes, emptyPayload.Data.NodeSummary)
+	}
+}
+
+func TestSelectedQualityGuardNodesRejectsInvalidOrOversizedFilters(t *testing.T) {
+	values := map[string]qualityGuardNodeState{"8": {LastClassification: "healthy"}}
+	if _, err := selectedQualityGuardNodes(values, []string{"not-a-number"}); err == nil {
+		t.Fatal("expected invalid node ID to be rejected")
+	}
+	oversized := make([]string, 201)
+	for index := range oversized {
+		oversized[index] = "8"
+	}
+	if _, err := selectedQualityGuardNodes(values, oversized); err == nil {
+		t.Fatal("expected oversized node filter to be rejected")
+	}
+}
+
 func TestQualityGuardStatusIsOptional(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
@@ -213,6 +278,72 @@ func TestQualityGuardStateAcceptsBoundedMultiMegabyteState(t *testing.T) {
 	value, available, err := NewHandler(nil, path).readQualityGuardState()
 	if err != nil || !available || value.Guard.Mode != "active" {
 		t.Fatalf("available=%v mode=%q error=%v", available, value.Guard.Mode, err)
+	}
+}
+
+func TestQualityGuardStateCachesUnchangedFileAndRefreshesAfterUpdate(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	firstJSON := `{"version":1,"updated_at":20,"guard":{"mode":"active"},"nodes":{"8":{"disabled_by_guard":true,"quarantined_lease_count":2}},"recent_events":[{"ts":20,"event":"node_quarantined","node_id":"8"}]}`
+	if err := os.WriteFile(path, []byte(firstJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(nil, path)
+	first, available, err := handler.readQualityGuardState()
+	if err != nil || !available || len(first.RecentEvents) != 1 {
+		t.Fatalf("first read available=%v state=%#v error=%v", available, first, err)
+	}
+	second, available, err := handler.readQualityGuardState()
+	if err != nil || !available || len(second.RecentEvents) != 1 {
+		t.Fatalf("second read available=%v state=%#v error=%v", available, second, err)
+	}
+	if &first.RecentEvents[0] != &second.RecentEvents[0] {
+		t.Fatal("unchanged state was decoded again instead of using the cache")
+	}
+	if second.NodeSummary.Total != 1 || second.NodeSummary.Quarantined != 1 || second.NodeSummary.QuarantinedLeases != 2 {
+		t.Fatalf("cached node summary = %#v", second.NodeSummary)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON := `{"version":1,"updated_at":30,"guard":{"mode":"active"},"nodes":{"9":{"disabled_by_guard":false}},"recent_events":[{"ts":30,"event":"node_restored","node_id":"9"}]}`
+	if err := os.WriteFile(path, []byte(secondJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	updatedTime := info.ModTime().Add(time.Second)
+	if err := os.Chtimes(path, updatedTime, updatedTime); err != nil {
+		t.Fatal(err)
+	}
+	updated, available, err := handler.readQualityGuardState()
+	if err != nil || !available || updated.UpdatedAt != 30 {
+		t.Fatalf("updated read available=%v state=%#v error=%v", available, updated, err)
+	}
+	if updated.NodeSummary.Total != 1 || updated.NodeSummary.Quarantined != 0 || updated.NodeSummary.QuarantinedLeases != 0 {
+		t.Fatalf("updated node summary = %#v", updated.NodeSummary)
+	}
+
+	updatedInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementJSON := `{"version":1,"updated_at":40,"guard":{"mode":"active"},"nodes":{"7":{"disabled_by_guard":false}},"recent_events":[{"ts":40,"event":"node_restored","node_id":"7"}]}`
+	if len(replacementJSON) != len(secondJSON) {
+		t.Fatalf("replacement fixture size = %d, want %d", len(replacementJSON), len(secondJSON))
+	}
+	replacementPath := path + ".replacement"
+	if err := os.WriteFile(replacementPath, []byte(replacementJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(replacementPath, updatedInfo.ModTime(), updatedInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacementPath, path); err != nil {
+		t.Fatal(err)
+	}
+	replaced, available, err := handler.readQualityGuardState()
+	if err != nil || !available || replaced.UpdatedAt != 40 {
+		t.Fatalf("replaced read available=%v state=%#v error=%v", available, replaced, err)
 	}
 }
 

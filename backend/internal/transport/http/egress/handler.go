@@ -28,6 +28,8 @@ type Handler struct {
 	guardStatePath  string
 	guardConfigPath string
 	guardProbe      egressapp.QualityProbeInput
+	guardStateMu    sync.Mutex
+	guardStateCache qualityGuardStateCache
 	profilesMu      sync.Mutex
 }
 
@@ -119,6 +121,20 @@ type qualityGuardState struct {
 	Nodes             map[string]qualityGuardNodeState `json:"nodes"`
 	RecentEvents      []qualityGuardEvent              `json:"recent_events"`
 	Statistics        qualityGuardStatistics           `json:"statistics"`
+	NodeSummary       qualityGuardNodeSummary          `json:"-"`
+}
+
+type qualityGuardNodeSummary struct {
+	Total             int
+	Quarantined       int
+	QuarantinedLeases int
+}
+
+type qualityGuardStateCache struct {
+	path     string
+	fileInfo os.FileInfo
+	state    qualityGuardState
+	valid    bool
 }
 
 type qualityGuardStatistics struct {
@@ -205,6 +221,14 @@ func (h *Handler) qualityGuardStatus(c *gin.Context) {
 		response.Error(c, http.StatusServiceUnavailable, "qualityGuardUnavailable", "质量守护状态暂不可用")
 		return
 	}
+	nodes := state.Nodes
+	if nodeIDs, filtered := c.GetQueryArray("nodeId"); filtered {
+		nodes, err = selectedQualityGuardNodes(state.Nodes, nodeIDs)
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "invalidNodeIds", err.Error())
+			return
+		}
+	}
 	payload := gin.H{
 		"available":         true,
 		"editable":          h.guardConfigPath != "",
@@ -221,7 +245,10 @@ func (h *Handler) qualityGuardStatus(c *gin.Context) {
 			"min_healthy_nodes": state.Guard.MinHealthyNodes, "max_output_tokens": state.Guard.MaxOutputTokens,
 			"fail_closed": state.Guard.FailClosed, "min_generation_ms": state.Guard.MinGenerationMS,
 		},
-		"nodes": state.Nodes, "protectedNodeIds": state.ProtectedNodeIDs, "recentEvents": state.RecentEvents,
+		"nodes": nodes, "protectedNodeIds": state.ProtectedNodeIDs, "recentEvents": state.RecentEvents,
+		"nodeSummary": gin.H{
+			"total": state.NodeSummary.Total, "quarantined": state.NodeSummary.Quarantined, "quarantinedLeases": state.NodeSummary.QuarantinedLeases,
+		},
 	}
 	if state.Statistics.StartedAt > 0 {
 		payload["statistics"] = state.Statistics
@@ -231,6 +258,26 @@ func (h *Handler) qualityGuardStatus(c *gin.Context) {
 		payload["profiles"] = profiles.summaries()
 	}
 	response.Success(c, http.StatusOK, payload)
+}
+
+func selectedQualityGuardNodes(values map[string]qualityGuardNodeState, ids []string) (map[string]qualityGuardNodeState, error) {
+	if len(ids) > 200 {
+		return nil, errors.New("质量守护节点筛选不能超过 200 个")
+	}
+	result := make(map[string]qualityGuardNodeState, len(ids))
+	for _, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+			return nil, errors.New("质量守护节点 ID 无效")
+		}
+		if value, ok := values[id]; ok {
+			result[id] = value
+		}
+	}
+	return result, nil
 }
 
 type qualityGuardConfigRequest struct {
@@ -361,11 +408,23 @@ func (h *Handler) readQualityGuardState() (qualityGuardState, bool, error) {
 	file, err := os.Open(h.guardStatePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			h.guardStateMu.Lock()
+			h.guardStateCache = qualityGuardStateCache{}
+			h.guardStateMu.Unlock()
 			return qualityGuardState{}, false, nil
 		}
 		return qualityGuardState{}, true, err
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return qualityGuardState{}, true, errors.New("质量守护状态不可读")
+	}
+	h.guardStateMu.Lock()
+	defer h.guardStateMu.Unlock()
+	if h.guardStateCache.valid && h.guardStateCache.path == h.guardStatePath && os.SameFile(h.guardStateCache.fileInfo, info) && h.guardStateCache.fileInfo.Size() == info.Size() && h.guardStateCache.fileInfo.ModTime().Equal(info.ModTime()) {
+		return h.guardStateCache.state, true, nil
+	}
 	data, err := io.ReadAll(io.LimitReader(file, maxQualityGuardStateBytes+1))
 	if err != nil || len(data) > maxQualityGuardStateBytes {
 		return qualityGuardState{}, true, errors.New("质量守护状态不可读")
@@ -379,6 +438,16 @@ func (h *Handler) readQualityGuardState() (qualityGuardState, bool, error) {
 	}
 	if state.ProtectedNodeIDs == nil {
 		state.ProtectedNodeIDs = []string{}
+	}
+	state.NodeSummary.Total = len(state.Nodes)
+	for _, node := range state.Nodes {
+		if node.DisabledByGuard {
+			state.NodeSummary.Quarantined++
+		}
+		state.NodeSummary.QuarantinedLeases += node.QuarantinedLeases
+	}
+	h.guardStateCache = qualityGuardStateCache{
+		path: h.guardStatePath, fileInfo: info, state: state, valid: true,
 	}
 	return state, true, nil
 }
