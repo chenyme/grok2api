@@ -2096,17 +2096,8 @@ func isReasoningRecoveryFailedResponse(response *provider.Response) bool {
 	if response == nil {
 		return false
 	}
-	warnings := response.Header.Get("X-Grok2api-Compatibility-Warnings")
-	if strings.Contains(warnings, "reasoning_recovery_failed") {
-		return true
-	}
-	if response.Diagnostic != nil {
-		lower := strings.ToLower(string(response.Diagnostic.Body))
-		if strings.Contains(lower, "compaction blob") ||
-			strings.Contains(lower, "encrypted_content") ||
-			strings.Contains(lower, "could not decrypt") ||
-			strings.Contains(lower, "could not decode") ||
-			strings.Contains(lower, "invalid_encrypted_content") {
+	for _, value := range strings.Split(response.Header.Get("X-Grok2API-Compatibility-Warnings"), ",") {
+		if strings.TrimSpace(value) == "reasoning_recovery_failed" {
 			return true
 		}
 	}

@@ -16,10 +16,6 @@ var reasoningDecodeFailureMarkers = [][]byte{
 	[]byte("could not decode the compaction blob"),
 	[]byte("could not decrypt the provided encrypted_content"),
 	[]byte("invalid_encrypted_content"),
-	[]byte("could not be decrypted or parsed"),
-	[]byte("could not decrypt"),
-	[]byte("decode the compaction blob"),
-	[]byte("compaction blob"),
 }
 
 type reasoningRecoveryOutcome struct {
@@ -51,12 +47,14 @@ func (o reasoningRecoveryOutcome) appendWarnings(header http.Header) {
 // recoverReasoningDecodeFailure handles only the upstream's explicit
 // pre-generation opaque-reasoning decode rejection. Recovery never changes
 // credential or Build/XAI plane:
-//  1. remove replayed encrypted_content and retry in the same session;
-//  2. when the same decode error remains (or no opaque item exists), clear the
-//     server-side session identity and retry once with the full portable input.
+//  1. remove replayed encrypted_content, keep any readable summary as a
+//     portable developer message, and retry in the same session;
+//  2. when a 400 remains (or no opaque item exists), clear the server-side
+//     session identity and retry once with the full portable input.
 //
-// If recovery is unsuccessful, the original 400 is returned so the Gateway
-// does not rotate accounts or obscure the first failure.
+// If recovery is unsuccessful, the original 400 is returned with
+// reasoning_recovery_failed so the Gateway can rotate accounts. The Provider
+// itself never changes credential.
 func (a *Adapter) recoverReasoningDecodeFailure(
 	ctx context.Context,
 	request provider.ResponseResourceRequest,
@@ -109,12 +107,23 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 			a.logReasoningRecovery(request, base, "encrypted_content", "rate_limited", retry.StatusCode, nil)
 			return retry, retryURL, reasoningRecoveryOutcome{encryptedContentDowngraded: true}
 		}
+		retryStatus := retry.StatusCode
 		sameDecodeFailure, inspectErr := responseHasReasoningDecodeFailure(retry)
-		if inspectErr != nil || !sameDecodeFailure {
-			a.logReasoningRecovery(request, base, "encrypted_content", "retry_rejected", retry.StatusCode, inspectErr)
+		if inspectErr != nil {
+			a.logReasoningRecovery(request, base, "encrypted_content", "retry_rejected", retryStatus, inspectErr)
 			return original, requestURL, reasoningRecoveryOutcome{failed: true}
 		}
-		a.logReasoningRecovery(request, base, "encrypted_content", "decode_error_persisted", retry.StatusCode, nil)
+		if retryStatus != http.StatusBadRequest {
+			a.logReasoningRecovery(request, base, "encrypted_content", "retry_rejected", retryStatus, nil)
+			return original, requestURL, reasoningRecoveryOutcome{failed: true}
+		}
+		if sameDecodeFailure {
+			a.logReasoningRecovery(request, base, "encrypted_content", "decode_error_persisted", retryStatus, nil)
+		} else {
+			// Stripping ciphertext can reword the 400 (for example a bare
+			// reasoning item). Keep going to session reset instead of aborting.
+			a.logReasoningRecovery(request, base, "encrypted_content", "retry_still_400", retryStatus, nil)
+		}
 	}
 
 	if !canResetReasoningSession(request, portableBody) {
@@ -244,12 +253,11 @@ func isReasoningDecodeFailure(body []byte) bool {
 	return false
 }
 
-// stripReasoningEncryptedContent removes undecodable opaque reasoning and compaction
-// states so Grok Build does not fail on server-side decryption.
-// In Grok Build Responses API, type: "reasoning" is exclusively used for opaque encrypted replay;
-// sending type: "reasoning" without encrypted_content is rejected by the upstream.
-// Any reasoning item (whether it contains encrypted_content or bare summary) is removed, and any
-// compaction item is converted to a compatibility boundary message.
+// stripReasoningEncryptedContent removes undecodable opaque reasoning and
+// compaction ciphertext so Grok Build does not fail on server-side decryption.
+// Readable reasoning summaries are kept as portable developer messages; empty
+// encrypted-only reasoning items are dropped. Foreign compaction blobs become
+// a boundary note because this gateway cannot decrypt them.
 func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 	var payload map[string]any
 	if json.Unmarshal(body, &payload) != nil {
@@ -267,17 +275,32 @@ func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 			rebuilt = append(rebuilt, raw)
 			continue
 		}
-		itemType := stringField(item, "type")
-		if itemType == "reasoning" {
+		switch stringField(item, "type") {
+		case "reasoning":
+			encrypted, hasEncrypted := item["encrypted_content"].(string)
+			if !hasEncrypted || strings.TrimSpace(encrypted) == "" {
+				if portable, ok := portableReasoningSummaryMessage(item); ok {
+					changed = true
+					rebuilt = append(rebuilt, portable)
+					continue
+				}
+				rebuilt = append(rebuilt, raw)
+				continue
+			}
 			changed = true
-			continue
-		}
-		if itemType == "compaction" {
+			if portable, ok := portableReasoningSummaryMessage(item); ok {
+				rebuilt = append(rebuilt, portable)
+			}
+		case "compaction":
 			changed = true
+			if portable, ok := portableReasoningSummaryMessage(item); ok {
+				rebuilt = append(rebuilt, portable)
+				continue
+			}
 			rebuilt = append(rebuilt, compatibilityBoundaryMessage("A prior compacted context could not be decoded by upstream. Continue from the retained conversation messages."))
-			continue
+		default:
+			rebuilt = append(rebuilt, raw)
 		}
-		rebuilt = append(rebuilt, raw)
 	}
 	if !changed {
 		return body, false
@@ -288,6 +311,28 @@ func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 		return body, false
 	}
 	return encoded, true
+}
+
+func portableReasoningSummaryMessage(item map[string]any) (map[string]any, bool) {
+	text := reasoningPortableText(item)
+	if text == "" {
+		return nil, false
+	}
+	return compatibilityBoundaryMessage("Prior model reasoning summary:\n" + text), true
+}
+
+func reasoningPortableText(item map[string]any) string {
+	var parts []string
+	for _, field := range []string{"summary", "content"} {
+		values, _ := item[field].([]any)
+		for _, raw := range values {
+			part, _ := raw.(map[string]any)
+			if text := strings.TrimSpace(stringField(part, "text")); text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func appendCompatibilityWarning(header http.Header, warning string) {

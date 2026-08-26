@@ -404,7 +404,7 @@ func TestNativeBuildHistoryItemsArePreservedAndSanitized(t *testing.T) {
 	}
 }
 
-func TestReasoningWithoutEncryptedContentBecomesBoundary(t *testing.T) {
+func TestReasoningWithoutEncryptedContentBecomesPortableSummary(t *testing.T) {
 	normalized, _, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":[
 			{"type":"reasoning","id":"rs_1","status":"completed","summary":[{"type":"summary_text","text":"who am I"}],"content":null,"encrypted_content":null,"internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
@@ -422,7 +422,11 @@ func TestReasoningWithoutEncryptedContentBecomesBoundary(t *testing.T) {
 	items := request["input"].([]any)
 	first := items[0].(map[string]any)
 	if first["type"] != "message" || first["role"] != "developer" {
-		t.Fatalf("unencrypted reasoning should become boundary, got %#v", first)
+		t.Fatalf("unencrypted reasoning should become portable summary, got %#v", first)
+	}
+	text := first["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "who am I") || strings.Contains(text, "omitted") {
+		t.Fatalf("portable reasoning text = %q", text)
 	}
 	if items[1].(map[string]any)["content"] != "hi" {
 		t.Fatalf("assistant history = %#v", items[1])

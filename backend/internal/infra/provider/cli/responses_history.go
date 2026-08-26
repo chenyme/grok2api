@@ -259,17 +259,19 @@ func (c *responsesToolCompatibility) normalizeCustomToolCallInput(item map[strin
 }
 
 func sanitizeReasoningInput(item map[string]any) map[string]any {
-	// Grok Build Responses API 中 type: "reasoning" 严格用于不透明密文回放，
-	// 上游强制要求携带合法的 encrypted_content。
-	// 若缺少 encrypted_content，则降级为 developer 兼容边界消息，杜绝向 Grok 发送裸 reasoning。
-	encrypted, ok := item["encrypted_content"].(string)
-	if ok && strings.TrimSpace(encrypted) != "" {
-		converted := copyNonNullHistoryFields(item, "id", "summary", "content", "encrypted_content")
-		converted["type"] = "reasoning"
+	// Keep ciphertext-backed reasoning native. Summary-only items are rewritten
+	// as developer messages so the readable plan survives without sending a
+	// bare type=reasoning item that Grok Build may reject.
+	converted := copyNonNullHistoryFields(item, "id", "summary", "content", "encrypted_content")
+	converted["type"] = "reasoning"
+	if encrypted, ok := converted["encrypted_content"].(string); ok && strings.TrimSpace(encrypted) != "" {
 		if _, exists := converted["summary"]; !exists {
 			converted["summary"] = []any{}
 		}
 		return converted
+	}
+	if portable, ok := portableReasoningSummaryMessage(converted); ok {
+		return portable
 	}
 	return compatibilityBoundaryMessage("A prior model reasoning item was omitted because it has no portable content for Grok Build.")
 }

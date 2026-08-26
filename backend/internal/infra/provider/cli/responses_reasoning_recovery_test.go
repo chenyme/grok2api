@@ -34,17 +34,26 @@ func TestStripReasoningEncryptedContentPreservesOnlyPortableHistory(t *testing.T
 	var payload struct {
 		Input []map[string]any `json:"input"`
 	}
-	if json.Unmarshal(downgraded, &payload) != nil || len(payload.Input) != 3 {
+	if json.Unmarshal(downgraded, &payload) != nil || len(payload.Input) != 4 {
 		t.Fatalf("downgraded = %s, len=%d", downgraded, len(payload.Input))
 	}
-	if payload.Input[0]["type"] != "message" || payload.Input[0]["role"] != "developer" {
-		t.Fatalf("compaction boundary item = %#v", payload.Input[0])
+	summary := payload.Input[0]
+	if summary["type"] != "message" || summary["role"] != "developer" {
+		t.Fatalf("readable reasoning = %#v", summary)
 	}
-	if payload.Input[1]["encrypted_content"] != "message-value" {
-		t.Fatalf("non-reasoning encrypted content changed: %#v", payload.Input[1])
+	summaryText, _ := summary["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(summaryText, "readable") || strings.Contains(summaryText, "omitted") {
+		t.Fatalf("readable reasoning text = %q", summaryText)
 	}
-	if payload.Input[2]["role"] != "user" {
-		t.Fatalf("user message changed: %#v", payload.Input[2])
+	compaction := payload.Input[1]
+	if compaction["type"] != "message" || compaction["role"] != "developer" {
+		t.Fatalf("compaction boundary item = %#v", compaction)
+	}
+	if payload.Input[2]["encrypted_content"] != "message-value" {
+		t.Fatalf("non-reasoning encrypted content changed: %#v", payload.Input[2])
+	}
+	if payload.Input[3]["role"] != "user" {
+		t.Fatalf("user message changed: %#v", payload.Input[3])
 	}
 }
 
@@ -468,6 +477,79 @@ type reasoningRecoveryFallbackMarker struct{}
 
 func (reasoningRecoveryFallbackMarker) MarkBuildAPIFallback(context.Context, uint64, bool) error {
 	return nil
+}
+
+func TestRecoverReasoningDecodeFailureKeepsReadableSummary(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		data, _ := io.ReadAll(request.Body)
+		if call == 1 {
+			if !strings.Contains(string(data), `"encrypted_content":"opaque"`) {
+				t.Fatalf("first body = %s", data)
+			}
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
+		}
+		if strings.Contains(string(data), `"encrypted_content"`) || strings.Contains(string(data), `"type":"reasoning"`) {
+			t.Fatalf("retry still has opaque reasoning: %s", data)
+		}
+		if !strings.Contains(string(data), "do not touch Y") {
+			t.Fatalf("retry dropped readable summary: %s", data)
+		}
+		return jsonHTTPResponse(request, http.StatusOK, `{"id":"resp_ok","status":"completed","output":[]}`), nil
+	})
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","input":[{"type":"reasoning","summary":[{"type":"summary_text","text":"do not touch Y"}],"encrypted_content":"opaque"},{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if calls.Load() != 2 || response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "reasoning_encrypted_content_downgraded") {
+		t.Fatalf("calls=%d status=%d warnings=%q", calls.Load(), response.StatusCode, response.Header.Get("X-Grok2API-Compatibility-Warnings"))
+	}
+}
+
+func TestRecoverReasoningDecodeFailureContinuesToSessionResetWhenStripRewords400(t *testing.T) {
+	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
+	var calls atomic.Int32
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		data, _ := io.ReadAll(request.Body)
+		switch call {
+		case 1:
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
+		case 2:
+			if strings.Contains(string(data), `"encrypted_content"`) || request.Header.Get("x-grok-session-id") == "" {
+				t.Fatalf("opaque downgrade body=%s headers=%#v", data, request.Header)
+			}
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"invalid request history"}`), nil
+		case 3:
+			if strings.Contains(string(data), `"encrypted_content"`) || strings.Contains(string(data), `"prompt_cache_key"`) || request.Header.Get("x-grok-session-id") != "" {
+				t.Fatalf("session reset body=%s headers=%#v", data, request.Header)
+			}
+			return jsonHTTPResponse(request, http.StatusOK, `{"id":"resp_ok","status":"completed","output":[]}`), nil
+		default:
+			t.Fatalf("unexpected call %d", call)
+			return nil, nil
+		}
+	})
+	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.5", PromptCacheKey: "session-1",
+		Body: []byte(`{"model":"grok-4.5","input":[{"type":"reasoning","summary":[],"encrypted_content":"opaque"},{"role":"user","content":"continue"}]}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
+	if calls.Load() != 3 || response.StatusCode != http.StatusOK || !strings.Contains(warnings, "reasoning_encrypted_content_downgraded") || !strings.Contains(warnings, "reasoning_session_reset") {
+		t.Fatalf("calls=%d status=%d warnings=%q", calls.Load(), response.StatusCode, warnings)
+	}
 }
 
 func TestRecoverReasoningDecodeFailureCompactionBlob(t *testing.T) {
