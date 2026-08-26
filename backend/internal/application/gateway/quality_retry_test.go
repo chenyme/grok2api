@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"path/filepath"
@@ -217,6 +218,49 @@ func TestEncryptedThinkingFloorSaturates(t *testing.T) {
 	t.Parallel()
 	if got := encryptedThinkingFloor(256, 16, math.MaxInt64); got != math.MaxInt64 {
 		t.Fatalf("overflowing floor = %d, want %d", got, int64(math.MaxInt64))
+	}
+}
+
+func TestAutoDisableFirstOutputSpeedHit(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "output-speed-disable.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderBuild, Name: "degraded-speed", SourceKey: "degraded-speed", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: 10, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	service := &Service{selector: selector, logger: slog.Default()}
+	firstTokenMS := int64(1_000)
+	record := audit.Record{
+		RequestID: "degraded-speed", Provider: string(accountdomain.ProviderBuild), Streaming: true, StatusCode: http.StatusOK,
+		OutputTokens: 120, FirstTokenMS: &firstTokenMS, DurationMS: 1_300,
+	}
+	cfg := normalizeQualityRetry(QualityRetryRuntime{Enabled: true, AutoDisable: true, MinOutputTokens: 32})
+	if err := service.applyOutputSpeedPenalty(ctx, record, credential, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	healthy, err := accounts.Get(ctx, credential.ID)
+	if err != nil || !healthy.Enabled {
+		t.Fatalf("below-threshold hit must remain scheduled: %#v, err=%v", healthy, err)
+	}
+	record.DurationMS = 1_200
+	if err := service.applyOutputSpeedPenalty(ctx, record, credential, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := accounts.Get(ctx, credential.ID)
+	if err != nil || disabled.Enabled {
+		t.Fatalf("first degraded-speed hit must disable: %#v, err=%v", disabled, err)
 	}
 }
 
