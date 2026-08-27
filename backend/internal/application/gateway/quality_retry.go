@@ -181,11 +181,9 @@ func qualityIsBurstDump(sig QualityStreamSignals, minOutput int64) bool {
 // more bytes or a stream abort so an empty hang is not flushed as HTTP 200.
 //
 // An empty reasoning stub is not thinking. Before the hold deadline, wait for
-// real evidence or a terminal event. If the deadline expires while the stream
-// is still open and already has visible output, the result is inconclusive:
-// release it without penalizing the account. A stub-only empty stream keeps
-// waiting for idle/terminal handling. This keeps HoldTimeout a real latency
-// bound without reopening the empty-stream 200 response path.
+// real evidence or a terminal event. A stub plus enough visible output at the
+// deadline is withheld — that is the TUI dump after 30s, not late ciphertext.
+// Stub-only empty streams keep waiting for idle/terminal handling.
 // HasThinking that is only a thin ciphertext dump after the hold (or a
 // barely-over-floor flush in <1s) is still withheld.
 func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdict {
@@ -207,10 +205,7 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 		output = sig.OutputTokens
 	}
 	enough := output >= minOutput
-	if sig.ReasoningStarted && !sig.Terminal {
-		if sig.HoldExpired && output > 0 {
-			return QualityDeliver
-		}
+	if sig.ReasoningStarted && !sig.Terminal && !sig.HoldExpired {
 		return QualityWait
 	}
 	if sig.Terminal {
