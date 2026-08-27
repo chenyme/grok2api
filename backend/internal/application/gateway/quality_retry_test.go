@@ -1053,24 +1053,24 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 		t.Fatal("forced egress must not hold")
 	}
 	owned := inferencedomain.ResponseOwnership{ResponseID: "r1", AccountID: 1}
-	if shouldHoldQualityStream(input, &owned, route, audit.OperationChat, cfg) {
-		t.Fatal("pinned response must not hold")
+	if !shouldHoldQualityStream(input, &owned, route, audit.OperationChat, cfg) {
+		t.Fatal("pinned previous_response_id must still hold on missing thinking")
 	}
 	if shouldHoldQualityStream(input, nil, route, audit.OperationImage, cfg) {
 		t.Fatal("image must not hold")
 	}
-	if shouldHoldQualityStream(input, nil, route, audit.OperationCompaction, cfg) {
-		t.Fatal("codex compaction operation must not hold")
+	if !shouldHoldQualityStream(input, nil, route, audit.OperationCompaction, cfg) {
+		t.Fatal("compaction with no reasoning must hold")
 	}
 	classified := input
 	classified.skipQualityHold = true
 	if shouldHoldQualityStream(classified, nil, route, audit.OperationResponses, cfg) {
-		t.Fatal("gateway-classified compaction must not hold")
+		t.Fatal("explicit skipQualityHold must not hold")
 	}
 	tui := input
 	tui.Body = []byte(`{"input":[{"role":"user","content":"` + tuiCompactionPrompt + `"}]}`)
-	if shouldHoldQualityStream(tui, nil, route, audit.OperationResponses, cfg) {
-		t.Fatal("tui compaction prompt must not hold even when tagged responses")
+	if !shouldHoldQualityStream(tui, nil, route, audit.OperationResponses, cfg) {
+		t.Fatal("tui compaction prompt with no reasoning must hold")
 	}
 	for _, test := range []struct {
 		name string
@@ -1154,8 +1154,8 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 			if !qualityRequestHasReplayUnsafeHostedTools(request.Body) {
 				t.Fatal("fixture must be classified as replay-unsafe hosted tooling")
 			}
-			if shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
-				t.Fatal("hosted tools must not be held because account retry can execute them again")
+			if !shouldHoldQualityStream(request, nil, route, audit.OperationChat, cfg) {
+				t.Fatal("hosted tools must still hold; TUI always declares them")
 			}
 		})
 	}

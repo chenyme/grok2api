@@ -1018,7 +1018,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	// A lease recovery probe stays on exactly one account and one rendered proxy
 	// identity. Retrying the same pinned account would provide neither failover
 	// nor new evidence and can multiply a slow/failing probe.
-	attemptPolicy := newRequestRoutingAttemptPolicy(int(s.maxAttempts.Load()), ownership != nil || input.ForcedAccountID != 0)
+	holdCfg := s.qualityRetryConfig()
+	qualityHoldEnabled := shouldHoldQualityStream(input, ownership, route, operation, holdCfg)
+	attemptPolicy := newRequestRoutingAttemptPolicy(int(s.maxAttempts.Load()), input.ForcedAccountID != 0 || (ownership != nil && !qualityHoldEnabled))
 	idempotencyID, _ := security.NewOpaqueToken(18)
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
 	if err := s.checkLedgerReady(); err != nil {
@@ -1032,8 +1034,6 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	excluded := make(map[uint64]bool)
 	failureFingerprints := make(map[string]int)
 	authRecoveryAttempted := make(map[uint64]bool)
-	holdCfg := s.qualityRetryConfig()
-	qualityHoldEnabled := shouldHoldQualityStream(input, ownership, route, operation, holdCfg)
 	// Count accounts that actually reached the upstream. Credential-only skips
 	// do not consume the quality retry budget; refreshes stay on the same account.
 	qualityAccountAttempts := 0
@@ -1244,7 +1244,7 @@ attemptLoop:
 					err = &SelectionUnavailableError{Reason: SelectionNoAccounts}
 				}
 			}
-		} else if ownership != nil {
+		} else if ownership != nil && qualityAccountAttempts == 0 {
 			lease, err = s.selector.AcquirePinnedForKey(ctx, route.Provider, ownership.AccountID, route.ID, route.UpstreamModel, quotaMode, true, accountScope)
 		} else if input.ForcedEgressNodeID != 0 {
 			lease, err = s.selector.AcquireForKeyOnEgressNode(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, affinityKey, excluded, !quotaProbeAttempted, accountScope, input.ForcedEgressNodeID)
@@ -1276,7 +1276,7 @@ attemptLoop:
 			// Stored Responses are pinned to one account. Return the cached 429
 			// immediately instead of spinning until the cooldown expires or
 			// replaying the request on the same account.
-			if ownership != nil || input.ForcedAccountID != 0 {
+			if input.ForcedAccountID != 0 || (ownership != nil && (!qualityHoldEnabled || qualityAccountAttempts == 0)) {
 				break attemptLoop
 			}
 			attempt--
@@ -1617,8 +1617,12 @@ attemptLoop:
 					continue
 				}
 				response.Body = replay
-				hasNextAccount := attemptPolicy.hasNext(attempt) && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
-				hasNextAccount = hasNextAccount && qualityAccountAttempts < holdCfg.MaxAttempts
+				hasNextAccount := attemptPolicy.hasNext(attempt) && qualityAccountAttempts < holdCfg.MaxAttempts
+				if selection != nil {
+					hasNextAccount = hasNextAccount && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
+				} else if ownership == nil {
+					hasNextAccount = false
+				}
 				commit := CommitQualityHold(verdict, qualityAccountAttempts-1, holdCfg.MaxAttempts, hasNextAccount, holdCfg.OnExhausted)
 				if verdict == QualityWithhold {
 					s.applyMissingThinkingPenalty(ctx, input.RequestID, credential, holdCfg.AccountCooldown)

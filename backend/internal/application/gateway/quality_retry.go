@@ -342,34 +342,22 @@ func CommitQualityHold(verdict QualityVerdict, qualityAttempt, maxAttempts int, 
 }
 
 func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwnership, route modeldomain.Route, operation audit.Operation, cfg QualityRetryRuntime) bool {
-	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || ownership != nil || input.skipQualityHold {
+	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || input.skipQualityHold {
 		return false
 	}
 	switch operation {
-	case audit.OperationChat, audit.OperationResponses, audit.OperationMessages, "":
+	case audit.OperationChat, audit.OperationResponses, audit.OperationMessages, audit.OperationCompaction, "":
 	default:
-		return false
-	}
-	// TUI compaction is a normal /v1/responses body (no compaction_trigger).
-	// Keep this defensive body check in addition to skipQualityHold so a caller
-	// that bypasses CreateResponse cannot withhold a 100s+ summary as missing-thinking.
-	if isResponsesCompactionRequest(input.Body) {
 		return false
 	}
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// Client-executed tools are safe to hold: their calls have not reached the
-	// client yet, and completed results in the next request are immutable input.
-	// Hosted tools are different. Retrying them can repeat an upstream search,
-	// sandbox run, image job, or remote MCP call, so retain the old no-replay
-	// safety boundary for any request that declares one.
-	if qualityRequestHasReplayUnsafeHostedTools(input.Body) {
-		return false
-	}
-	// Aliases are rewritten before this gate, so inspect the effective request
-	// body instead of only the reasoning-capable base model. In particular,
-	// grok-4.3-none becomes grok-4.3 plus an explicit disabled setting.
+	// TUI always declares tools (including hosted web_search / image jobs) and
+	// follow-ups carry previous_response_id. Skipping either let 0-thinking
+	// dumps through on the common agent loop. Keep holding; the attempt loop
+	// unpins after the first missing-thinking hit. Skip only when the request
+	// explicitly disables reasoning.
 	if qualityRequestDisablesReasoning(input.Body) {
 		return false
 	}
