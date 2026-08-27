@@ -17,15 +17,20 @@ import (
 )
 
 const (
-	ErrorQualityDegraded             = "quality_degraded"
-	qualityRetryFailOpen             = "fail_open"
-	qualityRetryFailClosed           = "fail_closed"
-	defaultQualityMaxAttempts        = 6
-	defaultQualityHoldTimeout        = 30 * time.Second
-	defaultQualityMinOutput          = int64(8)
-	defaultMissingThinkingCooldown   = 12 * time.Hour
-	lastErrorMissingThinking         = accountdomain.LastErrorMissingThinking
-	lastErrorMissingThinkingDisabled = accountdomain.LastErrorMissingThinkingDisabled
+	ErrorQualityDegraded                   = "quality_degraded"
+	qualityRetryFailOpen                   = "fail_open"
+	qualityRetryFailClosed                 = "fail_closed"
+	defaultQualityMaxAttempts              = 6
+	defaultQualityHoldTimeout              = 30 * time.Second
+	defaultQualityMinOutput                = int64(8)
+	defaultMinEncryptedBytes               = 256
+	defaultEncryptedBytesPerReasoningToken = 4
+	defaultBurstFlushMS                    = int64(1000)
+	defaultBurstMaxVisible                 = int64(32)
+	defaultBurstMinReasoning               = int64(80)
+	defaultMissingThinkingCooldown         = 12 * time.Hour
+	lastErrorMissingThinking               = accountdomain.LastErrorMissingThinking
+	lastErrorMissingThinkingDisabled       = accountdomain.LastErrorMissingThinkingDisabled
 	// An empty stream that idles while held is treated as an account-quality
 	// failure: the request can still rotate before any bytes reach the client.
 	qualityIdleAccountCooldown = 15 * time.Minute
@@ -47,7 +52,9 @@ type QualityRetryRuntime struct {
 	AccountCooldown time.Duration
 	// IdleAccountCooldown is applied to truly empty upstream streams
 	// (idle timeout / empty peek). Missing-thinking still uses AccountCooldown.
-	IdleAccountCooldown time.Duration
+	IdleAccountCooldown             time.Duration
+	MinEncryptedBytes               int
+	EncryptedBytesPerReasoningToken int
 }
 
 // QualityStreamSignals is the hold classifier input. Tests drive this
@@ -61,6 +68,9 @@ type QualityStreamSignals struct {
 	VisibleTokens    int64
 	ReasoningTokens  int64
 	OutputTokens     int64
+	EncryptedBytes   int
+	FirstVisible     bool
+	VisibleFlushMS   int64
 	Terminal         bool
 	HoldExpired      bool
 }
@@ -100,6 +110,12 @@ func normalizeQualityRetry(cfg QualityRetryRuntime) QualityRetryRuntime {
 	if cfg.IdleAccountCooldown <= 0 {
 		cfg.IdleAccountCooldown = qualityIdleAccountCooldown
 	}
+	if cfg.MinEncryptedBytes <= 0 {
+		cfg.MinEncryptedBytes = defaultMinEncryptedBytes
+	}
+	if cfg.EncryptedBytesPerReasoningToken <= 0 {
+		cfg.EncryptedBytesPerReasoningToken = defaultEncryptedBytesPerReasoningToken
+	}
 	cfg.OnExhausted = normalizeQualityExhaustionPolicy(cfg.OnExhausted)
 	return cfg
 }
@@ -119,12 +135,47 @@ func (s *Service) qualityRetryConfig() QualityRetryRuntime {
 	return normalizeQualityRetry(QualityRetryRuntime{})
 }
 
+// encryptedThinkingFloor is max(minBytes, reasoningTokens*bytesPerToken).
+// A non-empty stub such as "gAAAA-cipher" is not thinking.
+func encryptedThinkingFloor(minBytes, bytesPerToken int, reasoningTokens int64) int {
+	if minBytes <= 0 {
+		minBytes = defaultMinEncryptedBytes
+	}
+	if bytesPerToken <= 0 {
+		bytesPerToken = defaultEncryptedBytesPerReasoningToken
+	}
+	floor := minBytes
+	if reasoningTokens > 0 {
+		need := int(reasoningTokens) * bytesPerToken
+		if need > floor {
+			floor = need
+		}
+	}
+	return floor
+}
+
+func qualityIsBurstDump(sig QualityStreamSignals, minOutput int64) bool {
+	visible := sig.VisibleTokens
+	floor := encryptedThinkingFloor(0, 0, sig.ReasoningTokens)
+	barelyCipher := sig.EncryptedBytes > 0 && sig.EncryptedBytes < floor*2
+	flushed := sig.FirstVisible && sig.VisibleFlushMS >= 0 && sig.VisibleFlushMS < defaultBurstFlushMS
+	// Hold timed out, then a short greeting dumped with a large reasoning bill
+	// (TUI "你好" after 30s / 954 thinking tokens).
+	if sig.HoldExpired && visible > 0 && visible < defaultBurstMaxVisible && sig.ReasoningTokens >= defaultBurstMinReasoning {
+		return true
+	}
+	if barelyCipher && flushed && (visible >= minOutput || sig.ReasoningTokens >= defaultBurstMinReasoning) {
+		return true
+	}
+	return false
+}
+
 // ClassifyQualityHold decides whether a held stream may be forwarded.
-// Streamed thinking always delivers: reasoning/summary deltas, or a
-// reasoning item with encrypted_content. Usage.reasoning_tokens alone
-// does not — degraded upstreams fill that field without ciphertext or
-// deltas. A finished sample with enough visible output and no streamed
-// thinking is withheld.
+// Streamed thinking delivers: reasoning/summary deltas, or a reasoning item
+// whose encrypted_content meets the ciphertext floor. A non-empty stub such
+// as "gAAAA-cipher" is not thinking. Usage.reasoning_tokens alone does not —
+// degraded upstreams fill that field without ciphertext or deltas. A finished
+// sample with enough visible output and no streamed thinking is withheld.
 // Short replies below minOutput are delivered so "ok"/"yes" is not retried.
 // A hold timeout with no visible output is not fail-open: keep waiting for
 // more bytes or a stream abort so an empty hang is not flushed as HTTP 200.
@@ -135,11 +186,16 @@ func (s *Service) qualityRetryConfig() QualityRetryRuntime {
 // release it without penalizing the account. A stub-only empty stream keeps
 // waiting for idle/terminal handling. This keeps HoldTimeout a real latency
 // bound without reopening the empty-stream 200 response path.
+// HasThinking that is only a thin ciphertext dump after the hold (or a
+// barely-over-floor flush in <1s) is still withheld.
 func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdict {
 	if minOutput <= 0 {
 		minOutput = defaultQualityMinOutput
 	}
 	if sig.HasThinking {
+		if qualityIsBurstDump(sig, minOutput) {
+			return QualityWithhold
+		}
 		return QualityDeliver
 	}
 	// Prefer observed/derived visible output. Total output includes reasoning

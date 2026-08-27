@@ -59,6 +59,44 @@ func TestClassifyQualityHold(t *testing.T) {
 	}
 }
 
+func TestClassifyQualityHoldBurst(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		sig  QualityStreamSignals
+		want QualityVerdict
+	}{
+		{
+			name: "hold-expired hello dump withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 2, ReasoningTokens: 954, EncryptedBytes: 4000, HoldExpired: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "hold-expired long answer delivers",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 200, ReasoningTokens: 954, EncryptedBytes: 8000, HoldExpired: true},
+			want: QualityDeliver,
+		},
+		{
+			name: "barely-over-floor flush withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 300, FirstVisible: true, VisibleFlushMS: 100},
+			want: QualityWithhold,
+		},
+		{
+			name: "large cipher flush delivers",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 2000, FirstVisible: true, VisibleFlushMS: 100},
+			want: QualityDeliver,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ClassifyQualityHold(test.sig, 8); got != test.want {
+				t.Fatalf("ClassifyQualityHold() = %s, want %s (%#v)", got, test.want, test.sig)
+			}
+		})
+	}
+}
+
 func TestDecideQualityRetry(t *testing.T) {
 	t.Parallel()
 	if got := DecideQualityRetry(QualityDeliver, 0, 2, qualityRetryFailOpen); got != QualityActionDeliver {
@@ -289,10 +327,11 @@ func TestObserveQualityChunkShortNoThinkIgnoresFakeReasoningUsage(t *testing.T) 
 
 func TestObserveQualityConvertedEncryptedThinking(t *testing.T) {
 	t.Parallel()
+	cipher := strings.Repeat("A", defaultMinEncryptedBytes*8)
 	source := sse(
 		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`,
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
-		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"gAAAA-cipher"}}`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"`+cipher+`"}}`,
 		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
 		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
 	)
@@ -350,12 +389,21 @@ func TestObserveQualityChunkWhitespaceIsNotThinking(t *testing.T) {
 
 func TestObserveQualityChunkAnthropicSignatureIsThinking(t *testing.T) {
 	t.Parallel()
-	state := qualityScanState{protocol: qualityProtocolAnthropic}
-	ObserveQualityChunk(&state, []byte(sse(
+	short := qualityScanState{protocol: qualityProtocolAnthropic}
+	ObserveQualityChunk(&short, []byte(sse(
 		`data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"gAAAA-cipher"}}`,
 	)))
+	if sig := short.signals(); sig.HasThinking || !sig.ReasoningStarted || sig.EncryptedBytes == 0 {
+		t.Fatalf("short Anthropic signature stub must not count as thinking: %#v", sig)
+	}
+
+	cipher := strings.Repeat("A", defaultMinEncryptedBytes)
+	state := qualityScanState{protocol: qualityProtocolAnthropic}
+	ObserveQualityChunk(&state, []byte(sse(
+		`data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"`+cipher+`"}}`,
+	)))
 	if sig := state.signals(); !sig.HasThinking || !sig.ReasoningStarted {
-		t.Fatalf("non-empty Anthropic signature must count as encrypted thinking: %#v", sig)
+		t.Fatalf("floor-sized Anthropic signature must count as encrypted thinking: %#v", sig)
 	}
 }
 
@@ -392,19 +440,53 @@ func TestObserveQualityChunkResponsesReasoningItem(t *testing.T) {
 		t.Fatalf("streamed reasoning summary should deliver: %#v", realSig)
 	}
 
+	short := qualityScanState{protocol: qualityProtocolResponses}
+	ObserveQualityChunk(&short, []byte(sse(
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"gAAAA-cipher"}}`,
+		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
+	)))
+	shortSig := short.signals()
+	if shortSig.HasThinking {
+		t.Fatalf("short encrypted stub must not count as thinking: %#v", shortSig)
+	}
+	if shortSig.EncryptedBytes == 0 || !shortSig.ReasoningStarted || shortSig.ReasoningTokens != 60 {
+		t.Fatalf("short encrypted stub signals = %#v", shortSig)
+	}
+	if ClassifyQualityHold(shortSig, 32) != QualityWithhold {
+		t.Fatalf("short encrypted stub must withhold: %#v", shortSig)
+	}
+
+	cipher := strings.Repeat("A", defaultMinEncryptedBytes*8)
 	encrypted := qualityScanState{protocol: qualityProtocolResponses}
 	ObserveQualityChunk(&encrypted, []byte(sse(
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
-		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"gAAAA-cipher"}}`,
-		`data: {"type":"response.output_text.delta","delta":"hello hello hello hello hello hello hello hello"}`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"`+cipher+`"}}`,
+		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
 		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
 	)))
 	encSig := encrypted.signals()
-	if !encSig.HasThinking || encSig.ReasoningTokens != 60 {
+	if !encSig.HasThinking || encSig.ReasoningTokens != 60 || encSig.EncryptedBytes < defaultMinEncryptedBytes {
 		t.Fatalf("encrypted reasoning item must count as thinking: %#v", encSig)
 	}
 	if ClassifyQualityHold(encSig, 32) != QualityDeliver {
 		t.Fatalf("encrypted thinking should deliver: %#v", encSig)
+	}
+
+	floorCipher := strings.Repeat("A", defaultMinEncryptedBytes)
+	undersized := qualityScanState{protocol: qualityProtocolResponses}
+	ObserveQualityChunk(&undersized, []byte(sse(
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"`+floorCipher+`"}}`,
+		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":1200,"output_tokens_details":{"reasoning_tokens":1000}}}}`,
+	)))
+	underSig := undersized.signals()
+	if underSig.HasThinking {
+		t.Fatalf("256B cipher must not satisfy 1000 reasoning tokens: %#v", underSig)
+	}
+	if ClassifyQualityHold(underSig, 32) != QualityWithhold {
+		t.Fatalf("undersized cipher vs usage must withhold: %#v", underSig)
 	}
 }
 
@@ -1409,7 +1491,7 @@ func TestAttemptLoopQualityFailOpenFallbackAndTotalAttemptCap(t *testing.T) {
 func TestNormalizeQualityRetryDefaults(t *testing.T) {
 	t.Parallel()
 	got := normalizeQualityRetry(QualityRetryRuntime{Enabled: true})
-	if !got.Enabled || got.MaxAttempts != 6 || got.MinOutputTokens != 8 || got.OnExhausted != qualityRetryFailClosed || got.HoldTimeout != 30*time.Second || got.AccountCooldown != 12*time.Hour || got.IdleAccountCooldown != 15*time.Minute {
+	if !got.Enabled || got.MaxAttempts != 6 || got.MinOutputTokens != 8 || got.OnExhausted != qualityRetryFailClosed || got.HoldTimeout != 30*time.Second || got.AccountCooldown != 12*time.Hour || got.IdleAccountCooldown != 15*time.Minute || got.MinEncryptedBytes != defaultMinEncryptedBytes || got.EncryptedBytesPerReasoningToken != defaultEncryptedBytesPerReasoningToken {
 		t.Fatalf("defaults = %#v", got)
 	}
 }
