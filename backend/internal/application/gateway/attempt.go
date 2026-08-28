@@ -70,6 +70,9 @@ func (r *failureAttemptRecorder) captureCredentialFailure(credential accountdoma
 }
 
 func (r *failureAttemptRecorder) captureResponse(credential accountdomain.Credential, startedAt time.Time, response *provider.Response, requestErr error) error {
+	if response != nil {
+		r.captureRecoveredAttempts(credential, startedAt, response)
+	}
 	if requestErr != nil {
 		r.append(audit.Attempt{
 			Source:         audit.AttemptSourceTransport,
@@ -86,7 +89,7 @@ func (r *failureAttemptRecorder) captureResponse(credential accountdomain.Creden
 		})
 		return requestErr
 	}
-	if response.StatusCode >= 200 && response.StatusCode < 300 {
+	if response == nil || (response.StatusCode >= 200 && response.StatusCode < 300) {
 		return nil
 	}
 
@@ -168,6 +171,69 @@ func (r *failureAttemptRecorder) captureStreamFailure(credential accountdomain.C
 		ResponseHeaders:       sanitizeDiagnosticHeaders(response.Header),
 		ResponseBody:          body,
 		ResponseBodyTruncated: bodyTruncated,
+	})
+}
+
+func (r *failureAttemptRecorder) captureRecoveredAttempts(credential accountdomain.Credential, startedAt time.Time, response *provider.Response) {
+	if response == nil {
+		return
+	}
+	for _, recovered := range response.RecoveredAttempts {
+		diagnostic := recovered.Diagnostic
+		statusCode := diagnostic.StatusCode
+		body, truncated := r.captureBody(diagnostic.Body, diagnostic.BodyTruncated)
+		stage := recovered.Stage
+		if stage == "" {
+			stage = "recovered_upstream"
+		}
+		r.append(audit.Attempt{
+			Source:                audit.AttemptSourceUpstreamHTTP,
+			Stage:                 stage,
+			AccountID:             auditAccountID(credential.ID),
+			AccountName:           credential.Name,
+			Method:                r.method,
+			RequestPath:           r.path,
+			UpstreamURL:           sanitizeUpstreamURL(response.UpstreamURL),
+			StartedAt:             startedAt.UTC(),
+			DurationMS:            time.Since(startedAt).Milliseconds(),
+			UpstreamStatusCode:    &statusCode,
+			UpstreamStatus:        diagnostic.Status,
+			ResponseHeaders:       sanitizeDiagnosticHeaders(diagnostic.Header),
+			ResponseBody:          body,
+			ResponseBodyTruncated: truncated,
+			TransportError:        sanitizeDiagnosticText(recovered.Result, diagnosticTextLimit),
+			ErrorChain:            []audit.ErrorFrame{{Type: stage, Message: recovered.Result}},
+		})
+	}
+}
+
+func (r *failureAttemptRecorder) captureSelectionFailure(accountID uint64, accountName string, err error) {
+	if err == nil {
+		return
+	}
+	stage := "account_selection"
+	id := accountID
+	name := accountName
+	var unavailable *SelectionUnavailableError
+	if errors.As(err, &unavailable) && unavailable != nil {
+		stage = string(unavailable.Reason)
+		if unavailable.AccountID != 0 {
+			id = unavailable.AccountID
+		}
+		if unavailable.AccountName != "" {
+			name = unavailable.AccountName
+		}
+	}
+	r.append(audit.Attempt{
+		Source:         audit.AttemptSourceCredential,
+		Stage:          stage,
+		AccountID:      auditAccountID(id),
+		AccountName:    name,
+		Method:         r.method,
+		RequestPath:    r.path,
+		StartedAt:      time.Now().UTC(),
+		TransportError: sanitizeDiagnosticText(err.Error(), diagnosticTextLimit),
+		ErrorChain:     errorFrames(err),
 	})
 }
 

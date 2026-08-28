@@ -166,6 +166,22 @@ func TestRecoverReasoningDecodeFailureStaysOnXAIFallbackPlane(t *testing.T) {
 	if calls.Load() != 3 || response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "reasoning_encrypted_content_downgraded") {
 		t.Fatalf("calls=%d status=%d headers=%#v", calls.Load(), response.StatusCode, response.Header)
 	}
+	if len(response.RecoveredAttempts) < 1 {
+		t.Fatalf("recovered attempts = %#v", response.RecoveredAttempts)
+	}
+	var decode *provider.RecoveredAttempt
+	for i := range response.RecoveredAttempts {
+		if response.RecoveredAttempts[i].Stage == "reasoning_decode_rejected" {
+			decode = &response.RecoveredAttempts[i]
+			break
+		}
+	}
+	if decode == nil || decode.Result != "recovered_encrypted_content_stripped" {
+		t.Fatalf("recovered attempts = %#v", response.RecoveredAttempts)
+	}
+	if decode.Diagnostic.StatusCode != http.StatusBadRequest || !strings.Contains(string(decode.Diagnostic.Body), "compaction blob") {
+		t.Fatalf("hidden 400 = %#v", decode.Diagnostic)
+	}
 }
 
 func TestRecoverReasoningDecodeFailureResetsSessionWithoutOpaqueInput(t *testing.T) {
@@ -202,6 +218,9 @@ func TestRecoverReasoningDecodeFailureResetsSessionWithoutOpaqueInput(t *testing
 	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
 	if calls.Load() != 2 || response.StatusCode != http.StatusOK || !strings.Contains(warnings, "reasoning_session_reset") || strings.Contains(warnings, "reasoning_encrypted_content_downgraded") {
 		t.Fatalf("calls=%d status=%d warnings=%q", calls.Load(), response.StatusCode, warnings)
+	}
+	if len(response.RecoveredAttempts) != 1 || response.RecoveredAttempts[0].Result != "recovered_session_reset" {
+		t.Fatalf("recovered attempts = %#v", response.RecoveredAttempts)
 	}
 }
 

@@ -471,15 +471,27 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				if diagnostic == nil {
 					return nil, convertErr
 				}
-				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RecoveredAttempts: recoveredAttempts(recoveredPrimaryFailure, reasoningRecovery), RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(converted))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 			resp.Header.Set("Content-Type", "application/json")
-			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RecoveredAttempts: recoveredAttempts(recoveredPrimaryFailure, reasoningRecovery), RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
 		}
 	}
-	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: rateLimitDiagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: rateLimitDiagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RecoveredAttempts: recoveredAttempts(recoveredPrimaryFailure, reasoningRecovery), RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+}
+
+func recoveredAttempts(primary *provider.DiagnosticResponse, recovery reasoningRecoveryOutcome) []provider.RecoveredAttempt {
+	attempts := append([]provider.RecoveredAttempt(nil), recovery.attempts...)
+	if primary != nil {
+		attempts = append([]provider.RecoveredAttempt{{
+			Stage:      "plane_fallback",
+			Result:     "hidden_by_fallback_success",
+			Diagnostic: *primary,
+		}}, attempts...)
+	}
+	return attempts
 }
 
 func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response, replayKey string) bool {

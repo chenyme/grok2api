@@ -387,7 +387,10 @@ type Response struct {
 	Diagnostic  *DiagnosticResponse
 	// RecoveredPrimaryFailure records a primary-plane failure hidden by a successful Provider fallback.
 	RecoveredPrimaryFailure *DiagnosticResponse
-	RateLimit               *RateLimitMetadata
+	// RecoveredAttempts are hidden upstream calls (reasoning-decode recovery,
+	// plane fallback) that must still appear in request audit diagnostics.
+	RecoveredAttempts []RecoveredAttempt
+	RateLimit         *RateLimitMetadata
 	// ModelCatalogChanged indicates that the model catalog ETag in an inference response differs from
 	// the ETag from the account's most recent successful /models sync.
 	ModelCatalogChanged bool
@@ -417,6 +420,13 @@ type DiagnosticResponse struct {
 	Header        http.Header
 	Body          []byte
 	BodyTruncated bool
+}
+
+// RecoveredAttempt is one hidden upstream call that a later retry replaced.
+type RecoveredAttempt struct {
+	Stage      string
+	Result     string
+	Diagnostic DiagnosticResponse
 }
 
 // ReadDiagnosticBody reads up to the diagnostic body limit and reports whether upstream content was truncated.

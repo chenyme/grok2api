@@ -136,3 +136,50 @@ func TestFailureAttemptRecorderBoundsTotalBodyAndErrorChain(t *testing.T) {
 		t.Fatalf("error frames = %d", len(frames))
 	}
 }
+
+func TestFailureAttemptRecorderKeepsRecoveredAttemptsOn2xx(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	status := http.StatusBadRequest
+	response := &provider.Response{
+		StatusCode:  http.StatusOK,
+		Status:      "200 OK",
+		UpstreamURL: "https://cli-chat-proxy.grok.com/v1/responses",
+		Body:        io.NopCloser(strings.NewReader(`{"id":"ok"}`)),
+		RecoveredAttempts: []provider.RecoveredAttempt{{
+			Stage:  "reasoning_decode_rejected",
+			Result: "recovered_encrypted_content_stripped",
+			Diagnostic: provider.DiagnosticResponse{
+				StatusCode: status,
+				Status:     "400 Bad Request",
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       []byte(`{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`),
+			},
+		}},
+	}
+	if err := recorder.captureResponse(account.Credential{ID: 9, Name: "primary"}, time.Now(), response, nil); err != nil {
+		t.Fatal(err)
+	}
+	stored := recorder.snapshot()
+	if len(stored) != 1 || stored[0].Stage != "reasoning_decode_rejected" || stored[0].TransportError != "recovered_encrypted_content_stripped" {
+		t.Fatalf("stored = %#v", stored)
+	}
+	if stored[0].UpstreamStatusCode == nil || *stored[0].UpstreamStatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %#v", stored[0].UpstreamStatusCode)
+	}
+	if !strings.Contains(string(stored[0].ResponseBody), "compaction blob") {
+		t.Fatalf("body = %q", stored[0].ResponseBody)
+	}
+}
+
+func TestFailureAttemptRecorderCapturesPinnedSelectionFailure(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	err := pinnedUnavailableError(42, "bound-account")
+	recorder.captureSelectionFailure(0, "", err)
+	stored := recorder.snapshot()
+	if len(stored) != 1 || stored[0].Source != audit.AttemptSourceCredential || stored[0].Stage != string(SelectionPinnedUnavailable) {
+		t.Fatalf("stored = %#v", stored)
+	}
+	if stored[0].AccountID == nil || *stored[0].AccountID != 42 || stored[0].AccountName != "bound-account" {
+		t.Fatalf("account = %#v", stored[0])
+	}
+}
