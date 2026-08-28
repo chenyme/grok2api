@@ -13,8 +13,11 @@ import (
 )
 
 var reasoningDecodeFailureMarkers = [][]byte{
-	[]byte("could not decode the compaction blob"),
 	[]byte("could not decrypt the provided encrypted_content"),
+}
+
+var compactionBlobDecodeFailureMarkers = [][]byte{
+	[]byte("could not decode the compaction blob"),
 }
 
 type reasoningRecoveryOutcome struct {
@@ -71,7 +74,7 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 		return cloneBufferedResponse(response, errorBody, truncated), requestURL, reasoningRecoveryOutcome{}
 	}
 	original := cloneBufferedResponse(response, errorBody, truncated)
-	if truncated || !isReasoningDecodeFailure(errorBody) {
+	if truncated || isCompactionBlobDecodeFailure(errorBody) || !isReasoningDecodeFailure(errorBody) {
 		return original, requestURL, reasoningRecoveryOutcome{}
 	}
 	// 一旦上游明确拒绝 opaque reasoning，立即清理该账号/平面的服务端回放，
@@ -230,8 +233,16 @@ func (a *Adapter) logReasoningRecovery(request provider.ResponseResourceRequest,
 }
 
 func isReasoningDecodeFailure(body []byte) bool {
+	return containsDecodeFailureMarker(body, reasoningDecodeFailureMarkers)
+}
+
+func isCompactionBlobDecodeFailure(body []byte) bool {
+	return containsDecodeFailureMarker(body, compactionBlobDecodeFailureMarkers)
+}
+
+func containsDecodeFailureMarker(body []byte, markers [][]byte) bool {
 	lower := bytes.ToLower(body)
-	for _, marker := range reasoningDecodeFailureMarkers {
+	for _, marker := range markers {
 		if bytes.Contains(lower, marker) {
 			return true
 		}

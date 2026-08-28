@@ -87,8 +87,10 @@ func (c *gatewayCompactionCodec) decode(session, blob string) (summary string, o
 }
 
 // expandGatewayCompactionHistory restores gateway-owned remote-v2 state to a
-// portable developer message. Foreign OpenAI/Claude/Gemini blobs are never
-// forwarded to Grok Build: its decoder cannot decrypt those provider states.
+// portable developer message. Client compaction blobs without the gateway
+// prefix are treated as upstream original compact state and forwarded as-is.
+// A still-decryptable g2a_compact_v1 blob is expanded locally. If Build
+// rejects an original blob, that error is returned to the client.
 func expandGatewayCompactionHistory(body []byte, codec *gatewayCompactionCodec, session string) ([]byte, int, int, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -114,14 +116,12 @@ func expandGatewayCompactionHistory(body []byte, codec *gatewayCompactionCodec, 
 			changed = true
 			continue
 		}
-		if owned {
-			items[index] = gatewayCompactionSummaryMessage(summary)
-			if sessionDrifted {
-				drifted++
-			}
-		} else {
-			foreign++
-			items[index] = compatibilityBoundaryMessage("A compacted context created by another provider cannot be decoded by Grok Build. Continue from the retained conversation messages.")
+		if !owned {
+			continue
+		}
+		items[index] = gatewayCompactionSummaryMessage(summary)
+		if sessionDrifted {
+			drifted++
 		}
 		changed = true
 	}

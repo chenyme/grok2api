@@ -139,7 +139,7 @@ func TestRecoverReasoningDecodeFailureStaysOnXAIFallbackPlane(t *testing.T) {
 			if request.URL.Host != "xai.test" {
 				t.Fatalf("fallback host = %q", request.URL.Host)
 			}
-			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
 		case 3:
 			data, _ := io.ReadAll(request.Body)
 			if request.URL.Host != "xai.test" || strings.Contains(string(data), `"type":"reasoning"`) {
@@ -179,7 +179,7 @@ func TestRecoverReasoningDecodeFailureResetsSessionWithoutOpaqueInput(t *testing
 			if request.Header.Get("x-grok-session-id") == "" || !strings.Contains(string(data), `"prompt_cache_key":"session-1"`) {
 				t.Fatalf("initial session request headers=%#v body=%s", request.Header, data)
 			}
-			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
 		case 2:
 			if request.Header.Get("x-grok-session-id") != "" || request.Header.Get("x-grok-conv-id") != "" || strings.Contains(string(data), `"prompt_cache_key"`) {
 				t.Fatalf("stateless recovery headers=%#v body=%s", request.Header, data)
@@ -228,7 +228,7 @@ func TestRecoverReasoningDecodeFailureEscalatesFromOpaqueStripToSessionReset(t *
 		default:
 			t.Fatalf("unexpected call %d", call)
 		}
-		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
 	})
 	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
 		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
@@ -251,7 +251,7 @@ func TestRecoverReasoningDecodeFailurePreservesRateLimitAfterOpaqueStrip(t *test
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch calls.Add(1) {
 		case 1:
-			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
 		case 2:
 			data, _ := io.ReadAll(request.Body)
 			if strings.Contains(string(data), `"encrypted_content"`) {
@@ -306,7 +306,7 @@ func TestRecoverReasoningDecodeFailurePreservesRateLimitAfterSessionReset(t *tes
 			t.Fatalf("unexpected call %d", call)
 			return nil, nil
 		}
-		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
 	})
 
 	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
@@ -328,18 +328,17 @@ func TestRecoverReasoningDecodeFailurePreservesRateLimitAfterSessionReset(t *tes
 	}
 }
 
-// TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob 覆盖 Claude Code
-// 在超长上下文压缩后回放大体积 opaque 状态、且上游拒绝该状态的恢复路径。
-func TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob(t *testing.T) {
+// TestCompactionBlobDecodeFailureIsReturnedToClient covers Claude Code
+// replaying a large opaque compact state that Build rejects. That 400 is
+// surfaced; recovery must not strip the blob and retry.
+func TestCompactionBlobDecodeFailureIsReturnedToClient(t *testing.T) {
 	adapter, encrypted := newReasoningRecoveryTestAdapter(t)
-	// 按常用的约 4 字节/token 估算，4 MiB 的 opaque 状态覆盖约 100 万 token 的量级。
 	compactionBlob := strings.Repeat("x", 4<<20)
 	body, err := json.Marshal(map[string]any{
 		"model": "grok-4.5",
 		"input": []any{
 			map[string]any{
-				"type":              "reasoning",
-				"summary":           []any{},
+				"type":              "compaction",
 				"encrypted_content": compactionBlob,
 			},
 			map[string]any{"role": "user", "content": "压缩后继续执行"},
@@ -355,21 +354,13 @@ func TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob(t *tes
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
-		switch call {
-		case 1:
-			if len(data) < 4<<20 || !strings.Contains(string(data), `"encrypted_content"`) {
-				t.Fatalf("初始 1M 级 compaction 请求不完整：size=%d", len(data))
-			}
-			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
-		case 2:
-			if len(data) >= 4096 || strings.Contains(string(data), `"encrypted_content"`) || !strings.Contains(string(data), "压缩后继续执行") {
-				t.Fatalf("恢复请求仍携带 opaque 状态：size=%d", len(data))
-			}
-			return jsonHTTPResponse(request, http.StatusTooManyRequests, `{"error":{"message":"rate limited after compaction recovery"}}`), nil
-		default:
-			t.Fatalf("unexpected call %d", call)
-			return nil, nil
+		if call != 1 {
+			t.Fatalf("unexpected recovery retry %d", call)
 		}
+		if len(data) < 4<<20 || !strings.Contains(string(data), `"encrypted_content"`) {
+			t.Fatalf("compact blob was not forwarded: size=%d", len(data))
+		}
+		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
 	})
 
 	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
@@ -379,6 +370,7 @@ func TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob(t *tes
 		Model:          "grok-4.5",
 		PromptCacheKey: "million-token-session",
 		Body:           body,
+		NormalizeBody:  true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -386,7 +378,7 @@ func TestRecoverReasoningDecodeFailureWithMillionTokenScaleCompactionBlob(t *tes
 	defer response.Body.Close()
 	responseBody, _ := io.ReadAll(response.Body)
 	warnings := response.Header.Get("X-Grok2API-Compatibility-Warnings")
-	if calls.Load() != 2 || response.StatusCode != http.StatusTooManyRequests || !strings.Contains(string(responseBody), "rate limited after compaction recovery") || !strings.Contains(warnings, "reasoning_encrypted_content_downgraded") {
+	if calls.Load() != 1 || response.StatusCode != http.StatusBadRequest || !strings.Contains(string(responseBody), "Could not decode the compaction blob") || strings.Contains(warnings, "reasoning_encrypted_content_downgraded") {
 		t.Fatalf("calls=%d status=%d warnings=%q body=%s", calls.Load(), response.StatusCode, warnings, responseBody)
 	}
 }
@@ -396,7 +388,7 @@ func TestRecoverReasoningDecodeFailureDoesNotResetStoredResponseChain(t *testing
 	var calls atomic.Int32
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls.Add(1)
-		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+		return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
 	})
 	response, err := adapter.ForwardResponse(t.Context(), provider.ResponseResourceRequest{
 		Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, EncryptedAccessToken: encrypted},
@@ -417,7 +409,7 @@ func TestRecoverReasoningDecodeFailurePreservesOriginalWhenRetryFails(t *testing
 	var calls atomic.Int32
 	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if calls.Add(1) == 1 {
-			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`), nil
+			return jsonHTTPResponse(request, http.StatusBadRequest, `{"error":"Could not decrypt the provided encrypted_content. Ensure the value is unmodified."}`), nil
 		}
 		return jsonHTTPResponse(request, http.StatusServiceUnavailable, `{"error":"temporary failure"}`), nil
 	})
@@ -431,7 +423,7 @@ func TestRecoverReasoningDecodeFailurePreservesOriginalWhenRetryFails(t *testing
 	}
 	defer response.Body.Close()
 	data, _ := io.ReadAll(response.Body)
-	if calls.Load() != 2 || response.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "Could not decode") || !strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "reasoning_recovery_failed") {
+	if calls.Load() != 2 || response.StatusCode != http.StatusBadRequest || !strings.Contains(string(data), "Could not decrypt") || !strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "reasoning_recovery_failed") {
 		t.Fatalf("calls=%d status=%d headers=%#v body=%s", calls.Load(), response.StatusCode, response.Header, data)
 	}
 }
