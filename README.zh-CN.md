@@ -365,8 +365,8 @@ qualityGuard:
   enabled: true
   model: "grok-4.6"
   # 思考模型缺流式 reasoning 时先扣住响应，换号再打，不把降智正文发给用户。
-  # 最多观察 30 秒；已有 reasoning 起始信号和可见输出的进行中流会在超时后放行，
-  # 空流和终态仍无 thinking 的响应继续换号。
+  # 最多观察 30 秒；stub 加上足够可见输出在超时后扣住（TUI 30s 后的短问候），
+  # 空 stub 继续等。floor 已达标但 1 秒内吐短回复的也扣。
   requestRetry:
     enabled: true
     maxAttempts: 6
@@ -377,7 +377,7 @@ qualityGuard:
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。示例配置默认开启。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**，排除该账号再试；全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。不处理图/视频、stored response 钉账号和 ForcedEgress 探针。Grok TUI 带 tools 的回合仍会 hold，避免 0-thinking 降智流跳过闸门。
+`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。`config.example.yaml` 里 `enabled` 仍为 false，打开后才拦截。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**，排除该账号再试。TUI 续聊（`previous_response_id`）和 hosted tools 仍 hold：第一枪钉原账号，扣住后 unpin 换号。不处理图/视频和 ForcedEgress 探针。全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。
 
 ```bash
 docker compose --profile quality-guard up -d --build
