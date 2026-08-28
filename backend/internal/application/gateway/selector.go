@@ -67,6 +67,22 @@ const defaultFreeQuotaRecoveryPause = 24 * time.Hour
 
 var errRoutingCredentialStale = errors.New("routing credential is no longer available")
 
+// skipUnusableCredentialMaterial turns a per-account secret-load failure into a
+// skippable stale claim. Callers already walk the rest of the pool on
+// errRoutingCredentialStale; a timeout or lock on one row must not report the
+// whole pool as empty. Request cancellation still aborts selection.
+func (s *Selector) skipUnusableCredentialMaterial(ctx context.Context, value account.Credential, loadErr error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(loadErr, repository.ErrNotFound) {
+		s.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: value.Provider, AccountID: value.ID})
+	} else if loadErr != nil && s.logger != nil {
+		s.logger.Warn("routing_credential_material_skipped", "account_id", value.ID, "provider", value.Provider, "error", loadErr)
+	}
+	return errRoutingCredentialStale
+}
+
 type quotaRecoveryHints struct {
 	Billing *account.Billing
 }
@@ -1990,11 +2006,7 @@ func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credentia
 		material, loadErr := s.accounts.GetCredentialMaterial(ctx, value.ID, value.Provider)
 		if loadErr != nil {
 			releaseSlot()
-			if errors.Is(loadErr, repository.ErrNotFound) {
-				s.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: value.Provider, AccountID: value.ID})
-				return nil, errRoutingCredentialStale
-			}
-			return nil, fmt.Errorf("加载账号执行凭据: %w", loadErr)
+			return nil, s.skipUnusableCredentialMaterial(ctx, value, loadErr)
 		}
 		hydrated, matched := material.ApplyTo(value)
 		if !matched {

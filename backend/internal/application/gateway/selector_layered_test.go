@@ -83,7 +83,10 @@ func (r *layeredAccountRepository) ListRoutingCandidates(context.Context, accoun
 	return r.combined, nil
 }
 
-func (r *layeredAccountRepository) GetCredentialMaterial(_ context.Context, accountID uint64, provider account.Provider) (account.CredentialMaterial, error) {
+func (r *layeredAccountRepository) GetCredentialMaterial(ctx context.Context, accountID uint64, provider account.Provider) (account.CredentialMaterial, error) {
+	if err := ctx.Err(); err != nil {
+		return account.CredentialMaterial{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.materialCalls = append(r.materialCalls, accountID)
@@ -642,6 +645,68 @@ func TestSelectorHydratesOnlyClaimedCredentialAndSkipsStaleCandidate(t *testing.
 	}
 }
 
+func TestSelectorSkipsCredentialMaterialLoadErrorAndUsesNextAccount(t *testing.T) {
+	repo := newLayeredRepositoryFixture()
+	repo.bases = []account.RoutingAccountBase{
+		{Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 20}},
+		{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10}},
+	}
+	repo.overlays["model-a"] = account.RoutingOverlaySnapshot{Values: []account.RoutingAccountOverlay{
+		{AccountID: 1, ModelCapabilityKnown: true, SupportsModel: true},
+		{AccountID: 2, ModelCapabilityKnown: true, SupportsModel: true},
+	}}
+	repo.materialErrors = map[uint64]error{1: errors.New("temporary credential store timeout")}
+	repo.materials = map[uint64]account.CredentialMaterial{
+		2: {AccountID: 2, Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, EncryptedAccessToken: "selected-secret"},
+	}
+	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+
+	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != 2 || lease.Credential.EncryptedAccessToken != "selected-secret" {
+		t.Fatalf("lease credential = %#v", lease.Credential)
+	}
+	if !reflect.DeepEqual(repo.materialCalls, []uint64{1, 2}) {
+		t.Fatalf("material calls = %v, want [1 2]", repo.materialCalls)
+	}
+}
+
+func TestSelectorCredentialMaterialContextCancelDoesNotDrainPool(t *testing.T) {
+	repo := newLayeredRepositoryFixture()
+	repo.bases = []account.RoutingAccountBase{
+		{Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 20}},
+		{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10}},
+	}
+	repo.overlays["model-a"] = account.RoutingOverlaySnapshot{Values: []account.RoutingAccountOverlay{
+		{AccountID: 1, ModelCapabilityKnown: true, SupportsModel: true},
+		{AccountID: 2, ModelCapabilityKnown: true, SupportsModel: true},
+	}}
+	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := selector.Acquire(ctx, account.ProviderBuild, 0, "model-a", "", "", nil, false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", err)
+	}
+	if len(repo.materialCalls) > 1 {
+		t.Fatalf("material calls = %v, want canceled request not to drain the pool", repo.materialCalls)
+	}
+}
+
+func TestSkipUnusableCredentialMaterialHonorsCancel(t *testing.T) {
+	selector := NewSelector(nil, nil, nil, nil, time.Hour, time.Second, time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := selector.skipUnusableCredentialMaterial(ctx, account.Credential{ID: 1, Provider: account.ProviderBuild}, errors.New("temporary credential store timeout"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context canceled", err)
+	}
+}
+
 func TestSelectorReportsNoAccountsWhenEveryCredentialIsStale(t *testing.T) {
 	repo := newLayeredRepositoryFixture()
 	repo.materialErrors = map[uint64]error{1: repository.ErrNotFound}
@@ -669,6 +734,37 @@ func TestSelectorPinnedCredentialDoesNotSwitchWhenMaterialIsStale(t *testing.T) 
 	}
 	if !reflect.DeepEqual(repo.materialCalls, []uint64{1}) {
 		t.Fatalf("material calls = %v, want pinned account only", repo.materialCalls)
+	}
+}
+
+func TestSelectorRebindsStickySessionAfterCredentialMaterialLoadError(t *testing.T) {
+	repo := newLayeredRepositoryFixture()
+	repo.bases = []account.RoutingAccountBase{
+		{Credential: account.Credential{ID: 1, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 20}},
+		{Credential: account.Credential{ID: 2, Provider: account.ProviderBuild, Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 10}},
+	}
+	repo.overlays["model-a"] = account.RoutingOverlaySnapshot{Values: []account.RoutingAccountOverlay{
+		{AccountID: 1, ModelCapabilityKnown: true, SupportsModel: true},
+		{AccountID: 2, ModelCapabilityKnown: true, SupportsModel: true},
+	}}
+	repo.materialErrors = map[uint64]error{1: errors.New("temporary credential store timeout")}
+	repo.materials = map[uint64]account.CredentialMaterial{
+		2: {AccountID: 2, Provider: account.ProviderBuild, AuthType: account.AuthTypeOAuth, EncryptedAccessToken: "selected-secret"},
+	}
+	sticky := memory.NewStickyStore()
+	affinity := "load-error-session"
+	if err := sticky.Set(context.Background(), stickySessionKey(affinity), 1, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), sticky, nil, time.Hour, time.Second, time.Minute)
+
+	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", affinity, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != 2 {
+		t.Fatalf("selected account = %d, want fallback account 2", lease.Credential.ID)
 	}
 }
 
@@ -708,8 +804,9 @@ func TestSelectorReleasesCapacityWhenCredentialHydrationFails(t *testing.T) {
 	selector := NewSelector(repo, limiter, memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
 
 	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
-	if !errors.Is(err, loadErr) {
-		t.Fatalf("error = %v, want credential storage error", err)
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionNoAccounts {
+		t.Fatalf("error = %v, want no accounts after skipping the only candidate", err)
 	}
 	current, currentErr := limiter.Current(context.Background(), repository.AccountConcurrencyKey(1))
 	if currentErr != nil {

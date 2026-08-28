@@ -72,6 +72,23 @@ func benchmarkSegmentedSelector(b *testing.B, candidateCount int, enabled, force
 	}
 }
 
+func TestSegmentedActiveSkipsCredentialMaterialLoadError(t *testing.T) {
+	limiter := newSegmentedSelectiveLimiter()
+	selector := newSegmentedActiveTestSelector(100, limiter, nil)
+	selector.UpdateSegmentedSelector(true, 100, 8)
+	repo := selector.accounts.(*layeredAccountRepository)
+	repo.materialErrors = map[uint64]error{1: errors.New("temporary credential store timeout")}
+
+	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != 2 {
+		t.Fatalf("selected account = %d, want 2 after skipping material load error", lease.Credential.ID)
+	}
+}
+
 func TestSegmentedActiveReadsOnlyFirstAvailableWindow(t *testing.T) {
 	limiter := newSegmentedSelectiveLimiter()
 	selector := newSegmentedActiveTestSelector(100, limiter, nil)
