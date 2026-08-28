@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	fhttptest "github.com/bogdanfinn/fhttp/httptest"
@@ -674,6 +675,58 @@ func (egressRepositoryStub) UpdateEgressNode(context.Context, egressdomain.Node)
 
 func (egressRepositoryStub) DeleteEgressNode(context.Context, uint64) error {
 	return errors.New("unsupported")
+}
+
+type coolingImageEgressRepository struct {
+	egressRepositoryStub
+	node egressdomain.Node
+}
+
+func (r coolingImageEgressRepository) GetEgressNode(_ context.Context, id uint64) (egressdomain.Node, error) {
+	if r.node.ID != id {
+		return egressdomain.Node{}, errors.New("not found")
+	}
+	return r.node, nil
+}
+
+func TestImageCoolingBoundEgressIsMarkedPreSubmission(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedToken, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt("http://127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cooldown := time.Now().UTC().Add(time.Minute)
+	repository := coolingImageEgressRepository{node: egressdomain.Node{
+		ID: 11, Name: "cooling-image-node", Scope: egressdomain.ScopeWeb, Enabled: true,
+		EncryptedProxyURL: encryptedProxy, CooldownUntil: &cooldown, LastError: "manual cooldown",
+	}}
+	adapter := NewAdapter(Config{}, infraegress.NewManager(repository, cipher), cipher, nil, nil)
+	credential := account.Credential{
+		ID: 1, Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO,
+		EncryptedAccessToken: encryptedToken, EgressIdentity: "safe-image-test", EgressNodeID: 11,
+	}
+
+	_, generationErr := adapter.GenerateImage(context.Background(), provider.ImageGenerationRequest{
+		Credential: credential, Model: "grok-imagine-image-quality", Prompt: "test", Count: 1, ResponseFormat: "url",
+	})
+	if !provider.IsImagePreSubmissionError(generationErr) {
+		t.Fatalf("generation error = %v, want pre-submission marker", generationErr)
+	}
+
+	_, editErr := adapter.EditImage(context.Background(), provider.ImageEditRequest{
+		Credential: credential, Model: "imagine-image-edit", Prompt: "test",
+		ImageURLs: []string{"https://example.com/input.png"}, Count: 1, Resolution: "1k", ResponseFormat: "url",
+	})
+	if !provider.IsImagePreSubmissionError(editErr) {
+		t.Fatalf("edit error = %v, want pre-submission marker", editErr)
+	}
 }
 
 func TestLiteChatRejectsInvalidImageConfigBeforeUpstream(t *testing.T) {

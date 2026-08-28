@@ -49,6 +49,8 @@ const (
 	responseWriteTimeout            = 30 * time.Second
 )
 
+const upstreamRequestDispositionHeader = "X-Upstream-Request-Disposition"
+
 var (
 	errResponseTransferLimit    = errors.New("响应超过代理安全上限")
 	errUpstreamStreamIncomplete = errors.New("上游流在终止事件前结束")
@@ -2196,6 +2198,9 @@ func writeGatewayError(c *gin.Context, err error) {
 	var upstreamFailure *gateway.UpstreamFailure
 	var selectionFailure *gateway.SelectionUnavailableError
 	switch {
+	case errors.Is(err, gateway.ErrUpstreamNotSubmitted):
+		status, code = http.StatusServiceUnavailable, "upstream_not_submitted"
+		c.Header(upstreamRequestDispositionHeader, "not-submitted")
 	case errors.Is(err, gateway.ErrLedgerUnavailable):
 		status, code = http.StatusServiceUnavailable, "ledger_unavailable"
 		message = gateway.ErrLedgerUnavailable.Error()

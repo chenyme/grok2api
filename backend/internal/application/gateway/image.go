@@ -204,6 +204,7 @@ func (s *Service) executeImage(
 	var response *provider.Response
 	var lastCredentialFailure *accountdomain.Credential
 	var lastCredentialError error
+	var submissionDisposition imageSubmissionDisposition
 	for attempt := 0; attemptPolicy.allows(attempt); attempt++ {
 		if selection == nil {
 			selection, err = s.selector.beginSelectionSessionForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, key.AccountScope())
@@ -212,6 +213,10 @@ func (s *Service) executeImage(
 			lease, err = selection.Acquire(ctx, excluded, false)
 		}
 		if err != nil {
+			if submissionDisposition.provenAbsent() {
+				writeFailureAudit(http.StatusServiceUnavailable, "upstream_not_submitted", lastCredentialFailure)
+				return nil, fmt.Errorf("%w: %w", ErrUpstreamNotSubmitted, err)
+			}
 			errorCode := "upstream_unavailable"
 			var selectionFailure *SelectionUnavailableError
 			if errors.As(err, &selectionFailure) {
@@ -230,10 +235,23 @@ func (s *Service) executeImage(
 			lease.Release()
 			continue
 		}
-		lease.markSelectorUpstreamStarted()
 		response, err = execute(ctx, route.Provider, credential, route.UpstreamModel)
 		if err != nil {
 			s.logger.Error("image_upstream_failed", "event_id", eventID, "request_id", requestID, "model", externalModel, "provider", route.Provider, "account_id", credential.ID, "error", err)
+			if provider.IsImagePreSubmissionError(err) && ctx.Err() == nil {
+				failedCredential := credential
+				lastCredentialFailure = &failedCredential
+				lastCredentialError = err
+				submissionDisposition.recordPreSubmissionFailure()
+				if selection != nil {
+					selection.excludeEgressNode(credential.EgressNodeID)
+				}
+				lease.Release()
+				response = nil
+				err = nil
+				continue
+			}
+			lease.markSelectorUpstreamStarted()
 			if isSSOCredentialRejected(err, credential) {
 				s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
 				failedCredential := credential
@@ -253,6 +271,8 @@ func (s *Service) executeImage(
 			writeFailureAudit(http.StatusBadGateway, errorCode, &credential)
 			return nil, err
 		}
+		lease.markSelectorUpstreamStarted()
+		submissionDisposition.recordResponse()
 		if response.StatusCode == http.StatusUnauthorized && credential.AuthType == accountdomain.AuthTypeSSO {
 			_, _ = readRetryableBody(response.Body)
 			s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
@@ -288,6 +308,13 @@ func (s *Service) executeImage(
 		break
 	}
 	if response == nil {
+		if submissionDisposition.provenAbsent() {
+			writeFailureAudit(http.StatusServiceUnavailable, "upstream_not_submitted", lastCredentialFailure)
+			if lastCredentialError == nil {
+				lastCredentialError = ErrNoAvailableAccount
+			}
+			return nil, fmt.Errorf("%w: %w", ErrUpstreamNotSubmitted, lastCredentialError)
+		}
 		writeFailureAudit(http.StatusServiceUnavailable, "upstream_unavailable", lastCredentialFailure)
 		if lastCredentialError == nil {
 			lastCredentialError = ErrNoAvailableAccount

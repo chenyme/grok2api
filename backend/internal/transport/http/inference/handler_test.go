@@ -228,6 +228,51 @@ func TestGatewayErrorDoesNotExposeInternalDetails(t *testing.T) {
 	}
 }
 
+func TestGatewayErrorExposesSafeImageFailoverOnlyForExplicitNotSubmittedSentinel(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name        string
+		err         error
+		status      int
+		code        string
+		disposition string
+	}{
+		{
+			name: "proven not submitted", err: fmt.Errorf("wrapped: %w", gateway.ErrUpstreamNotSubmitted),
+			status: http.StatusServiceUnavailable, code: "upstream_not_submitted", disposition: "not-submitted",
+		},
+		{
+			name: "ambiguous upstream failure", err: errors.New("write may have reached upstream"),
+			status: http.StatusBadGateway, code: "upstream_unavailable",
+		},
+		{
+			name: "ordinary account exhaustion", err: gateway.ErrNoAvailableAccount,
+			status: http.StatusServiceUnavailable, code: "upstream_unavailable",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			router := gin.New()
+			router.GET("/", func(c *gin.Context) { writeGatewayError(c, test.err) })
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+			var payload struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != test.status || payload.Error.Code != test.code {
+				t.Fatalf("status=%d code=%q body=%s", recorder.Code, payload.Error.Code, recorder.Body.String())
+			}
+			if got := recorder.Header().Get("X-Upstream-Request-Disposition"); got != test.disposition {
+				t.Fatalf("disposition = %q, want %q", got, test.disposition)
+			}
+		})
+	}
+}
+
 func TestGatewayErrorMapsOversizedVideoInputToBadRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

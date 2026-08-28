@@ -179,6 +179,23 @@ func (session *selectionSession) RetryAccount(accountID uint64) {
 	}
 }
 
+// excludeEgressNode removes every request-local candidate bound to nodeID.
+// Egress cooldown and transport failures belong to the shared outbound
+// identity, so retrying another credential on that same node cannot help.
+func (session *selectionSession) excludeEgressNode(nodeID uint64) {
+	if nodeID == 0 {
+		return
+	}
+	for _, candidate := range session.values {
+		if candidate.Credential.EgressNodeID == nodeID {
+			session.markCandidateStale(candidate.Credential.ID)
+			if session.retryAccountID == candidate.Credential.ID {
+				session.retryAccountID = 0
+			}
+		}
+	}
+}
+
 func (session *selectionSession) acquireQuotaProbe(ctx context.Context, excluded map[uint64]bool) (*accountLease, error) {
 	if len(session.probeCandidates) == 0 {
 		return nil, nil

@@ -645,7 +645,7 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 	}
 	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, request.Credential)
 	if err != nil {
-		return nil, err
+		return nil, provider.NewImagePreSubmissionError(err)
 	}
 	leaseOwned := true
 	defer func() {
@@ -690,7 +690,7 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 			return nil, upstreamErr
 		}
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
-		return nil, fmt.Errorf("连接 Imagine WebSocket: %w", err)
+		return nil, provider.NewImagePreSubmissionError(fmt.Errorf("连接 Imagine WebSocket: %w", err))
 	}
 	connectionOwned := true
 	defer func() {
@@ -830,7 +830,7 @@ func (a *Adapter) editImageAttempt(ctx context.Context, request provider.ImageEd
 	}
 	lease, err := a.egress.AcquireCredential(ctx, domainegress.ScopeWeb, request.Credential)
 	if err != nil {
-		return nil, err
+		return nil, provider.NewImagePreSubmissionError(err)
 	}
 	leaseOwned := true
 	defer func() {
