@@ -171,6 +171,41 @@ func (r *failureAttemptRecorder) captureStreamFailure(credential accountdomain.C
 	})
 }
 
+func (r *failureAttemptRecorder) hasStreamFailureFor(accountID uint64) bool {
+	for _, attempt := range r.attempts {
+		if attempt.Stage != "response_stream" || attempt.AccountID == nil || *attempt.AccountID != accountID {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// ensureStreamFailureAttempt records the handed-off 2xx stream when it later
+// fails. Prior 4xx/transport attempts must not suppress this row — otherwise
+// diagnostics only show the first 429 while the list account is the retry.
+func (r *failureAttemptRecorder) ensureStreamFailureAttempt(credential accountdomain.Credential, startedAt time.Time, response *provider.Response, errorCode string) {
+	if response == nil || r.hasStreamFailureFor(credential.ID) {
+		return
+	}
+	statusCode := response.StatusCode
+	r.append(audit.Attempt{
+		Source:             audit.AttemptSourceUpstreamHTTP,
+		Stage:              "response_stream",
+		AccountID:          auditAccountID(credential.ID),
+		AccountName:        credential.Name,
+		Method:             r.method,
+		RequestPath:        r.path,
+		UpstreamURL:        sanitizeUpstreamURL(response.UpstreamURL),
+		StartedAt:          startedAt.UTC(),
+		DurationMS:         time.Since(startedAt).Milliseconds(),
+		UpstreamStatusCode: &statusCode,
+		UpstreamStatus:     response.Status,
+		ResponseHeaders:    sanitizeDiagnosticHeaders(response.Header),
+		TransportError:     errorCode,
+	})
+}
+
 func (r *failureAttemptRecorder) captureQualityDegraded(credential accountdomain.Credential, startedAt time.Time) {
 	status := http.StatusOK
 	r.append(audit.Attempt{

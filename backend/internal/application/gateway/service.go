@@ -1118,26 +1118,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				}
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
-				attempts := failureAttempts.snapshot()
-				if !successful && len(attempts) == 0 {
-					statusCode := response.StatusCode
-					failureAttempts.append(audit.Attempt{
-						Source:             audit.AttemptSourceUpstreamHTTP,
-						Stage:              "response_stream",
-						AccountID:          auditAccountID(credential.ID),
-						AccountName:        credential.Name,
-						Method:             http.MethodPost,
-						RequestPath:        sanitizeRequestPath(path),
-						UpstreamURL:        sanitizeUpstreamURL(response.UpstreamURL),
-						StartedAt:          upstreamStartedAt.UTC(),
-						DurationMS:         time.Since(upstreamStartedAt).Milliseconds(),
-						UpstreamStatusCode: &statusCode,
-						UpstreamStatus:     response.Status,
-						ResponseHeaders:    sanitizeDiagnosticHeaders(response.Header),
-						TransportError:     errorCode,
-					})
-					attempts = failureAttempts.snapshot()
+				if !successful {
+					failureAttempts.ensureStreamFailureAttempt(credential, upstreamStartedAt, response, errorCode)
 				}
+				attempts := failureAttempts.snapshot()
 				if !successful || len(attempts) > 0 {
 					record.Attempts = attempts
 				}
