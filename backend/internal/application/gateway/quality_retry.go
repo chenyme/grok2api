@@ -159,12 +159,19 @@ func qualityIsBurstDump(sig QualityStreamSignals, minOutput int64) bool {
 	floor := encryptedThinkingFloor(0, 0, sig.ReasoningTokens)
 	barelyCipher := sig.EncryptedBytes > 0 && sig.EncryptedBytes < floor*2
 	flushed := sig.FirstVisible && sig.VisibleFlushMS >= 0 && sig.VisibleFlushMS < defaultBurstFlushMS
+	heavyReasoning := sig.ReasoningTokens >= defaultBurstMinReasoning
+	shortVisible := visible > 0 && visible < defaultBurstMaxVisible
 	// Hold timed out, then a short greeting dumped with a large reasoning bill
 	// (TUI "你好" after 30s / 954 thinking tokens).
-	if sig.HoldExpired && visible > 0 && visible < defaultBurstMaxVisible && sig.ReasoningTokens >= defaultBurstMinReasoning {
+	if sig.HoldExpired && shortVisible && heavyReasoning {
 		return true
 	}
-	if barelyCipher && flushed && (visible >= minOutput || sig.ReasoningTokens >= defaultBurstMinReasoning) {
+	// Cipher met the floor so HasThinking is true, but visible tokens then
+	// dump in <1s with almost no answer (148 out / 140 reasoning in 0.7s).
+	if flushed && shortVisible && heavyReasoning {
+		return true
+	}
+	if barelyCipher && flushed && (visible >= minOutput || heavyReasoning) {
 		return true
 	}
 	return false
