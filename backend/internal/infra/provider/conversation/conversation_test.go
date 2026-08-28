@@ -972,16 +972,16 @@ func TestConvertResponsesStreamMarksFinalEnvelopeReasoningEvidence(t *testing.T)
 	}
 }
 
-func TestConvertResponsesStreamChatPrefersRawReasoningOverSummary(t *testing.T) {
+func TestConvertResponsesStreamChatFirstWinsSummaryDropsRaw(t *testing.T) {
 	stream := strings.Join([]string{
 		`event: response.created`,
 		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`, "",
 		`event: response.output_item.added`,
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`, "",
 		`event: response.reasoning_summary_text.delta`,
-		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"raw "}`, "",
+		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"summary "}`, "",
 		`event: response.reasoning_summary_text.delta`,
-		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"reasoning"}`, "",
+		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"live"}`, "",
 		`event: response.reasoning_text.delta`,
 		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","delta":"raw reasoning"}`, "",
 		`event: response.output_item.done`,
@@ -994,12 +994,15 @@ func TestConvertResponsesStreamChatPrefersRawReasoningOverSummary(t *testing.T) 
 		t.Fatal(err)
 	}
 	text := string(converted)
-	if strings.Count(text, `"reasoning_content"`) != 1 || strings.Count(text, "raw reasoning") != 1 {
-		t.Fatalf("identical summary/raw reasoning should be emitted exactly once: %s", text)
+	if strings.Count(text, `"reasoning_content":"summary "`) != 1 || strings.Count(text, `"reasoning_content":"live"`) != 1 {
+		t.Fatalf("summary must stream live: %s", text)
+	}
+	if strings.Contains(text, `"reasoning_content":"raw reasoning"`) {
+		t.Fatalf("raw must be dropped after summary: %s", text)
 	}
 }
 
-func TestConvertResponsesStreamChatFlushesSummaryAtEOF(t *testing.T) {
+func TestConvertResponsesStreamChatEmitsSummaryLiveAtEOF(t *testing.T) {
 	stream := strings.Join([]string{
 		`event: response.reasoning_summary_text.delta`,
 		`data: {"type":"response.reasoning_summary_text.delta","delta":"summary only"}`, "", "",
@@ -1010,7 +1013,7 @@ func TestConvertResponsesStreamChatFlushesSummaryAtEOF(t *testing.T) {
 	}
 	text := string(converted)
 	if strings.Count(text, `"reasoning_content":"summary only"`) != 1 || !strings.Contains(text, "data: [DONE]") {
-		t.Fatalf("summary fallback was not finalized at EOF: %s", text)
+		t.Fatalf("summary was not emitted live: %s", text)
 	}
 }
 
@@ -1032,12 +1035,12 @@ func TestConvertResponsesStreamChatAdoptsLateReasoningItemID(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(converted)
-	if strings.Contains(text, `"reasoning_content":"summary"`) || strings.Count(text, `"reasoning_content":"raw"`) != 1 {
-		t.Fatalf("late item_id created a second reasoning source: %s", text)
+	if strings.Count(text, `"reasoning_content":"summary"`) != 1 || strings.Contains(text, `"reasoning_content":"raw"`) {
+		t.Fatalf("late item_id must keep first-wins summary: %s", text)
 	}
 }
 
-func TestConvertResponsesStreamMessagesPrefersRawReasoningBeforeSignature(t *testing.T) {
+func TestConvertResponsesStreamMessagesFirstWinsSummaryDropsRaw(t *testing.T) {
 	stream := strings.Join([]string{
 		`event: response.created`,
 		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`, "",
@@ -1059,14 +1062,81 @@ func TestConvertResponsesStreamMessagesPrefersRawReasoningBeforeSignature(t *tes
 		t.Fatal(err)
 	}
 	text := string(converted)
-	if strings.Contains(text, "duplicated summary") {
-		t.Fatalf("summary leaked after raw reasoning was selected: %s", text)
+	if strings.Contains(text, "raw reasoning") {
+		t.Fatalf("raw leaked after summary was selected: %s", text)
 	}
-	reasoningAt := strings.Index(text, `"thinking":"raw reasoning"`)
+	reasoningAt := strings.Index(text, `"thinking":"duplicated summary"`)
 	signatureAt := strings.Index(text, `"signature":"signature"`)
 	stopAt := strings.Index(text, `"type":"content_block_stop"`)
 	if reasoningAt < 0 || signatureAt < reasoningAt || stopAt < signatureAt {
 		t.Fatalf("thinking/signature/block-stop order is invalid: %s", text)
+	}
+}
+
+func TestConvertResponsesStreamMessagesEmitsSummaryBeforeItemDone(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`, "",
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"live thought"}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStreamWithOptions(
+		io.NopCloser(strings.NewReader(stream)), OperationMessages, ResponseOptions{AnthropicThinking: true},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if !strings.Contains(text, `"thinking":"live thought"`) {
+		t.Fatalf("summary must reach Anthropic before item done: %s", text)
+	}
+}
+
+func TestConvertResponsesStreamMessagesRawFirstDropsSummary(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`, "",
+		`event: response.reasoning_text.delta`,
+		`data: {"type":"response.reasoning_text.delta","item_id":"rs_1","delta":"raw first"}`, "",
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"later summary"}`, "",
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"signature"}}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"status":"completed"}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStreamWithOptions(
+		io.NopCloser(strings.NewReader(stream)), OperationMessages, ResponseOptions{AnthropicThinking: true},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if strings.Contains(text, "later summary") || !strings.Contains(text, `"thinking":"raw first"`) {
+		t.Fatalf("raw-first must drop summary: %s", text)
+	}
+}
+
+func TestConvertResponsesStreamMessagesEmitsSignatureWhenEncryptedArrives(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning","encrypted_content":"early-sig"}}`, "",
+		`event: response.reasoning_summary_text.delta`,
+		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"thought"}`, "",
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"early-sig"}}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"status":"completed"}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStreamWithOptions(
+		io.NopCloser(strings.NewReader(stream)), OperationMessages, ResponseOptions{AnthropicThinking: true},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if strings.Count(text, `"signature":"early-sig"`) != 1 {
+		t.Fatalf("encrypted must emit once when it arrives: %s", text)
 	}
 }
 
