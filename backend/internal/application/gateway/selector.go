@@ -861,6 +861,11 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 }
 
 func accountScopeAllowsCandidate(provider account.Provider, scope clientkeydomain.AccountScope, candidate account.RoutingCandidate) bool {
+	// Cohort equality is the first candidate-level admission check. Console's
+	// tier bypass and later model/binding filters must never cross this boundary.
+	if !scope.AllowsRoutingCohort(candidate.Credential.RoutingCohort) {
+		return false
+	}
 	if provider == account.ProviderConsole {
 		return true
 	}

@@ -180,8 +180,9 @@ func (s *Service) CreateVideo(ctx context.Context, input VideoInput) (media.Job,
 	job := media.Job{
 		ID: "video_" + token, RequestID: input.RequestID,
 		ClientKeyID: input.ClientKey.ID, ClientKeyName: input.ClientKey.Name,
-		ClientIP:  requestmeta.ClientIP(ctx),
-		AccountID: accountID, AccountName: lease.Credential.Name,
+		RoutingCohort: input.ClientKey.AccountScope().RoutingCohort,
+		ClientIP:      requestmeta.ClientIP(ctx),
+		AccountID:     accountID, AccountName: lease.Credential.Name,
 		Provider: string(route.Provider), Model: externalModel, ModelRouteID: route.ID, UpstreamModel: model.DisplayUpstreamModel(route.Provider, route.UpstreamModel), Operation: operation, Prompt: input.Prompt,
 		Seconds: input.Duration, Size: input.AspectRatio, Quality: input.Resolution,
 		Status: media.StatusQueued, Progress: 0, InputJSON: inputJSON, InputImageCount: len(allRefs), CreatedAt: now, UpdatedAt: now,
@@ -530,6 +531,11 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	}
 
 	quotaMode := videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), job.Quality)
+	jobScope, scopeValid := clientkey.NormalizeAccountScope(clientkey.AccountScope{RoutingCohort: job.RoutingCohort})
+	if !scopeValid {
+		s.failVideoJob(parent, job, "account_unavailable", ErrNoAvailableAccount, 0, nil)
+		return
+	}
 	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
 	attemptPolicy := s.videoAttemptPolicy()
 	excluded := make(map[uint64]bool)
@@ -556,7 +562,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 			pinnedAccountID = job.AccountID
 		}
 		if pinnedAccountID > 0 && !excluded[pinnedAccountID] {
-			lease, err = s.selector.AcquirePinned(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true)
+			lease, err = s.selector.AcquirePinnedForKey(ctx, route.Provider, pinnedAccountID, route.ID, route.UpstreamModel, quotaMode, true, jobScope)
 			if err != nil {
 				excluded[pinnedAccountID] = true
 				lease = nil
@@ -564,7 +570,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		}
 		if lease == nil {
 			if selection == nil {
-				selection, err = s.selector.beginSelectionSession(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false)
+				selection, err = s.selector.beginSelectionSessionForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, jobScope)
 			}
 			if err == nil {
 				lease, err = selection.Acquire(ctx, excluded, false)

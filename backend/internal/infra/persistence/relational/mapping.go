@@ -79,7 +79,7 @@ func toAccountDomain(value accountModel) account.Credential {
 	}
 	return account.Credential{
 		ID: value.ID, Provider: account.Provider(value.Provider), AuthType: authType, Name: value.Name, Email: value.Email,
-		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey, OIDCClientID: clientID,
+		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey, RoutingCohort: normalizedRoutingCohort(value.RoutingCohort), OIDCClientID: clientID,
 		EncryptedAccessToken: encryptedPrimary, EncryptedRefreshToken: encryptedRefresh, EncryptedCloudflareCookie: encryptedCloudflareCookie,
 		ExpiresAt: expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: lastRefreshAt,
 		RefreshFailureCount: refreshFailures, RefreshUnclassifiedAuthCount: refreshUnclassifiedAuthFailures, LastRefreshErrorStatus: lastRefreshErrorStatus, LastRefreshErrorCode: lastRefreshError, LastRefreshErrorMessage: lastRefreshErrorMessage, LastRefreshErrorResponse: lastRefreshErrorResponse, RefreshPermanent: refreshPermanent,
@@ -121,7 +121,7 @@ func fromAccountDomain(value account.Credential) accountModel {
 	}
 	return accountModel{
 		ID: value.ID, IdentityKey: accountIdentity(value), Provider: string(value.Provider), Name: value.Name, Email: value.Email,
-		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey,
+		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey, RoutingCohort: normalizedRoutingCohort(value.RoutingCohort),
 		Enabled: value.Enabled, AuthStatus: string(value.AuthStatus), ReauthMarkedAt: value.ReauthMarkedAt, Priority: value.Priority,
 		MaxConcurrent: value.MaxConcurrent, MinimumRemaining: value.MinimumRemaining, FailureCount: value.FailureCount,
 		CooldownUntil: value.CooldownUntil, LastError: value.LastError, LastUsedAt: value.LastUsedAt,
@@ -130,6 +130,16 @@ func fromAccountDomain(value account.Credential) accountModel {
 		EgressNodeID: egressNodeID(value.EgressNodeID), EgressAssignmentMode: string(value.EgressAssignmentMode), EgressAssignedAt: value.EgressAssignedAt,
 		CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
+}
+
+func normalizedRoutingCohort(value string) string {
+	normalized, valid := account.NormalizeRoutingCohort(value)
+	if valid {
+		return normalized
+	}
+	// Preserve corrupt non-empty values so routing validation fails closed.
+	// Only a genuinely empty legacy value may join the shared cohort.
+	return strings.TrimSpace(value)
 }
 
 func valueEgressNodeID(value *uint64) uint64 {
@@ -246,7 +256,7 @@ func toClientKeyDomain(value clientKeyModel, allowedModels []uint64) clientkey.K
 		Enabled:      value.Enabled, ExpiresAt: value.ExpiresAt, RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent,
 		BillingLimitUSDTicks: value.BillingLimitUSDTicks, BilledUsageUSDTicks: value.BilledUsageUSDTicks, ReservedUsageUSDTicks: value.ReservedUsageUSDTicks,
 		AllowModelAliases: value.AllowModelAliases, AllowedModels: allowedModels,
-		ProviderScope: providerScope, TierScope: tierScope,
+		ProviderScope: providerScope, TierScope: tierScope, RoutingCohort: normalizedRoutingCohort(value.RoutingCohort),
 		LastUsedAt: value.LastUsedAt, CreatedAt: value.CreatedAt, UpdatedAt: value.UpdatedAt,
 	}
 }

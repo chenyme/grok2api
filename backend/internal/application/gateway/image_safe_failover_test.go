@@ -28,6 +28,7 @@ type safeFailoverImageAdapter struct {
 	attempts          []uint64
 	preSubmissionNode map[uint64]bool
 	ambiguousNode     map[uint64]bool
+	unauthorizedNode  map[uint64]bool
 }
 
 func (a *safeFailoverImageAdapter) Provider() accountdomain.Provider {
@@ -52,12 +53,16 @@ func (a *safeFailoverImageAdapter) GenerateImage(_ context.Context, request prov
 	a.attempts = append(a.attempts, request.Credential.ID)
 	preSubmission := a.preSubmissionNode[request.Credential.EgressNodeID]
 	ambiguous := a.ambiguousNode[request.Credential.EgressNodeID]
+	unauthorized := a.unauthorizedNode[request.Credential.EgressNodeID]
 	a.mu.Unlock()
 	if preSubmission {
 		return nil, provider.NewImagePreSubmissionError(errors.New("bound egress is cooling"))
 	}
 	if ambiguous {
 		return nil, errors.New("connection closed after generation write")
+	}
+	if unauthorized {
+		return nil, provider.ErrUnauthorized
 	}
 	return &provider.Response{
 		StatusCode: http.StatusOK,
@@ -247,5 +252,40 @@ func TestImageAmbiguousFailureAfterSafeFailoverDoesNotClaimNotSubmitted(t *testi
 	}
 	if attempts := fixture.adapter.Attempts(); len(attempts) != 2 || attempts[0] != fixture.credentials[0].ID || attempts[1] != fixture.credentials[1].ID {
 		t.Fatalf("mixed failure attempts = %#v", attempts)
+	}
+}
+
+func TestImageCredentialRejectionAfterSafeFailureDoesNotClaimNotSubmitted(t *testing.T) {
+	ctx := context.Background()
+	fixture := newSafeFailoverImageFixture(
+		t,
+		[]uint64{11, 12},
+		map[uint64]bool{11: true},
+		nil,
+	)
+	fixture.adapter.unauthorizedNode = map[uint64]bool{12: true}
+	_, err := fixture.generate(ctx, "req-image-safe-then-unauthorized")
+	if err == nil || errors.Is(err, ErrUpstreamNotSubmitted) {
+		t.Fatalf("mixed credential error = %v", err)
+	}
+	if attempts := fixture.adapter.Attempts(); len(attempts) != 2 {
+		t.Fatalf("mixed credential attempts = %#v, want two", attempts)
+	}
+}
+
+func TestImageUnboundCredentialDoesNotRetryUnknownPhysicalEgress(t *testing.T) {
+	ctx := context.Background()
+	fixture := newSafeFailoverImageFixture(
+		t,
+		[]uint64{0, 0},
+		map[uint64]bool{0: true},
+		nil,
+	)
+	_, err := fixture.generate(ctx, "req-image-unbound-egress")
+	if !errors.Is(err, ErrUpstreamNotSubmitted) {
+		t.Fatalf("unbound error = %v, want ErrUpstreamNotSubmitted", err)
+	}
+	if attempts := fixture.adapter.Attempts(); len(attempts) != 1 {
+		t.Fatalf("unbound attempts = %#v, want no unsafe retry", attempts)
 	}
 }

@@ -57,3 +57,17 @@ func TestAccountScopeAllowsProviderAndTierIntersection(t *testing.T) {
 		t.Fatal("Free + Super should exclude unknown Build accounts")
 	}
 }
+
+func TestAccountScopeRequiresExactRoutingCohortIncludingConsole(t *testing.T) {
+	legacy := AccountScope{}
+	if !legacy.AllowsRoutingCohort("") || !legacy.AllowsRoutingCohort(account.DefaultRoutingCohort) {
+		t.Fatal("legacy scope must normalize to shared")
+	}
+	stress := AccountScope{RoutingCohort: "stress", Providers: ProviderScopeAll, Tiers: TierScopeAll}
+	if !stress.AllowsRoutingCohort("stress") || stress.AllowsRoutingCohort("shared") {
+		t.Fatal("stress cohort did not enforce exact equality")
+	}
+	if (AccountScope{RoutingCohort: "INVALID"}).AllowsRoutingCohort("INVALID") {
+		t.Fatal("invalid client-key cohort failed open")
+	}
+}

@@ -13,6 +13,7 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -94,6 +95,118 @@ func TestCreateAndUpdatePreserveProviderPrefixedPublicNames(t *testing.T) {
 	resolved, err := modelRepo.GetByPublicIDIncludingDisabled(ctx, publicID)
 	if err != nil || resolved.ID != updated.ID {
 		t.Fatalf("resolved updated route = %#v, err = %v", resolved, err)
+	}
+}
+
+func TestListEnabledForClientKeyRequiresExactCohortEligibleAccount(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-list-cohort.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	modelRepo := relational.NewModelRepository(database)
+	accountRepo := relational.NewAccountRepository(database)
+	stress, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "stress-image", SourceKey: "stress-image",
+		EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive, RoutingCohort: "stress",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := modelRepo.Create(ctx, modeldomain.Route{
+		PublicID: "Console/grok-imagine-image", Provider: account.ProviderConsole, UpstreamModel: "grok-imagine-image",
+		Capability: modeldomain.CapabilityImage, Origin: modeldomain.OriginCatalog, Enabled: true,
+	}, []uint64{stress.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(modelRepo, accountRepo, nil, provider.NewRegistry())
+
+	shared, err := service.ListEnabledForClientKey(ctx, clientkeydomain.Key{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shared) != 0 {
+		t.Fatalf("shared key attested stress-only image route: %#v", shared)
+	}
+	stressRoutes, err := service.ListEnabledForClientKey(ctx, clientkeydomain.Key{RoutingCohort: "stress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stressRoutes) != 1 || stressRoutes[0].ID != route.ID {
+		t.Fatalf("stress routes = %#v, want route %d", stressRoutes, route.ID)
+	}
+}
+
+func TestListEnabledForClientKeyDoesNotCombineCohortAndTierWitnesses(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-list-cohort-tier-witness.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	modelRepo := relational.NewModelRepository(database)
+	accountRepo := relational.NewAccountRepository(database)
+	create := func(name, cohort string, tier account.WebTier) account.Credential {
+		t.Helper()
+		value, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: name, SourceKey: name,
+			EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive,
+			RoutingCohort: cohort, WebTier: tier,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return value
+	}
+	sharedSuper := create("shared-super", "shared", account.WebTierSuper)
+	stressFree := create("stress-free", "stress", account.WebTierBasic)
+	route, err := modelRepo.Create(ctx, modeldomain.Route{
+		PublicID: "Web/split-witness-image", Provider: account.ProviderWeb, UpstreamModel: "split-witness-image",
+		Capability: modeldomain.CapabilityImage, Origin: modeldomain.OriginManual, Enabled: true,
+	}, []uint64{sharedSuper.ID, stressFree.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(modelRepo, accountRepo, nil, provider.NewRegistry())
+
+	sharedFree, err := service.ListEnabledForClientKey(ctx, clientkeydomain.Key{
+		ProviderScope: clientkeydomain.ProviderScopeWeb,
+		TierScope:     clientkeydomain.TierScopeFree,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sharedFree) != 0 {
+		t.Fatalf("shared-free key combined split account witnesses: %#v", sharedFree)
+	}
+	sharedSuperRoutes, err := service.ListEnabledForClientKey(ctx, clientkeydomain.Key{
+		ProviderScope: clientkeydomain.ProviderScopeWeb,
+		TierScope:     clientkeydomain.TierScopeSuper,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sharedSuperRoutes) != 1 || sharedSuperRoutes[0].ID != route.ID {
+		t.Fatalf("shared-super routes = %#v, want route %d", sharedSuperRoutes, route.ID)
+	}
+	stressFreeRoutes, err := service.ListEnabledForClientKey(ctx, clientkeydomain.Key{
+		ProviderScope: clientkeydomain.ProviderScopeWeb,
+		TierScope:     clientkeydomain.TierScopeFree,
+		RoutingCohort: "stress",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stressFreeRoutes) != 1 || stressFreeRoutes[0].ID != route.ID {
+		t.Fatalf("stress-free routes = %#v, want route %d", stressFreeRoutes, route.ID)
 	}
 }
 

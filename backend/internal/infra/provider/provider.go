@@ -451,6 +451,7 @@ type CredentialSeed struct {
 	UserID                  string
 	TeamID                  string
 	SourceKey               string
+	RoutingCohort           string
 	OIDCClientID            string
 	AccessToken             string
 	RefreshToken            string

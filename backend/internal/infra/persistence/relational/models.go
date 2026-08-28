@@ -25,16 +25,17 @@ type adminSessionModel struct {
 func (adminSessionModel) TableName() string { return "admin_sessions" }
 
 type accountModel struct {
-	ID          uint64 `gorm:"primaryKey;autoIncrement"`
-	IdentityKey string `gorm:"size:64;uniqueIndex;not null;check:chk_accounts_identity_key,length(identity_key) = 64"`
-	Provider    string `gorm:"size:32;not null;check:chk_accounts_provider,provider IN ('grok_build','grok_web','grok_console');index:idx_accounts_provider_source,priority:1"`
-	Name        string `gorm:"size:160;not null;check:chk_accounts_name,length(trim(name)) BETWEEN 1 AND 160"`
-	Email       string `gorm:"size:255;check:chk_accounts_email,length(email) <= 255"`
-	UserID      string `gorm:"size:255;check:chk_accounts_user_id,length(user_id) <= 255"`
-	TeamID      string `gorm:"size:255;check:chk_accounts_team_id,length(team_id) <= 255"`
-	SourceKey   string `gorm:"size:512;not null;check:chk_accounts_source_key,length(trim(source_key)) BETWEEN 1 AND 512;index:idx_accounts_provider_source,priority:2"`
-	Enabled     bool   `gorm:"not null"`
-	AuthStatus  string `gorm:"size:32;not null;check:chk_accounts_auth_status,auth_status IN ('active','reauthRequired')"`
+	ID            uint64 `gorm:"primaryKey;autoIncrement"`
+	IdentityKey   string `gorm:"size:64;uniqueIndex;not null;check:chk_accounts_identity_key,length(identity_key) = 64"`
+	Provider      string `gorm:"size:32;not null;check:chk_accounts_provider,provider IN ('grok_build','grok_web','grok_console');index:idx_accounts_provider_source,priority:1"`
+	Name          string `gorm:"size:160;not null;check:chk_accounts_name,length(trim(name)) BETWEEN 1 AND 160"`
+	Email         string `gorm:"size:255;check:chk_accounts_email,length(email) <= 255"`
+	UserID        string `gorm:"size:255;check:chk_accounts_user_id,length(user_id) <= 255"`
+	TeamID        string `gorm:"size:255;check:chk_accounts_team_id,length(team_id) <= 255"`
+	SourceKey     string `gorm:"size:512;not null;check:chk_accounts_source_key,length(trim(source_key)) BETWEEN 1 AND 512;index:idx_accounts_provider_source,priority:2"`
+	RoutingCohort string `gorm:"size:64;not null;default:shared;check:chk_accounts_routing_cohort,length(trim(routing_cohort)) BETWEEN 1 AND 64"`
+	Enabled       bool   `gorm:"not null"`
+	AuthStatus    string `gorm:"size:32;not null;check:chk_accounts_auth_status,auth_status IN ('active','reauthRequired')"`
 	// ReauthMarkedAt 进入 reauthRequired 的时刻；active 时为 NULL。
 	ReauthMarkedAt   *time.Time
 	Priority         int     `gorm:"not null;default:1"`
@@ -271,9 +272,10 @@ type clientKeyModel struct {
 	BilledUsageUSDTicks   int64 `gorm:"not null;default:0;check:chk_client_keys_billed_usage,billed_usage_usd_ticks >= 0"`
 	ReservedUsageUSDTicks int64 `gorm:"not null;default:0;check:chk_client_keys_reserved_usage,reserved_usage_usd_ticks >= 0"`
 	// AllowModelAliases defaults false so existing keys keep a clean base-model list.
-	AllowModelAliases bool  `gorm:"not null;default:false"`
-	ProviderScopeMask uint8 `gorm:"not null;default:7;check:chk_client_keys_provider_scope,provider_scope_mask BETWEEN 1 AND 7"`
-	TierScopeMask     uint8 `gorm:"not null;default:7;check:chk_client_keys_tier_scope,tier_scope_mask IN (1,2,3,7)"`
+	AllowModelAliases bool   `gorm:"not null;default:false"`
+	ProviderScopeMask uint8  `gorm:"not null;default:7;check:chk_client_keys_provider_scope,provider_scope_mask BETWEEN 1 AND 7"`
+	TierScopeMask     uint8  `gorm:"not null;default:7;check:chk_client_keys_tier_scope,tier_scope_mask IN (1,2,3,7)"`
+	RoutingCohort     string `gorm:"size:64;not null;default:shared;check:chk_client_keys_routing_cohort,length(trim(routing_cohort)) BETWEEN 1 AND 64"`
 	LastUsedAt        *time.Time
 	CreatedAt         time.Time `gorm:"not null"`
 	UpdatedAt         time.Time `gorm:"not null"`
@@ -413,6 +415,7 @@ type mediaJobModel struct {
 	RequestID      string  `gorm:"size:64;not null;check:chk_media_jobs_request_id,length(request_id) BETWEEN 1 AND 64"`
 	ClientKeyID    uint64  `gorm:"not null;check:chk_media_jobs_client_key_id,client_key_id > 0"`
 	ClientKeyName  string  `gorm:"size:160;not null;default:'';check:chk_media_jobs_client_key_name,length(client_key_name) <= 160"`
+	RoutingCohort  string  `gorm:"size:64;not null;default:shared;check:chk_media_jobs_routing_cohort,length(trim(routing_cohort)) BETWEEN 1 AND 64"`
 	ClientIP       string  `gorm:"size:45;not null;default:'';check:chk_media_jobs_client_ip,length(client_ip) <= 45"`
 	AccountID      *uint64 `gorm:"check:chk_media_jobs_account_id,account_id IS NULL OR account_id > 0"`
 	AccountName    string  `gorm:"size:160;not null;default:'';check:chk_media_jobs_account_name,length(account_name) <= 160"`

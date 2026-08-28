@@ -207,6 +207,7 @@ type UpdateInput struct {
 	Priority               *int
 	MaxConcurrent          *int
 	MinimumRemaining       *float64
+	RoutingCohort          *string
 	CloudflareCookies      *string
 	ClearCloudflareCookies bool
 	// BuildSuperEntitled 仅 grok_build 可设置；非 Build 返回业务错误。
@@ -806,14 +807,21 @@ func (s *Service) BatchUpdate(ctx context.Context, providerValue accountdomain.P
 	if input.MinimumRemaining != nil && *input.MinimumRemaining < 0 {
 		return 0, invalidInput("minimumRemaining 不能小于零")
 	}
+	if input.RoutingCohort != nil {
+		normalized, valid := accountdomain.NormalizeRoutingCohort(*input.RoutingCohort)
+		if !valid {
+			return 0, invalidInput("routingCohort 无效")
+		}
+		input.RoutingCohort = &normalized
+	}
 	if input.Name != nil {
 		return 0, invalidInput("批量更新不支持修改账号名称")
 	}
-	updated, err := s.accounts.UpdateMany(ctx, providerValue, ids, repository.AccountUpdates{Enabled: input.Enabled, Priority: input.Priority, MaxConcurrent: input.MaxConcurrent, MinimumRemaining: input.MinimumRemaining})
+	updated, err := s.accounts.UpdateMany(ctx, providerValue, ids, repository.AccountUpdates{Enabled: input.Enabled, Priority: input.Priority, MaxConcurrent: input.MaxConcurrent, MinimumRemaining: input.MinimumRemaining, RoutingCohort: input.RoutingCohort})
 	if err != nil {
 		return 0, mapRepositoryError(err)
 	}
-	if input.Enabled != nil && !*input.Enabled && s.sticky != nil {
+	if (input.RoutingCohort != nil || input.Enabled != nil && !*input.Enabled) && s.sticky != nil {
 		if batchDeleter, ok := s.sticky.(repository.StickySessionBatchDeleter); ok {
 			_ = batchDeleter.DeleteByAccounts(ctx, ids)
 		} else {
@@ -1744,6 +1752,7 @@ func (s *Service) syncWebCredentialsToConsole(ctx context.Context, values []acco
 		seed := parsed[0]
 		seed.Provider = accountdomain.ProviderConsole
 		seed.AuthType = accountdomain.AuthTypeSSO
+		seed.RoutingCohort = value.RoutingCohort
 		seed.Name = webConsoleAccountName(value.Name, seed.Name)
 		if strings.TrimSpace(value.EncryptedCloudflareCookie) != "" {
 			cookies, decryptErr := s.cipher.Decrypt(value.EncryptedCloudflareCookie)
@@ -2040,6 +2049,7 @@ func (s *Service) convertWebAccountToBuild(ctx context.Context, id uint64, strat
 	}
 	seed.Provider = accountdomain.ProviderBuild
 	seed.AuthType = accountdomain.AuthTypeOAuth
+	seed.RoutingCohort = value.RoutingCohort
 	if linkedBuildSourceKey != "" {
 		seed.SourceKey = linkedBuildSourceKey
 	}
@@ -2221,6 +2231,7 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 		return View{}, mapRepositoryError(err)
 	}
 	enabledChanged := input.Enabled != nil && value.Enabled != *input.Enabled
+	routingCohortChanged := false
 	if input.Name != nil {
 		value.Name = strings.TrimSpace(*input.Name)
 		if value.Name == "" {
@@ -2244,6 +2255,15 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 			return View{}, invalidInput("minimumRemaining 不能小于零")
 		}
 		value.MinimumRemaining = *input.MinimumRemaining
+	}
+	if input.RoutingCohort != nil {
+		normalized, valid := accountdomain.NormalizeRoutingCohort(*input.RoutingCohort)
+		if !valid {
+			return View{}, invalidInput("routingCohort 无效")
+		}
+		current, _ := accountdomain.NormalizeRoutingCohort(value.RoutingCohort)
+		routingCohortChanged = current != normalized
+		value.RoutingCohort = normalized
 	}
 	if input.ClearCloudflareCookies {
 		value.EncryptedCloudflareCookie = ""
@@ -2285,7 +2305,7 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (Vie
 	if err != nil {
 		return View{}, mapRepositoryError(err)
 	}
-	if !updated.Enabled && s.sticky != nil {
+	if (!updated.Enabled || routingCohortChanged) && s.sticky != nil {
 		_ = s.sticky.DeleteByAccount(ctx, updated.ID)
 	} else if updated.Enabled && s.providers != nil && s.providers.SupportsCredentialRefresh(updated.Provider) {
 		s.WakeCredentialRefresh()
@@ -4599,6 +4619,10 @@ func (s *Service) persistSeed(ctx context.Context, seed provider.CredentialSeed)
 }
 
 func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomain.Credential, error) {
+	routingCohort, routingCohortValid := accountdomain.NormalizeRoutingCohort(seed.RoutingCohort)
+	if !routingCohortValid {
+		return accountdomain.Credential{}, invalidInput("routingCohort 无效")
+	}
 	accessEncrypted, err := s.cipher.Encrypt(seed.AccessToken)
 	if err != nil {
 		return accountdomain.Credential{}, err
@@ -4637,7 +4661,7 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 		}
 		authType = definition.Credential.AuthType
 	}
-	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, EncryptedCloudflareCookie: cloudflareEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining, WebNSFWEnabledAt: seed.WebNSFWEnabledAt, WebTermsAcceptedAt: seed.WebTermsAcceptedAt, WebTermsAcceptedVersion: seed.WebTermsAcceptedVersion, WebBirthDateSetAt: seed.WebBirthDateSetAt}
+	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, RoutingCohort: routingCohort, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, EncryptedCloudflareCookie: cloudflareEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining, WebNSFWEnabledAt: seed.WebNSFWEnabledAt, WebTermsAcceptedAt: seed.WebTermsAcceptedAt, WebTermsAcceptedVersion: seed.WebTermsAcceptedVersion, WebBirthDateSetAt: seed.WebBirthDateSetAt}
 	value.BuildBotFlagSource = s.credentialMetadata(value).BuildBotFlagSource
 	if providerValue == accountdomain.ProviderWeb && strings.TrimSpace(seed.AccessToken) != "" {
 		value.EgressIdentity = "sso_" + security.HashToken(seed.AccessToken)[:32]

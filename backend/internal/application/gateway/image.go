@@ -243,6 +243,15 @@ func (s *Service) executeImage(
 				lastCredentialFailure = &failedCredential
 				lastCredentialError = err
 				submissionDisposition.recordPreSubmissionFailure()
+				if credential.EgressNodeID == 0 {
+					// An unbound credential receives its physical egress inside
+					// the Adapter. The selection session cannot prove that a
+					// second unbound credential would use a different node, so
+					// stop here instead of performing a same-egress retry.
+					lease.Release()
+					writeFailureAudit(http.StatusServiceUnavailable, "upstream_not_submitted", lastCredentialFailure)
+					return nil, fmt.Errorf("%w: %w", ErrUpstreamNotSubmitted, err)
+				}
 				if selection != nil {
 					selection.excludeEgressNode(credential.EgressNodeID)
 				}
@@ -251,6 +260,11 @@ func (s *Service) executeImage(
 				err = nil
 				continue
 			}
+			// Any error not explicitly proven pre-submission may have
+			// crossed the generation write boundary. Record that fact before
+			// every credential-rejection continue/return so an earlier safe
+			// attempt can never leak a false not-submitted sentinel.
+			submissionDisposition.recordResponse()
 			lease.markSelectorUpstreamStarted()
 			if isSSOCredentialRejected(err, credential) {
 				s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))

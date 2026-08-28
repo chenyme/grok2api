@@ -181,6 +181,7 @@ type updateRequest struct {
 	ClearCloudflareCookies bool                          `json:"clearCloudflareCookies"`
 	BuildSuperEntitled     *bool                         `json:"buildSuperEntitled"`
 	BuildRouteMode         *accountdomain.BuildRouteMode `json:"buildRouteMode"`
+	RoutingCohort          *string                       `json:"routingCohort"`
 }
 
 type batchUpdateRequest struct {
@@ -190,6 +191,7 @@ type batchUpdateRequest struct {
 	Priority         *int     `json:"priority"`
 	MaxConcurrent    *int     `json:"maxConcurrent"`
 	MinimumRemaining *float64 `json:"minimumRemaining"`
+	RoutingCohort    *string  `json:"routingCohort"`
 }
 
 type batchDeleteRequest struct {
@@ -280,56 +282,57 @@ type accountImportResponse struct {
 }
 
 type accountResponse struct {
-	ID                         uint64                  `json:"id,string"`
-	Provider                   string                  `json:"provider"`
-	AuthType                   string                  `json:"authType"`
-	WebTier                    string                  `json:"webTier,omitempty"`
-	WebTierSyncedAt            *time.Time              `json:"webTierSyncedAt,omitempty"`
-	WebNSFWEnabledAt           *time.Time              `json:"nsfwEnabledAt,omitempty"`
-	WebTermsAcceptedAt         *time.Time              `json:"termsAcceptedAt,omitempty"`
-	Name                       string                  `json:"name"`
-	Email                      string                  `json:"email,omitempty"`
-	UserID                     string                  `json:"userId,omitempty"`
-	TeamID                     string                  `json:"teamId,omitempty"`
-	Enabled                    bool                    `json:"enabled"`
-	AuthStatus                 string                  `json:"authStatus"`
-	ExpiresAt                  *time.Time              `json:"expiresAt,omitempty"`
-	Refreshable                bool                    `json:"refreshable"`
-	RefreshDueAt               *time.Time              `json:"refreshDueAt,omitempty"`
-	LastRefreshAt              *time.Time              `json:"lastRefreshAt,omitempty"`
-	RefreshFailures            int                     `json:"refreshFailureCount"`
-	LastRefreshErrorStatus     int                     `json:"lastRefreshErrorStatus,omitempty"`
-	LastRefreshError           string                  `json:"lastRefreshErrorCode,omitempty"`
-	LastRefreshErrorMessage    string                  `json:"lastRefreshErrorMessage,omitempty"`
-	LastRefreshErrorResponse   string                  `json:"lastRefreshErrorResponse,omitempty"`
-	Priority                   int                     `json:"priority"`
-	MaxConcurrent              int                     `json:"maxConcurrent"`
-	MinimumRemaining           float64                 `json:"minimumRemaining"`
-	FailureCount               int                     `json:"failureCount"`
-	CooldownUntil              *time.Time              `json:"cooldownUntil,omitempty"`
-	LastError                  string                  `json:"lastError,omitempty"`
+	ID                       uint64     `json:"id,string"`
+	Provider                 string     `json:"provider"`
+	AuthType                 string     `json:"authType"`
+	WebTier                  string     `json:"webTier,omitempty"`
+	WebTierSyncedAt          *time.Time `json:"webTierSyncedAt,omitempty"`
+	WebNSFWEnabledAt         *time.Time `json:"nsfwEnabledAt,omitempty"`
+	WebTermsAcceptedAt       *time.Time `json:"termsAcceptedAt,omitempty"`
+	Name                     string     `json:"name"`
+	Email                    string     `json:"email,omitempty"`
+	UserID                   string     `json:"userId,omitempty"`
+	TeamID                   string     `json:"teamId,omitempty"`
+	Enabled                  bool       `json:"enabled"`
+	AuthStatus               string     `json:"authStatus"`
+	ExpiresAt                *time.Time `json:"expiresAt,omitempty"`
+	Refreshable              bool       `json:"refreshable"`
+	RefreshDueAt             *time.Time `json:"refreshDueAt,omitempty"`
+	LastRefreshAt            *time.Time `json:"lastRefreshAt,omitempty"`
+	RefreshFailures          int        `json:"refreshFailureCount"`
+	LastRefreshErrorStatus   int        `json:"lastRefreshErrorStatus,omitempty"`
+	LastRefreshError         string     `json:"lastRefreshErrorCode,omitempty"`
+	LastRefreshErrorMessage  string     `json:"lastRefreshErrorMessage,omitempty"`
+	LastRefreshErrorResponse string     `json:"lastRefreshErrorResponse,omitempty"`
+	Priority                 int        `json:"priority"`
+	MaxConcurrent            int        `json:"maxConcurrent"`
+	MinimumRemaining         float64    `json:"minimumRemaining"`
+	FailureCount             int        `json:"failureCount"`
+	CooldownUntil            *time.Time `json:"cooldownUntil,omitempty"`
+	LastError                string     `json:"lastError,omitempty"`
 	// EnabledDoesNotClearCooldown is set on PATCH when enabled was changed
 	// while the account is still cooling. Toggling enabled is not a health reset.
-	EnabledDoesNotClearCooldown bool `json:"enabledDoesNotClearCooldown,omitempty"`
-	LastUsedAt                 *time.Time              `json:"lastUsedAt,omitempty"`
-	LinkedAccountID            uint64                  `json:"linkedAccountId,omitempty,string"`
-	LinkedName                 string                  `json:"linkedAccountName,omitempty"`
-	LinkedProvider             string                  `json:"linkedProvider,omitempty"`
-	LinkedAccounts             []linkedAccountResponse `json:"linkedAccounts,omitempty"`
-	CreatedAt                  time.Time               `json:"createdAt"`
-	ObservedModel              string                  `json:"observedModel,omitempty"`
-	ObservedModelAt            *time.Time              `json:"observedModelAt,omitempty"`
-	CloudflareCookieConfigured bool                    `json:"cloudflareCookieConfigured"`
-	BuildSuperEntitled         bool                    `json:"buildSuperEntitled"`
-	BuildRouteMode             string                  `json:"buildRouteMode"`
-	BuildBotFlagged            bool                    `json:"buildBotFlagged"`
-	BuildBotFlagSource         int                     `json:"buildBotFlagSource,omitempty"`
-	EgressNodeID               uint64                  `json:"egressNodeId,omitempty,string"`
-	EgressAssignmentMode       string                  `json:"egressAssignmentMode,omitempty"`
-	ModelSyncFailed            bool                    `json:"modelSyncFailed,omitempty"`
-	Billing                    *billingResponse        `json:"billing,omitempty"`
-	Quota                      quotaResponse           `json:"quota"`
-	QuotaWindows               []quotaWindowResponse   `json:"quotaWindows,omitempty"`
+	EnabledDoesNotClearCooldown bool                    `json:"enabledDoesNotClearCooldown,omitempty"`
+	LastUsedAt                  *time.Time              `json:"lastUsedAt,omitempty"`
+	LinkedAccountID             uint64                  `json:"linkedAccountId,omitempty,string"`
+	LinkedName                  string                  `json:"linkedAccountName,omitempty"`
+	LinkedProvider              string                  `json:"linkedProvider,omitempty"`
+	LinkedAccounts              []linkedAccountResponse `json:"linkedAccounts,omitempty"`
+	CreatedAt                   time.Time               `json:"createdAt"`
+	ObservedModel               string                  `json:"observedModel,omitempty"`
+	ObservedModelAt             *time.Time              `json:"observedModelAt,omitempty"`
+	CloudflareCookieConfigured  bool                    `json:"cloudflareCookieConfigured"`
+	BuildSuperEntitled          bool                    `json:"buildSuperEntitled"`
+	BuildRouteMode              string                  `json:"buildRouteMode"`
+	BuildBotFlagged             bool                    `json:"buildBotFlagged"`
+	BuildBotFlagSource          int                     `json:"buildBotFlagSource,omitempty"`
+	EgressNodeID                uint64                  `json:"egressNodeId,omitempty,string"`
+	EgressAssignmentMode        string                  `json:"egressAssignmentMode,omitempty"`
+	RoutingCohort               string                  `json:"routingCohort"`
+	ModelSyncFailed             bool                    `json:"modelSyncFailed,omitempty"`
+	Billing                     *billingResponse        `json:"billing,omitempty"`
+	Quota                       quotaResponse           `json:"quota"`
+	QuotaWindows                []quotaWindowResponse   `json:"quotaWindows,omitempty"`
 }
 
 type linkedAccountResponse struct {
@@ -465,7 +468,7 @@ func (h *Handler) batchUpdate(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidId", err.Error())
 		return
 	}
-	updated, err := h.service.BatchUpdate(c.Request.Context(), accountdomain.Provider(request.Provider), ids, accountapp.UpdateInput{Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining})
+	updated, err := h.service.BatchUpdate(c.Request.Context(), accountdomain.Provider(request.Provider), ids, accountapp.UpdateInput{Enabled: request.Enabled, Priority: request.Priority, MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining, RoutingCohort: request.RoutingCohort})
 	if err != nil {
 		h.writeServiceError(c, "accountBatchUpdateFailed", err, http.StatusInternalServerError, "批量更新账号失败")
 		return
@@ -1253,6 +1256,7 @@ func (h *Handler) update(c *gin.Context) {
 		MaxConcurrent: request.MaxConcurrent, MinimumRemaining: request.MinimumRemaining,
 		CloudflareCookies: request.CloudflareCookies, ClearCloudflareCookies: request.ClearCloudflareCookies,
 		BuildSuperEntitled: request.BuildSuperEntitled, BuildRouteMode: request.BuildRouteMode,
+		RoutingCohort: request.RoutingCohort,
 	})
 	if err != nil {
 		h.writeServiceError(c, "accountUpdateFailed", err, http.StatusInternalServerError, "更新账号失败")
@@ -1519,6 +1523,7 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		BuildBotFlagSource:         buildBotFlagSourceResponse(c.Provider, value.BuildBotFlagged, value.BuildBotFlagSource),
 		EgressNodeID:               c.EgressNodeID,
 		EgressAssignmentMode:       string(c.EgressAssignmentMode),
+		RoutingCohort:              normalizedAccountRoutingCohort(c.RoutingCohort),
 		Quota:                      newQuotaResponse(value.Quota), QuotaWindows: make([]quotaWindowResponse, 0, len(value.QuotaWindows)),
 	}
 	for _, linked := range c.LinkedAccounts {
@@ -1545,6 +1550,11 @@ func newAccountResponse(value accountapp.View) accountResponse {
 		result.Billing = &billing
 	}
 	return result
+}
+
+func normalizedAccountRoutingCohort(value string) string {
+	normalized, _ := accountdomain.NormalizeRoutingCohort(value)
+	return normalized
 }
 
 func buildBotFlagSourceResponse(provider accountdomain.Provider, flagged bool, source int) int {

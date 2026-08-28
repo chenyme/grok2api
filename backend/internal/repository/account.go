@@ -13,6 +13,7 @@ type AccountUpdates struct {
 	Priority         *int
 	MaxConcurrent    *int
 	MinimumRemaining *float64
+	RoutingCohort    *string
 }
 
 type AccountUpsertResult struct {

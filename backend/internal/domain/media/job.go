@@ -31,10 +31,13 @@ const (
 
 // Job 表示可跨进程重启恢复的异步视频任务。
 type Job struct {
-	ID              string
-	RequestID       string
-	ClientKeyID     uint64
-	ClientKeyName   string
+	ID            string
+	RequestID     string
+	ClientKeyID   uint64
+	ClientKeyName string
+	// RoutingCohort freezes the client key's isolation boundary when the job is
+	// accepted so a recovered worker cannot fall back into another cohort.
+	RoutingCohort   string
 	ClientIP        string
 	AccountID       uint64
 	AccountName     string

@@ -81,12 +81,7 @@ const modelWebBasicMediaStaticSupportAvailabilityExpression = `(route.provider =
 		)
 	))`
 
-const availableRoutePredicate = `
-	EXISTS (
-		SELECT 1 FROM provider_accounts account
-		WHERE account.provider = model_routes.provider
-			AND account.enabled = ?
-			AND account.auth_status = ?
+const availableRouteAccountCapabilitySQL = `
 			AND (
 				EXISTS (
 					SELECT 1 FROM model_route_accounts binding
@@ -106,8 +101,14 @@ const availableRoutePredicate = `
 					)
 				)
 			)
-	)
-`
+	)`
+
+const availableRoutePredicate = `
+	EXISTS (
+		SELECT 1 FROM provider_accounts account
+		WHERE account.provider = model_routes.provider
+			AND account.enabled = ?
+			AND account.auth_status = ?` + availableRouteAccountCapabilitySQL
 
 // Build Super 共享能力：Billing paid 或 build_super_entitled；仅 grok_build。
 const modelAccountBuildSuperPredicate = `(EXISTS (SELECT 1 FROM account_billing_snapshots billing WHERE billing.account_id = account.id AND ` + accountPaidBillingSignals + `) OR (account.provider = 'grok_build' AND account.build_super_entitled = TRUE))`
@@ -212,7 +213,7 @@ func modelTierAvailabilityPredicate(tiers []string) string {
 	return modelTierAvailabilityPredicateWithAvailability(tiers, false)
 }
 
-func modelTierAvailabilityPredicateWithAvailability(tiers []string, activeOnly bool) string {
+func modelTierAccountPredicates(tiers []string) []string {
 	parts := make([]string, 0, len(tiers))
 	for _, tier := range tiers {
 		switch tier {
@@ -222,6 +223,11 @@ func modelTierAvailabilityPredicateWithAvailability(tiers []string, activeOnly b
 			parts = append(parts, modelAccountBuildSuperTierPredicate, modelAccountWebSuperPredicate)
 		}
 	}
+	return parts
+}
+
+func modelTierAvailabilityPredicateWithAvailability(tiers []string, activeOnly bool) string {
+	parts := modelTierAccountPredicates(tiers)
 	if len(parts) == 0 {
 		return ""
 	}
@@ -238,6 +244,29 @@ func modelTierAvailabilityPredicateWithAvailability(tiers []string, activeOnly b
 			AND (` + strings.Join(parts, " OR ") + `)
 			AND ` + capabilityPredicate + `
 	))`
+}
+
+// availableRouteForScopePredicate keeps cohort, tier, and route capability on
+// one correlated account witness. Separate EXISTS clauses would let a key
+// combine (for example) a shared Super account with a stress Free account.
+func availableRouteForScopePredicate(filter repository.ModelListFilter) (string, []any) {
+	accountPredicates := []string{
+		"account.provider = model_routes.provider",
+		"account.enabled = ?",
+		"account.auth_status = ?",
+	}
+	args := []any{true, account.AuthStatusActive}
+	if filter.RoutingCohort != "" {
+		accountPredicates = append(accountPredicates, "account.routing_cohort = ?")
+		args = append(args, filter.RoutingCohort)
+	}
+	if tierPredicates := modelTierAccountPredicates(filter.Tiers); len(tierPredicates) > 0 {
+		// Console has no reliable tier classification, but its cohort and route
+		// capability must still be witnessed by this same account row.
+		accountPredicates = append(accountPredicates, "(account.provider = 'grok_console' OR ("+strings.Join(tierPredicates, " OR ")+"))")
+	}
+	predicate := "EXISTS (SELECT 1 FROM provider_accounts account WHERE " + strings.Join(accountPredicates, " AND ") + availableRouteAccountCapabilitySQL
+	return predicate, args
 }
 
 const (
@@ -501,12 +530,10 @@ func (r *ModelRepository) ListEnabled(ctx context.Context) ([]model.Route, error
 }
 
 func (r *ModelRepository) ListEnabledForScope(ctx context.Context, filter repository.ModelListFilter) ([]model.Route, error) {
-	query := r.availableRoutes(r.db.db.WithContext(ctx)).Where("enabled = ?", true)
+	predicate, args := availableRouteForScopePredicate(filter)
+	query := r.db.db.WithContext(ctx).Where(predicate, args...).Where("enabled = ?", true)
 	if len(filter.Providers) > 0 {
 		query = query.Where("provider IN ?", filter.Providers)
-	}
-	if tierPredicate := modelTierAvailabilityPredicateWithAvailability(filter.Tiers, true); tierPredicate != "" {
-		query = query.Where(tierPredicate)
 	}
 	var rows []modelRouteModel
 	if err := query.Order("public_id ASC, id ASC").Find(&rows).Error; err != nil {

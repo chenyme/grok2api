@@ -220,12 +220,9 @@ func (s *Service) ListEnabled(ctx context.Context) ([]modeldomain.Route, error) 
 }
 
 func (s *Service) ListEnabledForClientKey(ctx context.Context, key clientkeydomain.Key) ([]modeldomain.Route, error) {
-	scope, valid := clientkeydomain.NormalizeAccountScope(clientkeydomain.AccountScope{Providers: key.ProviderScope, Tiers: key.TierScope})
+	scope, valid := clientkeydomain.NormalizeAccountScope(clientkeydomain.AccountScope{Providers: key.ProviderScope, Tiers: key.TierScope, RoutingCohort: key.RoutingCohort})
 	if !valid {
 		return nil, ErrInvalidFilter
-	}
-	if !scope.IsRestricted() {
-		return s.models.ListEnabled(ctx)
 	}
 	providers := scope.Providers.Values()
 	if len(providers) == 1 && providers[0] == "all" {
@@ -235,7 +232,7 @@ func (s *Service) ListEnabledForClientKey(ctx context.Context, key clientkeydoma
 	if len(tiers) == 1 && tiers[0] == "all" {
 		tiers = nil
 	}
-	return s.models.ListEnabledForScope(ctx, repository.ModelListFilter{Providers: providers, Tiers: tiers})
+	return s.models.ListEnabledForScope(ctx, repository.ModelListFilter{Providers: providers, Tiers: tiers, RoutingCohort: scope.RoutingCohort})
 }
 
 func (s *Service) Get(ctx context.Context, id uint64) (modeldomain.Route, error) {

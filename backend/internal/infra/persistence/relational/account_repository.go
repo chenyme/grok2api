@@ -1009,16 +1009,22 @@ func (r *AccountRepository) Get(ctx context.Context, id uint64) (account.Credent
 // after routing has selected it. Routing candidate queries intentionally never
 // load these encrypted columns.
 func (r *AccountRepository) GetCredentialMaterial(ctx context.Context, accountID uint64, provider account.Provider) (account.CredentialMaterial, error) {
-	var row accountCredentialModel
+	type credentialMaterialRow struct {
+		Credential    accountCredentialModel `gorm:"embedded"`
+		RoutingCohort string                 `gorm:"column:routing_cohort"`
+	}
+	var row credentialMaterialRow
 	if err := r.db.db.WithContext(ctx).
 		Table("account_credentials AS credential").
-		Select("credential.*").
+		Select("credential.*, account.routing_cohort").
 		Joins("JOIN provider_accounts AS account ON account.id = credential.account_id").
 		Where("credential.account_id = ? AND account.provider = ? AND account.enabled = TRUE AND account.auth_status = ?", accountID, provider, account.AuthStatusActive).
 		Take(&row).Error; err != nil {
 		return account.CredentialMaterial{}, mapError(err)
 	}
-	return toCredentialMaterialDomain(row, provider), nil
+	material := toCredentialMaterialDomain(row.Credential, provider)
+	material.RoutingCohort = normalizedRoutingCohort(row.RoutingCohort)
+	return material, nil
 }
 
 func (r *AccountRepository) LinkWebToBuild(ctx context.Context, webAccountID, buildAccountID uint64) error {
@@ -1379,6 +1385,9 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		row.EgressNodeID = existing.EgressNodeID
 		row.EgressAssignmentMode = existing.EgressAssignmentMode
 		row.EgressAssignedAt = existing.EgressAssignedAt
+		// Routing isolation is administrator-owned. Import, re-authentication,
+		// refresh, and provider upsert may never move an existing account.
+		row.RoutingCohort = existing.RoutingCohort
 		// reauth_marked_at 与 Update 路径一致：保持 reauth 时永不被普通 upsert 改写。
 		applyReauthMarkedAtTransition(&row, *existing)
 		if err := tx.Save(&row).Error; err != nil {
@@ -1594,7 +1603,7 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, providerValue accoun
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	values := make(map[string]any, 4)
+	values := make(map[string]any, 5)
 	if updates.Enabled != nil {
 		values["enabled"] = *updates.Enabled
 	}
@@ -1606,6 +1615,9 @@ func (r *AccountRepository) UpdateMany(ctx context.Context, providerValue accoun
 	}
 	if updates.MinimumRemaining != nil {
 		values["minimum_remaining"] = *updates.MinimumRemaining
+	}
+	if updates.RoutingCohort != nil {
+		values["routing_cohort"] = *updates.RoutingCohort
 	}
 	if len(values) == 0 {
 		return 0, nil

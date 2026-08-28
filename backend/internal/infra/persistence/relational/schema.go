@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/domain/media"
 	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
@@ -63,6 +64,7 @@ var schemaIndexes = []string{
 	// 在统一索引阶段显式恢复这些数据完整性约束。
 	"CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_accounts_identity_key ON provider_accounts(identity_key)",
 	"CREATE INDEX IF NOT EXISTS idx_accounts_routing ON provider_accounts(provider, enabled, auth_status, priority DESC, id ASC)",
+	"CREATE INDEX IF NOT EXISTS idx_accounts_cohort_routing ON provider_accounts(routing_cohort, provider, enabled, auth_status, priority DESC, id ASC)",
 	"CREATE INDEX IF NOT EXISTS idx_accounts_created_id ON provider_accounts(created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_accounts_auto_clean_reauth ON provider_accounts(auth_status, reauth_marked_at, id)",
 	"CREATE INDEX IF NOT EXISTS idx_accounts_auto_clean_reauth_cursor ON provider_accounts(auth_status, enabled, id, reauth_marked_at)",
@@ -84,6 +86,7 @@ var schemaIndexes = []string{
 	"CREATE INDEX IF NOT EXISTS idx_account_model_quota_blocks_due ON account_model_quota_blocks(cooldown_until, account_id)",
 	"CREATE INDEX IF NOT EXISTS idx_client_keys_created_id ON client_keys(created_at DESC, id DESC)",
 	"CREATE INDEX IF NOT EXISTS idx_client_keys_status ON client_keys(enabled, expires_at, created_at DESC, id DESC)",
+	"CREATE INDEX IF NOT EXISTS idx_client_keys_routing_cohort ON client_keys(routing_cohort, enabled, id)",
 	"CREATE UNIQUE INDEX IF NOT EXISTS idx_client_keys_internal_kind ON client_keys(internal_kind) WHERE internal_kind IS NOT NULL",
 	"CREATE INDEX IF NOT EXISTS idx_client_key_models_route_key ON client_key_models(model_route_id, client_key_id)",
 	"CREATE INDEX IF NOT EXISTS idx_billing_reservations_expiry ON billing_reservations(expires_at, client_key_id)",
@@ -137,6 +140,8 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	hadProviderScope := hadClientKeys && db.Migrator().HasColumn(&clientKeyModel{}, "ProviderScopeMask")
 	hadTierScope := hadClientKeys && db.Migrator().HasColumn(&clientKeyModel{}, "TierScopeMask")
 	hadLegacyAccountPool := hadClientKeys && db.Migrator().HasColumn("client_keys", "account_pool")
+	hadMediaJobs := db.Migrator().HasTable(&mediaJobModel{})
+	hadMediaJobRoutingCohort := hadMediaJobs && db.Migrator().HasColumn(&mediaJobModel{}, "RoutingCohort")
 	hadGlobalSubscriptionProxy := db.Migrator().HasTable("egress_operations_config") && db.Migrator().HasColumn("egress_operations_config", "encrypted_subscription_proxy_url")
 	// all 作用域会让 Build 与 Web 共用 UA、健康度和冷却状态，升级时直接移除旧节点。
 	if db.Migrator().HasTable(&egressNodeModel{}) {
@@ -168,6 +173,12 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	}
 	if err := d.migrateClientKeyAccountScopes(ctx, hadLegacyAccountPool, !hadProviderScope, !hadTierScope); err != nil {
 		return fmt.Errorf("迁移客户端 Key 调用范围: %w", err)
+	}
+	if err := d.migrateRoutingCohorts(ctx, hadMediaJobs && !hadMediaJobRoutingCohort); err != nil {
+		return fmt.Errorf("迁移路由 cohort: %w", err)
+	}
+	if err := d.ensureRoutingCohortConstraints(ctx); err != nil {
+		return fmt.Errorf("校验路由 cohort 约束: %w", err)
 	}
 	if err := d.migrateBuildResponseHeaderTimeout(ctx); err != nil {
 		return fmt.Errorf("迁移 Grok Build 响应头超时: %w", err)
@@ -235,6 +246,101 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	}
 	if err := d.ensureCanonicalModelPublicIDs(ctx); err != nil {
 		return fmt.Errorf("迁移模型 Provider 命名空间: %w", err)
+	}
+	return nil
+}
+
+// migrateRoutingCohorts is intentionally forward-only and idempotent. Legacy
+// accounts/keys join shared; pre-column media jobs inherit their current key's
+// cohort (or shared when the key cannot be resolved).
+func (d *Database) migrateRoutingCohorts(ctx context.Context, backfillLegacyMediaJobs bool) error {
+	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if backfillLegacyMediaJobs && tx.Migrator().HasColumn("media_jobs", "routing_cohort") {
+			if err := tx.Exec(`
+				UPDATE media_jobs
+				SET routing_cohort = COALESCE(
+					(SELECT NULLIF(TRIM(client.routing_cohort), '') FROM client_keys client WHERE client.id = media_jobs.client_key_id),
+					?
+				)
+			`, accountdomain.DefaultRoutingCohort).Error; err != nil {
+				return err
+			}
+		}
+		for _, table := range []string{"provider_accounts", "client_keys", "media_jobs"} {
+			if !tx.Migrator().HasColumn(table, "routing_cohort") {
+				continue
+			}
+			if err := tx.Table(table).
+				Where("routing_cohort IS NULL OR TRIM(routing_cohort) = ''").
+				Update("routing_cohort", accountdomain.DefaultRoutingCohort).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ensureRoutingCohortConstraints rejects malformed or mixed-case partitions at
+// the database boundary. PostgreSQL uses a real regex CHECK; SQLite has no
+// regex operator, so equivalent GLOB triggers enforce the same inserts/updates.
+func (d *Database) ensureRoutingCohortConstraints(ctx context.Context) error {
+	tables := []struct {
+		table      string
+		constraint string
+		trigger    string
+	}{
+		{table: "provider_accounts", constraint: "chk_accounts_routing_cohort_format", trigger: "trg_accounts_routing_cohort_format"},
+		{table: "client_keys", constraint: "chk_client_keys_routing_cohort_format", trigger: "trg_client_keys_routing_cohort_format"},
+		{table: "media_jobs", constraint: "chk_media_jobs_routing_cohort_format", trigger: "trg_media_jobs_routing_cohort_format"},
+	}
+	db := d.db.WithContext(ctx)
+	for _, value := range tables {
+		switch d.dialect {
+		case "postgres":
+			var invalid int64
+			if err := db.Table(value.table).Where("routing_cohort !~ ?", `^[a-z0-9][a-z0-9._-]{0,63}$`).Count(&invalid).Error; err != nil {
+				return err
+			}
+			if invalid > 0 {
+				return fmt.Errorf("%s contains %d invalid routing cohorts", value.table, invalid)
+			}
+			var exists int64
+			if err := db.Raw(`
+				SELECT COUNT(*)
+				FROM pg_constraint constraint_row
+				JOIN pg_class table_row ON table_row.oid = constraint_row.conrelid
+				WHERE constraint_row.conname = ? AND table_row.relname = ?
+			`, value.constraint, value.table).Scan(&exists).Error; err != nil {
+				return err
+			}
+			if exists == 0 {
+				statement := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (routing_cohort ~ '^[a-z0-9][a-z0-9._-]{0,63}$')", value.table, value.constraint)
+				if err := db.Exec(statement).Error; err != nil {
+					return err
+				}
+			}
+		case "sqlite":
+			invalidPredicate := "routing_cohort = '' OR length(routing_cohort) > 64 OR routing_cohort NOT GLOB '[a-z0-9]*' OR routing_cohort GLOB '*[^a-z0-9._-]*'"
+			var invalid int64
+			if err := db.Table(value.table).Where(invalidPredicate).Count(&invalid).Error; err != nil {
+				return err
+			}
+			if invalid > 0 {
+				return fmt.Errorf("%s contains %d invalid routing cohorts", value.table, invalid)
+			}
+			for _, operation := range []string{"INSERT", "UPDATE OF routing_cohort"} {
+				suffix := "insert"
+				if strings.HasPrefix(operation, "UPDATE") {
+					suffix = "update"
+				}
+				statement := fmt.Sprintf("CREATE TRIGGER IF NOT EXISTS %s_%s BEFORE %s ON %s WHEN NEW.routing_cohort = '' OR length(NEW.routing_cohort) > 64 OR NEW.routing_cohort NOT GLOB '[a-z0-9]*' OR NEW.routing_cohort GLOB '*[^a-z0-9._-]*' BEGIN SELECT RAISE(ABORT, 'invalid routing cohort'); END", value.trigger, suffix, operation, value.table)
+				if err := db.Exec(statement).Error; err != nil {
+					return err
+				}
+			}
+		default:
+			return fmt.Errorf("不支持的数据库驱动: %s", d.dialect)
+		}
 	}
 	return nil
 }

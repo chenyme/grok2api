@@ -48,6 +48,7 @@ func TestCreateDistinguishesOmittedLimitsFromExplicitZero(t *testing.T) {
 	assertCreate(`{"name":"unlimited","rpmLimit":0,"maxConcurrent":0}`)
 	assertCreate(`{"name":"free-pool","accountPool":"free"}`)
 	assertCreate(`{"name":"mixed-scope","providerScope":["grok_build","grok_web"],"tierScope":["free","super"]}`)
+	assertCreate(`{"name":"stress-cohort","routingCohort":"stress"}`)
 
 	defaults, total, err := service.List(ctx, 1, 20, "defaults", clientkeyapp.ListFilter{})
 	if err != nil || total != 1 || len(defaults) != 1 {
@@ -71,6 +72,10 @@ func TestCreateDistinguishesOmittedLimitsFromExplicitZero(t *testing.T) {
 	if err != nil || total != 1 || len(mixedScope) != 1 || mixedScope[0].ProviderScope != 3 || mixedScope[0].TierScope != 3 {
 		t.Fatalf("mixed-scope key list = %#v, total = %d, err = %v", mixedScope, total, err)
 	}
+	stressCohort, total, err := service.List(ctx, 1, 20, "stress-cohort", clientkeyapp.ListFilter{})
+	if err != nil || total != 1 || len(stressCohort) != 1 || stressCohort[0].RoutingCohort != "stress" {
+		t.Fatalf("stress cohort key list = %#v, total = %d, err = %v", stressCohort, total, err)
+	}
 	request := httptest.NewRequest(http.MethodPost, "/api/client-keys", bytes.NewBufferString(`{"name":"invalid-pool","accountPool":"unknown"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -89,6 +94,7 @@ func TestCreateDistinguishesOmittedLimitsFromExplicitZero(t *testing.T) {
 		`{"name":"empty-providers","providerScope":[]}`,
 		`{"name":"empty-tiers","tierScope":[]}`,
 		`{"name":"empty-legacy-pool","accountPool":""}`,
+		`{"name":"invalid-cohort","routingCohort":"INVALID"}`,
 	} {
 		request = httptest.NewRequest(http.MethodPost, "/api/client-keys", bytes.NewBufferString(body))
 		request.Header.Set("Content-Type", "application/json")

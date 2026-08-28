@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/perfmetrics"
@@ -49,6 +50,7 @@ type CreateInput struct {
 	AllowedModels        []uint64
 	ProviderScope        clientkeydomain.ProviderScope
 	TierScope            clientkeydomain.TierScope
+	RoutingCohort        string
 }
 
 type UpdateInput struct {
@@ -63,6 +65,7 @@ type UpdateInput struct {
 	AllowedModels        *[]uint64
 	ProviderScope        *clientkeydomain.ProviderScope
 	TierScope            *clientkeydomain.TierScope
+	RoutingCohort        *string
 }
 
 type Created struct {
@@ -175,6 +178,7 @@ func (s *Service) EnsureQualityGuardIdentity(ctx context.Context, enabled bool) 
 	value.AllowedModels = nil
 	value.ProviderScope = clientkeydomain.ProviderScopeBuild
 	value.TierScope = clientkeydomain.TierScopeAll
+	value.RoutingCohort = accountdomain.DefaultRoutingCohort
 	updated, err := s.keys.Update(ctx, value)
 	if err != nil {
 		return clientkeydomain.Key{}, fmt.Errorf("更新系统质量探测身份: %w", err)
@@ -201,6 +205,7 @@ func (s *Service) createQualityGuardIdentity(ctx context.Context) (clientkeydoma
 		SecretHash: security.HashToken(raw), EncryptedSecret: encrypted,
 		InternalKind: clientkeydomain.InternalKindQualityGuard, Enabled: true,
 		ProviderScope: clientkeydomain.ProviderScopeBuild, TierScope: clientkeydomain.TierScopeAll,
+		RoutingCohort: accountdomain.DefaultRoutingCohort,
 	})
 }
 
@@ -229,8 +234,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Created, error
 	}
 	providerScope, providerScopeValid := clientkeydomain.NormalizeProviderScope(input.ProviderScope)
 	tierScope, tierScopeValid := clientkeydomain.NormalizeTierScope(input.TierScope)
-	if !providerScopeValid || !tierScopeValid {
-		return Created{}, invalidInput("providerScope 或 tierScope 无效")
+	routingCohort, routingCohortValid := accountdomain.NormalizeRoutingCohort(input.RoutingCohort)
+	if !providerScopeValid || !tierScopeValid || !routingCohortValid {
+		return Created{}, invalidInput("providerScope、tierScope 或 routingCohort 无效")
 	}
 	prefix, err := security.NewHexToken(6)
 	if err != nil {
@@ -265,7 +271,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Created, error
 		Name: strings.TrimSpace(input.Name), Prefix: prefix, SecretHash: security.HashToken(raw), EncryptedSecret: encryptedSecret,
 		Enabled: input.Enabled, ExpiresAt: input.ExpiresAt, RPMLimit: input.RPMLimit, MaxConcurrent: input.MaxConcurrent,
 		BillingLimitUSDTicks: input.BillingLimitUSDTicks, AllowModelAliases: input.AllowModelAliases, AllowedModels: input.AllowedModels,
-		ProviderScope: providerScope, TierScope: tierScope,
+		ProviderScope: providerScope, TierScope: tierScope, RoutingCohort: routingCohort,
 	})
 	return Created{Key: value, Secret: raw}, mapRepositoryError(err)
 }
@@ -352,6 +358,13 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (cli
 			return clientkeydomain.Key{}, invalidInput("tierScope 无效")
 		}
 		value.TierScope = tierScope
+	}
+	if input.RoutingCohort != nil {
+		routingCohort, valid := accountdomain.NormalizeRoutingCohort(*input.RoutingCohort)
+		if !valid {
+			return clientkeydomain.Key{}, invalidInput("routingCohort 无效")
+		}
+		value.RoutingCohort = routingCohort
 	}
 	updated, err := s.keys.Update(ctx, value)
 	if err == nil {

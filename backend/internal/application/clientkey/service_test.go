@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
@@ -319,7 +320,7 @@ func TestAccountScopePersistsAndAuthCacheInvalidatesOnChange(t *testing.T) {
 	}
 	base := relational.NewClientKeyRepository(database)
 	service := NewService(base, successfulRateLimiter{}, successfulConcurrencyLimiter{}, 60, 5, testCipher(t))
-	created, err := service.Create(ctx, CreateInput{Name: "scoped", Enabled: true, ProviderScope: clientkeydomain.ProviderScopeBuild | clientkeydomain.ProviderScopeWeb, TierScope: clientkeydomain.TierScopeFree})
+	created, err := service.Create(ctx, CreateInput{Name: "scoped", Enabled: true, ProviderScope: clientkeydomain.ProviderScopeBuild | clientkeydomain.ProviderScopeWeb, TierScope: clientkeydomain.TierScopeFree, RoutingCohort: "stress"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,12 +329,13 @@ func TestAccountScopePersistsAndAuthCacheInvalidatesOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	if value.ProviderScope != clientkeydomain.ProviderScopeBuild|clientkeydomain.ProviderScopeWeb || value.TierScope != clientkeydomain.TierScopeFree {
+	if value.ProviderScope != clientkeydomain.ProviderScopeBuild|clientkeydomain.ProviderScopeWeb || value.TierScope != clientkeydomain.TierScopeFree || value.RoutingCohort != "stress" {
 		t.Fatalf("authenticated account scope = %+v", value.AccountScope())
 	}
 	consoleScope := clientkeydomain.ProviderScopeConsole
 	superTier := clientkeydomain.TierScopeSuper
-	if _, err := service.Update(ctx, created.Key.ID, UpdateInput{ProviderScope: &consoleScope, TierScope: &superTier}); err != nil {
+	cohort := "stress-next"
+	if _, err := service.Update(ctx, created.Key.ID, UpdateInput{ProviderScope: &consoleScope, TierScope: &superTier, RoutingCohort: &cohort}); err != nil {
 		t.Fatal(err)
 	}
 	value, release, err = service.Authenticate(ctx, created.Secret)
@@ -341,7 +343,7 @@ func TestAccountScopePersistsAndAuthCacheInvalidatesOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	if value.ProviderScope != clientkeydomain.ProviderScopeConsole || value.TierScope != clientkeydomain.TierScopeSuper {
+	if value.ProviderScope != clientkeydomain.ProviderScopeConsole || value.TierScope != clientkeydomain.TierScopeSuper || value.RoutingCohort != cohort {
 		t.Fatalf("account scope after cache invalidation = %+v", value.AccountScope())
 	}
 	stored, err := base.Get(ctx, created.Key.ID)
@@ -350,6 +352,7 @@ func TestAccountScopePersistsAndAuthCacheInvalidatesOnChange(t *testing.T) {
 	}
 	stored.ProviderScope = clientkeydomain.ProviderScopeWeb
 	stored.TierScope = clientkeydomain.TierScopeFree
+	stored.RoutingCohort = "remote"
 	if _, err := base.Update(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +361,7 @@ func TestAccountScopePersistsAndAuthCacheInvalidatesOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	if value.ProviderScope != clientkeydomain.ProviderScopeConsole || value.TierScope != clientkeydomain.TierScopeSuper {
+	if value.ProviderScope != clientkeydomain.ProviderScopeConsole || value.TierScope != clientkeydomain.TierScopeSuper || value.RoutingCohort != cohort {
 		t.Fatalf("cache unexpectedly changed before remote invalidation = %+v", value.AccountScope())
 	}
 	service.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged, ClientKeyID: created.Key.ID})
@@ -367,7 +370,7 @@ func TestAccountScopePersistsAndAuthCacheInvalidatesOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	if value.ProviderScope != clientkeydomain.ProviderScopeWeb || value.TierScope != clientkeydomain.TierScopeFree {
+	if value.ProviderScope != clientkeydomain.ProviderScopeWeb || value.TierScope != clientkeydomain.TierScopeFree || value.RoutingCohort != "remote" {
 		t.Fatalf("account scope after remote invalidation = %+v", value.AccountScope())
 	}
 	service.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationClientKeyChanged})
@@ -381,8 +384,12 @@ func TestAccountScopePersistsAndAuthCacheInvalidatesOnChange(t *testing.T) {
 	if _, err := service.Update(ctx, created.Key.ID, UpdateInput{ProviderScope: &invalid}); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("invalid account scope error = %v", err)
 	}
+	invalidCohort := "INVALID"
+	if _, err := service.Update(ctx, created.Key.ID, UpdateInput{RoutingCohort: &invalidCohort}); !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("invalid routing cohort error = %v", err)
+	}
 	all, err := service.Create(ctx, CreateInput{Name: "legacy-default", Enabled: true})
-	if err != nil || all.Key.ProviderScope != clientkeydomain.ProviderScopeAll || all.Key.TierScope != clientkeydomain.TierScopeAll {
+	if err != nil || all.Key.ProviderScope != clientkeydomain.ProviderScopeAll || all.Key.TierScope != clientkeydomain.TierScopeAll || all.Key.RoutingCohort != accountdomain.DefaultRoutingCohort {
 		t.Fatalf("default account scope = %+v, err = %v", all.Key.AccountScope(), err)
 	}
 }

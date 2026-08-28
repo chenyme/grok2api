@@ -43,8 +43,9 @@ const (
 )
 
 type AccountScope struct {
-	Providers ProviderScope
-	Tiers     TierScope
+	Providers     ProviderScope
+	Tiers         TierScope
+	RoutingCohort string
 }
 
 func ParseProviderScopeValues(values []string) (ProviderScope, bool) {
@@ -153,7 +154,8 @@ func NormalizeTierScope(value TierScope) (TierScope, bool) {
 func NormalizeAccountScope(value AccountScope) (AccountScope, bool) {
 	providers, providersValid := NormalizeProviderScope(value.Providers)
 	tiers, tiersValid := NormalizeTierScope(value.Tiers)
-	return AccountScope{Providers: providers, Tiers: tiers}, providersValid && tiersValid
+	cohort, cohortValid := account.NormalizeRoutingCohort(value.RoutingCohort)
+	return AccountScope{Providers: providers, Tiers: tiers, RoutingCohort: cohort}, providersValid && tiersValid && cohortValid
 }
 
 func (s ProviderScope) Allows(provider account.Provider) bool {
@@ -208,13 +210,19 @@ func (s AccountScope) AllowsAccount(provider account.Provider, tier AccountTier)
 	return value.Tiers.Allows(tier)
 }
 
+func (s AccountScope) AllowsRoutingCohort(cohort string) bool {
+	value, valid := NormalizeAccountScope(s)
+	candidate, candidateValid := account.NormalizeRoutingCohort(cohort)
+	return valid && candidateValid && value.RoutingCohort == candidate
+}
+
 func (s AccountScope) IsRestricted() bool {
 	value, valid := NormalizeAccountScope(s)
-	return valid && (value.Providers != ProviderScopeAll || value.Tiers != TierScopeAll)
+	return valid && (value.Providers != ProviderScopeAll || value.Tiers != TierScopeAll || value.RoutingCohort != account.DefaultRoutingCohort)
 }
 
 func (k Key) AccountScope() AccountScope {
-	value, _ := NormalizeAccountScope(AccountScope{Providers: k.ProviderScope, Tiers: k.TierScope})
+	value, _ := NormalizeAccountScope(AccountScope{Providers: k.ProviderScope, Tiers: k.TierScope, RoutingCohort: k.RoutingCohort})
 	return value
 }
 
@@ -242,6 +250,7 @@ type Key struct {
 	// ProviderScope and TierScope narrow routing without adding request-time storage lookups.
 	ProviderScope ProviderScope
 	TierScope     TierScope
+	RoutingCohort string
 	LastUsedAt    *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time

@@ -23,7 +23,7 @@ func TestWebResponseStateAndMediaJobRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := clientKeyModel{Name: "key", Prefix: "prefix", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4}
+	key := clientKeyModel{Name: "key", Prefix: "prefix", SecretHash: testSecretHash, EncryptedSecret: testEncryptedToken, Enabled: true, RPMLimit: 60, MaxConcurrent: 4, RoutingCohort: "stress"}
 	if err := database.db.WithContext(ctx).Create(&key).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +39,7 @@ func TestWebResponseStateAndMediaJobRoundTrip(t *testing.T) {
 	}
 
 	jobs := NewMediaJobRepository(database)
-	job := mediadomain.Job{ID: "video_test", RequestID: "request-video-test", ClientKeyID: key.ID, ClientKeyName: key.Name, AccountID: accountValue.ID, AccountName: accountValue.Name, Provider: "grok_web", Model: "grok-imagine-video", ModelRouteID: 1, UpstreamModel: "video", Prompt: "test", Seconds: 8, Size: "16:9", Quality: "720p", Status: mediadomain.StatusQueued, InputJSON: `{}`, CreatedAt: now, UpdatedAt: now}
+	job := mediadomain.Job{ID: "video_test", RequestID: "request-video-test", ClientKeyID: key.ID, ClientKeyName: key.Name, RoutingCohort: "stress", AccountID: accountValue.ID, AccountName: accountValue.Name, Provider: "grok_web", Model: "grok-imagine-video", ModelRouteID: 1, UpstreamModel: "video", Prompt: "test", Seconds: 8, Size: "16:9", Quality: "720p", Status: mediadomain.StatusQueued, InputJSON: `{}`, CreatedAt: now, UpdatedAt: now}
 	if err := jobs.CreateMediaJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestWebResponseStateAndMediaJobRoundTrip(t *testing.T) {
 		t.Fatalf("jobs = %#v, err = %v", recoverable, err)
 	}
 	claimed, ok, err := jobs.TryClaimMediaJob(ctx, job.ID, now, now.Add(time.Hour), "claim_token_0000000000000001")
-	if err != nil || !ok || claimed.Status != mediadomain.StatusInProgress || claimed.LeaseUntil == nil {
+	if err != nil || !ok || claimed.Status != mediadomain.StatusInProgress || claimed.LeaseUntil == nil || claimed.RoutingCohort != "stress" {
 		t.Fatalf("claimed job = %#v, ok = %v, err = %v", claimed, ok, err)
 	}
 	firstClaim := claimed

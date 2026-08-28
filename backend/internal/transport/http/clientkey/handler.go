@@ -41,6 +41,7 @@ type createRequest struct {
 	ProviderScope        *[]string `json:"providerScope"`
 	TierScope            *[]string `json:"tierScope"`
 	AccountPool          *string   `json:"accountPool"`
+	RoutingCohort        string    `json:"routingCohort"`
 }
 
 type updateRequest struct {
@@ -55,6 +56,7 @@ type updateRequest struct {
 	ProviderScope        *[]string `json:"providerScope"`
 	TierScope            *[]string `json:"tierScope"`
 	AccountPool          *string   `json:"accountPool"`
+	RoutingCohort        *string   `json:"routingCohort"`
 }
 
 type batchUpdateRequest struct {
@@ -80,6 +82,7 @@ type keyResponse struct {
 	AllowedModelIDs      []string   `json:"allowedModelIds"`
 	ProviderScope        []string   `json:"providerScope"`
 	TierScope            []string   `json:"tierScope"`
+	RoutingCohort        string     `json:"routingCohort"`
 	LastUsedAt           *time.Time `json:"lastUsedAt,omitempty"`
 }
 
@@ -164,7 +167,7 @@ func (h *Handler) create(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidAccountScope", err.Error())
 		return
 	}
-	input := clientkeyapp.CreateInput{Name: request.Name, Enabled: enabled, ExpiresAt: expiresAt, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowedModels: modelIDs}
+	input := clientkeyapp.CreateInput{Name: request.Name, Enabled: enabled, ExpiresAt: expiresAt, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowedModels: modelIDs, RoutingCohort: request.RoutingCohort}
 	if providerScope != nil {
 		input.ProviderScope = *providerScope
 	}
@@ -205,7 +208,7 @@ func (h *Handler) update(c *gin.Context) {
 		response.Error(c, http.StatusBadRequest, "invalidAccountScope", err.Error())
 		return
 	}
-	input := clientkeyapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, RPMLimit: request.RPMLimit, MaxConcurrent: request.MaxConcurrent, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowModelAliases: request.AllowModelAliases, ProviderScope: providerScope, TierScope: tierScope}
+	input := clientkeyapp.UpdateInput{Name: request.Name, Enabled: request.Enabled, RPMLimit: request.RPMLimit, MaxConcurrent: request.MaxConcurrent, BillingLimitUSDTicks: request.BillingLimitUSDTicks, AllowModelAliases: request.AllowModelAliases, ProviderScope: providerScope, TierScope: tierScope, RoutingCohort: request.RoutingCohort}
 	if request.ExpiresAt != nil {
 		if *request.ExpiresAt == "" {
 			input.ClearExpiresAt = true
@@ -288,7 +291,7 @@ func newKeyResponse(value clientkeydomain.Key) keyResponse {
 		ID: value.ID, Name: value.Name, Prefix: value.Prefix, Enabled: value.Enabled, ExpiresAt: value.ExpiresAt,
 		RPMLimit: value.RPMLimit, MaxConcurrent: value.MaxConcurrent, BillingLimitUSDTicks: value.BillingLimitUSDTicks,
 		BilledUsageUSDTicks: value.BilledUsageUSDTicks, AllowModelAliases: value.AllowModelAliases, AllowedModelIDs: ids,
-		ProviderScope: value.ProviderScope.Values(), TierScope: value.TierScope.Values(), LastUsedAt: value.LastUsedAt,
+		ProviderScope: value.ProviderScope.Values(), TierScope: value.TierScope.Values(), RoutingCohort: value.AccountScope().RoutingCohort, LastUsedAt: value.LastUsedAt,
 	}
 }
 

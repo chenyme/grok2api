@@ -28,6 +28,34 @@ type LinkedAccount struct {
 
 var providers = [...]Provider{ProviderBuild, ProviderWeb, ProviderConsole}
 
+const (
+	DefaultRoutingCohort = "shared"
+	MaxRoutingCohortLen  = 64
+)
+
+// NormalizeRoutingCohort returns the stable, non-secret routing partition used
+// to keep ordinary traffic and isolated workloads from sharing credentials.
+// Empty legacy values deliberately map to the shared cohort.
+func NormalizeRoutingCohort(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return DefaultRoutingCohort, true
+	}
+	if len(value) > MaxRoutingCohortLen {
+		return value, false
+	}
+	for index, char := range value {
+		valid := char >= 'a' && char <= 'z' || char >= '0' && char <= '9'
+		if index > 0 {
+			valid = valid || char == '-' || char == '_' || char == '.'
+		}
+		if !valid {
+			return value, false
+		}
+	}
+	return value, true
+}
+
 // Providers 返回按产品展示和后台维护顺序排列的稳定 Provider 集合。
 func Providers() []Provider {
 	return append([]Provider(nil), providers[:]...)
@@ -143,14 +171,17 @@ func (value EgressAssignmentMode) IsValid() bool {
 
 // Credential 表示持久化的上游 OAuth 账号。
 type Credential struct {
-	ID                        uint64
-	Provider                  Provider
-	AuthType                  AuthType
-	Name                      string
-	Email                     string
-	UserID                    string
-	TeamID                    string
-	SourceKey                 string
+	ID        uint64
+	Provider  Provider
+	AuthType  AuthType
+	Name      string
+	Email     string
+	UserID    string
+	TeamID    string
+	SourceKey string
+	// RoutingCohort is an administrator-managed isolation boundary. Requests
+	// may use this credential only when their Client Key has the exact cohort.
+	RoutingCohort             string
 	OIDCClientID              string
 	EncryptedAccessToken      string
 	EncryptedRefreshToken     string
@@ -227,8 +258,12 @@ type Credential struct {
 // CredentialMaterial contains the encrypted provider secrets and refresh
 // metadata loaded only after routing selects an account.
 type CredentialMaterial struct {
-	AccountID                    uint64
-	Provider                     Provider
+	AccountID uint64
+	Provider  Provider
+	// RoutingCohort is re-read from the authoritative account row at lease
+	// time. Candidate snapshots may be stale across replicas, so ApplyTo must
+	// confirm that this value still matches the cohort used for selection.
+	RoutingCohort                string
 	AuthType                     AuthType
 	OIDCClientID                 string
 	EncryptedAccessToken         string
@@ -254,6 +289,12 @@ func (m CredentialMaterial) ApplyTo(value Credential) (Credential, bool) {
 	if m.AccountID == 0 || value.ID != m.AccountID || m.Provider == "" || value.Provider != m.Provider {
 		return value, false
 	}
+	candidateCohort, candidateValid := NormalizeRoutingCohort(value.RoutingCohort)
+	currentCohort, currentValid := NormalizeRoutingCohort(m.RoutingCohort)
+	if !candidateValid || !currentValid || candidateCohort != currentCohort {
+		return value, false
+	}
+	value.RoutingCohort = currentCohort
 	value.AuthType = m.AuthType
 	value.OIDCClientID = m.OIDCClientID
 	value.EncryptedAccessToken = m.EncryptedAccessToken

@@ -66,6 +66,46 @@ func TestBuildRouteModeValidation(t *testing.T) {
 	}
 }
 
+func TestNormalizeRoutingCohortDefaultsLegacyAndRejectsUnstableValues(t *testing.T) {
+	for _, value := range []string{"", "  "} {
+		if normalized, valid := NormalizeRoutingCohort(value); !valid || normalized != DefaultRoutingCohort {
+			t.Fatalf("legacy cohort %q = %q, valid=%v", value, normalized, valid)
+		}
+	}
+	for _, value := range []string{"shared", "stress", "grok-image.2026_08-28"} {
+		if normalized, valid := NormalizeRoutingCohort(value); !valid || normalized != value {
+			t.Fatalf("cohort %q = %q, valid=%v", value, normalized, valid)
+		}
+	}
+	for _, value := range []string{"Stress", "-stress", "stress pool", "stress/other", "стресс"} {
+		if _, valid := NormalizeRoutingCohort(value); valid {
+			t.Fatalf("invalid cohort %q accepted", value)
+		}
+	}
+}
+
+func TestCredentialMaterialApplyToRequiresCurrentRoutingCohort(t *testing.T) {
+	candidate := Credential{ID: 7, Provider: ProviderBuild, RoutingCohort: "shared"}
+	material := CredentialMaterial{
+		AccountID: 7, Provider: ProviderBuild, RoutingCohort: "stress",
+		AuthType: AuthTypeOAuth, EncryptedAccessToken: "encrypted",
+	}
+	if _, matched := material.ApplyTo(candidate); matched {
+		t.Fatal("stale candidate crossed the authoritative routing cohort")
+	}
+
+	material.RoutingCohort = "INVALID"
+	if _, matched := material.ApplyTo(candidate); matched {
+		t.Fatal("invalid authoritative routing cohort failed open")
+	}
+
+	material.RoutingCohort = ""
+	hydrated, matched := material.ApplyTo(candidate)
+	if !matched || hydrated.RoutingCohort != DefaultRoutingCohort || hydrated.EncryptedAccessToken != "encrypted" {
+		t.Fatalf("legacy shared material did not hydrate: matched=%v credential=%#v", matched, hydrated)
+	}
+}
+
 func TestIsBuildSuper(t *testing.T) {
 	paid := Billing{MonthlyLimit: 100}
 	zeroFree := Billing{IsUnifiedBillingUser: true}

@@ -14,10 +14,28 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	modeldomain "github.com/chenyme/grok2api/backend/internal/domain/model"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
+
+type cohortReplicaRepository struct {
+	repository.AccountRepository
+	layers  repository.RoutingLayerRepository
+	baseErr error
+}
+
+func (r *cohortReplicaRepository) ListRoutingAccountBases(ctx context.Context, provider account.Provider, quotaMode string) ([]account.RoutingAccountBase, error) {
+	if r.baseErr != nil {
+		return nil, r.baseErr
+	}
+	return r.layers.ListRoutingAccountBases(ctx, provider, quotaMode)
+}
+
+func (r *cohortReplicaRepository) ListRoutingAccountOverlays(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel string) (account.RoutingOverlaySnapshot, error) {
+	return r.layers.ListRoutingAccountOverlays(ctx, provider, modelRouteID, upstreamModel)
+}
 
 func TestSelectionUnavailableErrorClassification(t *testing.T) {
 	tests := []struct {
@@ -39,6 +57,171 @@ func TestSelectionUnavailableErrorClassification(t *testing.T) {
 				t.Fatalf("status=%d code=%q", failure.HTTPStatus(), failure.Code())
 			}
 		})
+	}
+}
+
+func TestSelectorRequiresExactRoutingCohortBeforeTierAndModelFilters(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-cohort.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	models := relational.NewModelRepository(database)
+	create := func(provider account.Provider, name, cohort string, priority int) account.Credential {
+		t.Helper()
+		value, _, createErr := accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: provider, AuthType: account.AuthTypeSSO, Name: name, SourceKey: name,
+			EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive,
+			RoutingCohort: cohort, Priority: priority, MaxConcurrent: 2,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return value
+	}
+	shared := create(account.ProviderBuild, "shared-build", "", 10)
+	stress := create(account.ProviderBuild, "stress-build", "stress", 100)
+	sharedConsole := create(account.ProviderConsole, "shared-console", "shared", 10)
+	stressConsole := create(account.ProviderConsole, "stress-console", "stress", 100)
+	route, err := models.Create(ctx, modeldomain.Route{
+		PublicID: "cohort-bound", Provider: account.ProviderBuild, UpstreamModel: "cohort-bound",
+		Capability: modeldomain.CapabilityResponses, Origin: modeldomain.OriginManual, Enabled: true,
+	}, []uint64{stress.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	assertLease := func(provider account.Provider, modelRouteID uint64, upstreamModel string, scope clientkeydomain.AccountScope, want uint64) {
+		t.Helper()
+		lease, acquireErr := selector.AcquireForKey(ctx, provider, modelRouteID, upstreamModel, "", "", nil, false, scope)
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		defer lease.Release()
+		if lease.Credential.ID != want {
+			t.Fatalf("selected account %d, want %d", lease.Credential.ID, want)
+		}
+	}
+	sharedScope := clientkeydomain.AccountScope{}
+	stressScope := clientkeydomain.AccountScope{RoutingCohort: "stress"}
+	assertLease(account.ProviderBuild, 0, "", sharedScope, shared.ID)
+	assertLease(account.ProviderBuild, 0, "", stressScope, stress.ID)
+	assertLease(account.ProviderBuild, route.ID, route.UpstreamModel, stressScope, stress.ID)
+	if _, err := selector.AcquireForKey(ctx, account.ProviderBuild, route.ID, route.UpstreamModel, "", "", nil, false, sharedScope); err == nil {
+		t.Fatal("model binding crossed the routing cohort boundary")
+	}
+	// Console intentionally ignores tiers, but must still honor cohort first.
+	consoleStressScope := clientkeydomain.AccountScope{Tiers: clientkeydomain.TierScopeFree, RoutingCohort: "stress"}
+	assertLease(account.ProviderConsole, 0, "", consoleStressScope, stressConsole.ID)
+	if _, err := selector.AcquireForKey(ctx, account.ProviderConsole, 0, "", "", "", map[uint64]bool{stressConsole.ID: true}, false, consoleStressScope); err == nil {
+		t.Fatalf("Console tier bypass selected shared account %d", sharedConsole.ID)
+	}
+	if accountScopeAllowsCandidate(account.ProviderBuild, stressScope, account.RoutingCandidate{Credential: account.Credential{RoutingCohort: "INVALID"}}) {
+		t.Fatal("corrupt non-empty cohort failed open")
+	}
+}
+
+func TestSelectorCrossReplicaLostCohortInvalidationFailsClosedForFreshAndStaleSnapshots(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-cohort-replicas.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	writer := relational.NewAccountRepository(database)
+	reader := relational.NewAccountRepository(database)
+	created, _, err := writer.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, AuthType: account.AuthTypeSSO, Name: "cohort-replica", SourceKey: "cohort-replica",
+		EncryptedAccessToken: "encrypted", AuthStatus: account.AuthStatusActive,
+		RoutingCohort: account.DefaultRoutingCohort, Priority: 10, MaxConcurrent: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers, ok := any(reader).(repository.RoutingLayerRepository)
+	if !ok {
+		t.Fatal("relational account repository must implement layered routing")
+	}
+	newReplica := func() (*Selector, *cohortReplicaRepository) {
+		repo := &cohortReplicaRepository{AccountRepository: reader, layers: layers}
+		return NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute), repo
+	}
+	freshReplica, _ := newReplica()
+	staleReplica, staleRepo := newReplica()
+	sharedScope := clientkeydomain.AccountScope{}
+	prime := func(selector *Selector) {
+		t.Helper()
+		lease, acquireErr := selector.AcquireForKey(ctx, account.ProviderBuild, 0, "", "", "", nil, false, sharedScope)
+		if acquireErr != nil {
+			t.Fatal(acquireErr)
+		}
+		lease.Release()
+	}
+	prime(freshReplica)
+	prime(staleReplica)
+
+	current, err := writer.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.RoutingCohort = "stress"
+	if _, err := writer.Update(ctx, current); err != nil {
+		t.Fatal(err)
+	}
+	// No invalidation is delivered to either selector, modeling separate replicas
+	// when the best-effort notification is lost.
+	assertNoAccounts := func(selector *Selector) {
+		t.Helper()
+		lease, acquireErr := selector.AcquireForKey(ctx, account.ProviderBuild, 0, "", "", "", nil, false, sharedScope)
+		if lease != nil {
+			lease.Release()
+			t.Fatalf("shared request acquired account %d after cohort mutation", lease.Credential.ID)
+		}
+		var unavailable *SelectionUnavailableError
+		if !errors.As(acquireErr, &unavailable) || unavailable.Reason != SelectionNoAccounts {
+			t.Fatalf("error = %v, want no accounts", acquireErr)
+		}
+	}
+	assertNoAccounts(freshReplica)
+
+	// Force the other replica past its normal TTL while keeping its stale window,
+	// then fail the authoritative base refresh. Even the stale-fallback snapshot
+	// must pass the lease-time cohort barrier before credentials are returned.
+	now := time.Now().UTC()
+	staleReplica.candidateMu.Lock()
+	for key, snapshot := range staleReplica.candidates {
+		snapshot.expiresAt = now.Add(-time.Second)
+		snapshot.staleUntil = now.Add(time.Minute)
+		staleReplica.candidates[key] = snapshot
+	}
+	for key, snapshot := range staleReplica.routingBases {
+		snapshot.expiresAt = now.Add(-time.Second)
+		snapshot.staleUntil = now.Add(time.Minute)
+		staleReplica.routingBases[key] = snapshot
+	}
+	staleReplica.candidateMu.Unlock()
+	staleRepo.baseErr = temporaryRoutingLoadError{message: "replica refresh unavailable"}
+	assertNoAccounts(staleReplica)
+
+	// The stale rejection invalidates the local cache. Once a replica can refresh,
+	// the newly assigned cohort becomes selectable without weakening isolation.
+	staleRepo.baseErr = nil
+	stressLease, err := staleReplica.AcquireForKey(ctx, account.ProviderBuild, 0, "", "", "", nil, false, clientkeydomain.AccountScope{RoutingCohort: "stress"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stressLease.Release()
+	if stressLease.Credential.ID != created.ID {
+		t.Fatalf("selected account %d, want %d", stressLease.Credential.ID, created.ID)
 	}
 }
 
@@ -855,9 +1038,10 @@ func TestSelectorEnforcesClientKeyAccountScopeAcrossProvidersAndTiers(t *testing
 	assertSelected(account.ProviderConsole, clientkeydomain.TierScopeFree, nil, console.ID)
 
 	freeBuildScope := clientkeydomain.AccountScope{Providers: clientkeydomain.ProviderScopeBuild, Tiers: clientkeydomain.TierScopeFree}
+	normalizedFreeBuildScope, _ := clientkeydomain.NormalizeAccountScope(freeBuildScope)
 	_, err = selector.AcquireForKey(ctx, account.ProviderBuild, 0, "", "", "", map[uint64]bool{buildFree.ID: true}, false, freeBuildScope)
 	var unavailable *SelectionUnavailableError
-	if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" || unavailable.Scope != freeBuildScope {
+	if !errors.As(err, &unavailable) || unavailable.Code() != "client_key_account_scope_unavailable" || unavailable.Scope != normalizedFreeBuildScope {
 		t.Fatalf("scoped exhaustion error = %#v, err = %v", unavailable, err)
 	}
 	superBuildScope := clientkeydomain.AccountScope{Providers: clientkeydomain.ProviderScopeBuild, Tiers: clientkeydomain.TierScopeSuper}
