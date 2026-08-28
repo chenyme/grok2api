@@ -71,7 +71,7 @@ jobs:
 
   check_ghcr_image:
     name: Build image (${{ matrix.arch }})
-    if: github.event_name != 'push'
+    if: github.event_name == 'pull_request'
     needs: verify
     strategy:
       fail-fast: false
@@ -105,7 +105,7 @@ jobs:
 
   build_ghcr_image:
     name: Publish image (${{ matrix.arch }})
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     needs: verify
     permissions:
       contents: read
@@ -169,7 +169,7 @@ jobs:
 
   merge:
     name: Merge image
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     needs:
       - build_ghcr_image
     runs-on: ubuntu-latest
