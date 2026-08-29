@@ -39,15 +39,23 @@ var buildGeneratedOutputItemTypes = map[string]struct{}{
 // semanticIdleReadCloser measures useful generated output rather than raw
 // transport bytes, so SSE keepalives and Build control events cannot keep a
 // stalled generation alive indefinitely.
+//
+// The idle clock runs only while Read is waiting on upstream. Downstream
+// backpressure (for example ConvertResponseStream blocked on an unbuffered
+// io.Pipe write) must not look like an upstream stall; the client write
+// deadline covers that case.
 type semanticIdleReadCloser struct {
 	inner io.ReadCloser
 	idle  time.Duration
 	timer *time.Timer
 
-	mu       sync.Mutex
-	detector buildSSEActivityDetector
-	finished bool
-	timedOut bool
+	mu         sync.Mutex
+	detector   buildSSEActivityDetector
+	finished   bool
+	timedOut   bool
+	readers    int
+	remaining  time.Duration
+	clockStart time.Time
 
 	closeOnce sync.Once
 	closeErr  error
@@ -57,37 +65,94 @@ func wrapBuildSemanticIdle(body io.ReadCloser, idle time.Duration) io.ReadCloser
 	if body == nil || idle <= 0 {
 		return body
 	}
-	wrapper := &semanticIdleReadCloser{inner: body, idle: idle}
-	wrapper.timer = time.AfterFunc(idle, wrapper.timeout)
-	return wrapper
+	return &semanticIdleReadCloser{inner: body, idle: idle, remaining: idle}
 }
 
 func (r *semanticIdleReadCloser) timeout() {
 	r.mu.Lock()
-	if r.finished {
+	if r.finished || r.readers == 0 {
 		r.mu.Unlock()
 		return
 	}
 	r.finished = true
 	r.timedOut = true
+	r.clockStart = time.Time{}
 	r.mu.Unlock()
 	_ = r.closeInner()
 }
 
+func (r *semanticIdleReadCloser) startClockLocked() {
+	if r.finished || r.readers == 0 {
+		return
+	}
+	if r.remaining <= 0 {
+		r.finished = true
+		r.timedOut = true
+		return
+	}
+	r.clockStart = time.Now()
+	if r.timer == nil {
+		r.timer = time.AfterFunc(r.remaining, r.timeout)
+		return
+	}
+	r.timer.Reset(r.remaining)
+}
+
+func (r *semanticIdleReadCloser) stopClockLocked() {
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	if r.clockStart.IsZero() {
+		return
+	}
+	elapsed := time.Since(r.clockStart)
+	r.clockStart = time.Time{}
+	if r.remaining > elapsed {
+		r.remaining -= elapsed
+	} else {
+		r.remaining = 0
+	}
+}
+
 func (r *semanticIdleReadCloser) Read(buffer []byte) (int, error) {
+	r.mu.Lock()
+	if r.timedOut {
+		r.mu.Unlock()
+		return 0, neterror.ErrUpstreamStreamIdleTimeout
+	}
+	r.readers++
+	if r.readers == 1 {
+		r.startClockLocked()
+		if r.timedOut {
+			r.readers--
+			r.mu.Unlock()
+			_ = r.closeInner()
+			return 0, neterror.ErrUpstreamStreamIdleTimeout
+		}
+	}
+	r.mu.Unlock()
+
 	n, err := r.inner.Read(buffer)
 
 	r.mu.Lock()
 	if n > 0 && !r.finished && r.detector.Observe(buffer[:n]) {
-		// A failed Stop means the deadline has already elapsed and its callback
-		// owns the outcome. Reset only while the prior deadline is still live.
-		if r.timer.Stop() {
-			r.timer.Reset(r.idle)
+		r.remaining = r.idle
+		if r.readers > 0 && !r.finished {
+			r.clockStart = time.Now()
+			if r.timer != nil {
+				r.timer.Reset(r.remaining)
+			}
 		}
 	}
 	if err != nil && !r.finished {
 		r.finished = true
-		r.timer.Stop()
+		r.stopClockLocked()
+	}
+	if r.readers > 0 {
+		r.readers--
+	}
+	if r.readers == 0 && !r.finished {
+		r.stopClockLocked()
 	}
 	timedOut := r.timedOut
 	r.mu.Unlock()
@@ -102,7 +167,7 @@ func (r *semanticIdleReadCloser) Close() error {
 	r.mu.Lock()
 	if !r.finished {
 		r.finished = true
-		r.timer.Stop()
+		r.stopClockLocked()
 	}
 	r.mu.Unlock()
 	return r.closeInner()
