@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getRequestAudit, type AuditAttemptDTO, type AuditDTO } from "@/features/audits/request-audits-api";
+import { usdTicksToValue } from "@/features/dashboard/dashboard-format";
 import { CopyButton } from "@/shared/components/copy-button";
 import { ErrorState, LoadingState } from "@/shared/components/data-state";
 import { cn } from "@/shared/lib/cn";
@@ -166,7 +167,7 @@ function RequestOverviewPanel({ audit }: { audit: AuditDTO }) {
   const costDisplay = useMemo(() => {
     const costTicks = audit.costInUsdTicks > 0 ? audit.costInUsdTicks : audit.estimatedCostInUsdTicks;
     if (!costTicks) return "$0";
-    const usd = (costTicks / 100_000_000).toFixed(6);
+    const usd = usdTicksToValue(costTicks).toFixed(6);
     return `$${usd}${audit.costInUsdTicks <= 0 && audit.estimatedCostInUsdTicks > 0 ? ` (${t("audits.estimated")})` : ""}`;
   }, [audit, t]);
 
