@@ -45,6 +45,9 @@ func TestNormalizeAndStoreRoundTrip(t *testing.T) {
 	if got.Input[0]["type"] != "reasoning" || got.Input[0]["encrypted_content"] != enc || got.Input[1]["role"] != "assistant" || got.Input[2]["role"] != "user" {
 		t.Fatalf("unexpected replay order: %s", updated)
 	}
+	if _, exists := got.Input[0]["content"]; exists {
+		t.Fatalf("replayed reasoning must omit content, got %s", updated)
+	}
 }
 
 func TestApplyInsertsReasoningBeforeMatchingAssistant(t *testing.T) {

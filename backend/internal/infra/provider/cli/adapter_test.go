@@ -482,7 +482,7 @@ func TestForwardResponseReplaysReasoningAcrossMessagesTurns(t *testing.T) {
 	}
 }
 
-func TestReasoningReplayScopeSeparatesAccountAndPlane(t *testing.T) {
+func TestReasoningReplayScopeSharesAccountSeparatesPlane(t *testing.T) {
 	adapter := NewAdapter(Config{
 		BaseURL:         "https://build.example/v1",
 		FallbackBaseURL: "https://xai.example/v1",
@@ -497,8 +497,8 @@ func TestReasoningReplayScopeSeparatesAccountAndPlane(t *testing.T) {
 	}
 	otherAccount := request
 	otherAccount.Credential.ID = 8
-	if got := adapter.scopedReasoningReplayKey(otherAccount, "https://build.example/v1"); got == buildKey {
-		t.Fatal("reasoning replay scope was shared across accounts")
+	if got := adapter.scopedReasoningReplayKey(otherAccount, "https://build.example/v1"); got != buildKey {
+		t.Fatal("reasoning replay scope was not shared across accounts")
 	}
 	if got := adapter.scopedReasoningReplayKey(request, "https://xai.example/v1"); got == buildKey {
 		t.Fatal("reasoning replay scope was shared across Build and XAI")
