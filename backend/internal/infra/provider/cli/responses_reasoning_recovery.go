@@ -13,22 +13,61 @@ import (
 )
 
 var reasoningDecodeFailureMarkers = [][]byte{
-	[]byte("could not decode the compaction blob"),
 	[]byte("could not decrypt the provided encrypted_content"),
+	[]byte("invalid_encrypted_content"),
+}
+
+var compactionBlobDecodeFailureMarkers = [][]byte{
+	[]byte("could not decode the compaction blob"),
 }
 
 type reasoningRecoveryOutcome struct {
 	encryptedContentDowngraded bool
 	sessionReset               bool
 	failed                     bool
+	attempts                   []provider.RecoveredAttempt
 }
 
 func (o reasoningRecoveryOutcome) merge(other reasoningRecoveryOutcome) reasoningRecoveryOutcome {
+	attempts := append([]provider.RecoveredAttempt{}, o.attempts...)
+	attempts = append(attempts, other.attempts...)
 	return reasoningRecoveryOutcome{
 		encryptedContentDowngraded: o.encryptedContentDowngraded || other.encryptedContentDowngraded,
 		sessionReset:               o.sessionReset || other.sessionReset,
 		failed:                     o.failed || other.failed,
+		attempts:                   attempts,
 	}
+}
+
+// recordHidden 追加一次确实发出的、但未作为最终响应返回的上游调用。
+func (o *reasoningRecoveryOutcome) recordHidden(stage, result string, call responseCall, body []byte, truncated bool, failure error) {
+	if o == nil {
+		return
+	}
+	diagnostic := provider.DiagnosticResponse{Body: append([]byte(nil), body...), BodyTruncated: truncated}
+	if call.response != nil {
+		diagnostic.StatusCode = call.response.StatusCode
+		diagnostic.Status = call.response.Status
+		if call.response.Header != nil {
+			diagnostic.Header = call.response.Header.Clone()
+		}
+	}
+	o.attempts = append(o.attempts, provider.RecoveredAttempt{
+		Stage: stage, Result: result, UpstreamURL: call.upstreamURL,
+		StartedAt: call.startedAt, DurationMS: call.durationMS,
+		Diagnostic: diagnostic, Failure: failure,
+	})
+}
+
+// prependOriginal 在最终响应已被替换时，把最初的 decode 400 放回真实调用序列首位。
+func (o *reasoningRecoveryOutcome) prependOriginal(result string, call responseCall, body []byte, truncated bool) {
+	if o == nil {
+		return
+	}
+	previous := o.attempts
+	o.attempts = nil
+	o.recordHidden("reasoning_decode_rejected", result, call, body, truncated, nil)
+	o.attempts = append(o.attempts, previous...)
 }
 
 func (o reasoningRecoveryOutcome) appendWarnings(header http.Header) {
@@ -43,15 +82,9 @@ func (o reasoningRecoveryOutcome) appendWarnings(header http.Header) {
 	}
 }
 
-// recoverReasoningDecodeFailure handles only the upstream's explicit
-// pre-generation opaque-reasoning decode rejection. Recovery never changes
-// credential or Build/XAI plane:
-//  1. remove replayed encrypted_content and retry in the same session;
-//  2. when the same decode error remains (or no opaque item exists), clear the
-//     server-side session identity and retry once with the full portable input.
-//
-// If recovery is unsuccessful, the original 400 is returned so the Gateway
-// does not rotate accounts or obscure the first failure.
+// recoverReasoningDecodeFailure 只处理上游在生成前明确返回的 opaque reasoning 解码失败。
+// 恢复始终留在同一账号和同一 Build/XAI 平面：先移除 encrypted_content 并保留可读摘要，
+// 若仍为 400 再清空服务端会话身份重试。最终仍失败时返回原始 400 和内部失败标记，由网关换号。
 func (a *Adapter) recoverReasoningDecodeFailure(
 	ctx context.Context,
 	request provider.ResponseResourceRequest,
@@ -59,21 +92,33 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 	body []byte,
 	base string,
 	replayKey string,
-	response *http.Response,
-	requestURL string,
-) (*http.Response, string, reasoningRecoveryOutcome) {
+	initialCall responseCall,
+) (responseCall, reasoningRecoveryOutcome, error) {
+	response := initialCall.response
 	if response == nil || response.StatusCode != http.StatusBadRequest {
-		return response, requestURL, reasoningRecoveryOutcome{}
+		return initialCall, reasoningRecoveryOutcome{}, nil
 	}
 	errorBody, truncated, err := provider.ReadDiagnosticBody(response.Body)
 	_ = response.Body.Close()
 	if err != nil {
-		return cloneBufferedResponse(response, errorBody, truncated), requestURL, reasoningRecoveryOutcome{}
+		initialCall.response = cloneBufferedResponse(response, errorBody, truncated)
+		return initialCall, reasoningRecoveryOutcome{}, nil
 	}
 	original := cloneBufferedResponse(response, errorBody, truncated)
+	originalCall := initialCall
+	originalCall.response = original
 	if truncated || !isReasoningDecodeFailure(errorBody) {
-		return original, requestURL, reasoningRecoveryOutcome{}
+		return originalCall, reasoningRecoveryOutcome{}, nil
 	}
+	// Build historically reused the compaction-decode wording for opaque
+	// reasoning and server-side session failures. Only treat that wording as a
+	// real compaction rejection when the rejected request actually carried a
+	// compaction input item. This preserves reasoning recovery without ever
+	// rewriting a client-held compact state.
+	if isCompactionBlobDecodeFailure(errorBody) && hasCompactionInputItem(body) {
+		return originalCall, reasoningRecoveryOutcome{}, nil
+	}
+	out := reasoningRecoveryOutcome{}
 	// 一旦上游明确拒绝 opaque reasoning，立即清理该账号/平面的服务端回放，
 	// 防止下次请求再次注入同一份已失效密文。成功响应会按正常 Capture 流程写回新状态。
 	if a.replay != nil && replayKey != "" {
@@ -82,77 +127,93 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 
 	portableBody, encryptedChanged := stripReasoningEncryptedContent(body)
 	if encryptedChanged {
-		retry, retryURL, retryErr := a.retryReasoningRecovery(ctx, request, accessToken, portableBody, base, false)
-		if retryErr != nil {
-			a.logReasoningRecovery(request, base, "encrypted_content", "transport_failed", 0, retryErr)
-			return original, requestURL, reasoningRecoveryOutcome{failed: true}
-		}
-		if err := normalizeGzipResponse(retry); err != nil {
-			_ = retry.Body.Close()
-			a.logReasoningRecovery(request, base, "encrypted_content", "response_decode_failed", retry.StatusCode, err)
-			return original, requestURL, reasoningRecoveryOutcome{failed: true}
-		}
-		if isHTTPSuccess(retry.StatusCode) {
+		retryCall := a.retryReasoningRecovery(ctx, request, accessToken, portableBody, base, false)
+		if retryCall.err != nil {
+			a.logReasoningRecovery(request, base, "encrypted_content", "transport_failed", 0, retryCall.err)
 			_ = original.Body.Close()
-			a.logReasoningRecovery(request, base, "encrypted_content", "recovered", retry.StatusCode, nil)
-			return retry, retryURL, reasoningRecoveryOutcome{encryptedContentDowngraded: true}
+			return responseCall{}, out, retryCall.err
 		}
-		if retry.StatusCode == http.StatusTooManyRequests {
-			// 去除失效密文后得到的 429 是当前账号的真实上游状态。保留它，
-			// 让网关进行账号冷却和切换，不能回退成已无效的初始解码 400。
+		if err := normalizeGzipResponse(retryCall.response); err != nil {
+			_ = retryCall.response.Body.Close()
+			a.logReasoningRecovery(request, base, "encrypted_content", "response_decode_failed", retryCall.response.StatusCode, err)
 			_ = original.Body.Close()
-			a.logReasoningRecovery(request, base, "encrypted_content", "rate_limited", retry.StatusCode, nil)
-			return retry, retryURL, reasoningRecoveryOutcome{encryptedContentDowngraded: true}
+			return responseCall{}, out, err
 		}
-		sameDecodeFailure, inspectErr := responseHasReasoningDecodeFailure(retry)
-		if inspectErr != nil || !sameDecodeFailure {
-			a.logReasoningRecovery(request, base, "encrypted_content", "retry_rejected", retry.StatusCode, inspectErr)
-			return original, requestURL, reasoningRecoveryOutcome{failed: true}
+		if retryCall.response.StatusCode != http.StatusBadRequest {
+			_ = original.Body.Close()
+			logResult := "retry_response"
+			auditResult := "replaced_by_retry_response"
+			if isHTTPSuccess(retryCall.response.StatusCode) {
+				logResult = "recovered"
+				auditResult = "recovered_encrypted_content_stripped"
+			} else if retryCall.response.StatusCode == http.StatusTooManyRequests {
+				auditResult = "replaced_by_rate_limit"
+			}
+			a.logReasoningRecovery(request, base, "encrypted_content", logResult, retryCall.response.StatusCode, nil)
+			out.prependOriginal(auditResult, originalCall, errorBody, truncated)
+			out.encryptedContentDowngraded = true
+			return retryCall, out, nil
 		}
-		a.logReasoningRecovery(request, base, "encrypted_content", "decode_error_persisted", retry.StatusCode, nil)
+		retryBody, retryTrunc, inspectErr := provider.ReadDiagnosticBody(retryCall.response.Body)
+		_ = retryCall.response.Body.Close()
+		if inspectErr != nil {
+			a.logReasoningRecovery(request, base, "encrypted_content", "retry_rejected", retryCall.response.StatusCode, inspectErr)
+			_ = original.Body.Close()
+			return responseCall{}, out, inspectErr
+		}
+		retryResult := "retry_still_400"
+		if !retryTrunc && isReasoningDecodeFailure(retryBody) {
+			retryResult = "decode_error_persisted"
+		}
+		out.recordHidden("reasoning_encrypted_content_retry", retryResult, retryCall, retryBody, retryTrunc, nil)
+		a.logReasoningRecovery(request, base, "encrypted_content", retryResult, retryCall.response.StatusCode, nil)
 	}
 
 	if !canResetReasoningSession(request, portableBody) {
 		a.logReasoningRecovery(request, base, "session_reset", "not_safe", 0, nil)
-		return original, requestURL, reasoningRecoveryOutcome{failed: true}
+		out.failed = true
+		return originalCall, out, nil
 	}
 	statelessBody := removePromptCacheKey(portableBody)
-	retry, retryURL, retryErr := a.retryReasoningRecovery(ctx, request, accessToken, statelessBody, base, true)
-	if retryErr != nil {
-		a.logReasoningRecovery(request, base, "session_reset", "transport_failed", 0, retryErr)
-		return original, requestURL, reasoningRecoveryOutcome{failed: true}
-	}
-	if err := normalizeGzipResponse(retry); err != nil {
-		_ = retry.Body.Close()
-		a.logReasoningRecovery(request, base, "session_reset", "response_decode_failed", retry.StatusCode, err)
-		return original, requestURL, reasoningRecoveryOutcome{failed: true}
-	}
-	if retry.StatusCode == http.StatusTooManyRequests {
-		// 无状态恢复也可能命中当前账号的真实限流。与去密文恢复保持一致，
-		// 必须把 429 交回网关，才能执行账号冷却和候选账号切换。
+	retryCall := a.retryReasoningRecovery(ctx, request, accessToken, statelessBody, base, true)
+	if retryCall.err != nil {
+		a.logReasoningRecovery(request, base, "session_reset", "transport_failed", 0, retryCall.err)
 		_ = original.Body.Close()
-		a.logReasoningRecovery(request, base, "session_reset", "rate_limited", retry.StatusCode, nil)
-		return retry, retryURL, reasoningRecoveryOutcome{
-			encryptedContentDowngraded: encryptedChanged,
-			sessionReset:               true,
-		}
+		return responseCall{}, out, retryCall.err
 	}
-	if !isHTTPSuccess(retry.StatusCode) {
-		status := retry.StatusCode
-		_ = retry.Body.Close()
-		a.logReasoningRecovery(request, base, "session_reset", "retry_rejected", status, nil)
-		return original, requestURL, reasoningRecoveryOutcome{failed: true}
+	if err := normalizeGzipResponse(retryCall.response); err != nil {
+		_ = retryCall.response.Body.Close()
+		a.logReasoningRecovery(request, base, "session_reset", "response_decode_failed", retryCall.response.StatusCode, err)
+		_ = original.Body.Close()
+		return responseCall{}, out, err
+	}
+	if retryCall.response.StatusCode != http.StatusBadRequest {
+		_ = original.Body.Close()
+		logResult := "retry_response"
+		auditResult := "replaced_by_retry_response"
+		if isHTTPSuccess(retryCall.response.StatusCode) {
+			logResult = "recovered"
+			auditResult = "recovered_session_reset"
+		} else if retryCall.response.StatusCode == http.StatusTooManyRequests {
+			auditResult = "replaced_by_rate_limit"
+		}
+		a.logReasoningRecovery(request, base, "session_reset", logResult, retryCall.response.StatusCode, nil)
+		out.prependOriginal(auditResult, originalCall, errorBody, truncated)
+		out.encryptedContentDowngraded = encryptedChanged
+		out.sessionReset = true
+		return retryCall, out, nil
 	}
 
-	_ = original.Body.Close()
-	a.logReasoningRecovery(request, base, "session_reset", "recovered", retry.StatusCode, nil)
-	return retry, retryURL, reasoningRecoveryOutcome{
-		encryptedContentDowngraded: encryptedChanged,
-		sessionReset:               true,
-	}
+	retryBody, retryTrunc, inspectErr := provider.ReadDiagnosticBody(retryCall.response.Body)
+	_ = retryCall.response.Body.Close()
+	a.logReasoningRecovery(request, base, "session_reset", "retry_rejected", retryCall.response.StatusCode, inspectErr)
+	out.recordHidden("reasoning_session_reset", "retry_rejected", retryCall, retryBody, retryTrunc, inspectErr)
+	out.failed = true
+	return originalCall, out, nil
 }
 
-func (a *Adapter) retryReasoningRecovery(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string, resetSession bool) (*http.Response, string, error) {
+// retryReasoningRecovery 使用新的幂等键执行同账号、同平面的恢复调用。
+func (a *Adapter) retryReasoningRecovery(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string, resetSession bool) responseCall {
 	retryRequest := request
 	retryRequest.IdempotencyID, _ = security.NewOpaqueToken(18)
 	stage := "reasoning_replay"
@@ -162,21 +223,6 @@ func (a *Adapter) retryReasoningRecovery(ctx context.Context, request provider.R
 		stage = "reasoning_session_reset"
 	}
 	return a.doResponseRequest(infraegress.WithPhysicalCallStage(ctx, stage), retryRequest, accessToken, body, base)
-}
-
-func responseHasReasoningDecodeFailure(response *http.Response) (bool, error) {
-	if response == nil || response.StatusCode != http.StatusBadRequest {
-		if response != nil {
-			_ = response.Body.Close()
-		}
-		return false, nil
-	}
-	body, truncated, err := provider.ReadDiagnosticBody(response.Body)
-	_ = response.Body.Close()
-	if err != nil {
-		return false, err
-	}
-	return !truncated && isReasoningDecodeFailure(body), nil
 }
 
 func canResetReasoningSession(request provider.ResponseResourceRequest, body []byte) bool {
@@ -230,8 +276,16 @@ func (a *Adapter) logReasoningRecovery(request provider.ResponseResourceRequest,
 }
 
 func isReasoningDecodeFailure(body []byte) bool {
+	return isCompactionBlobDecodeFailure(body) || containsDecodeFailureMarker(body, reasoningDecodeFailureMarkers)
+}
+
+func isCompactionBlobDecodeFailure(body []byte) bool {
+	return containsDecodeFailureMarker(body, compactionBlobDecodeFailureMarkers)
+}
+
+func containsDecodeFailureMarker(body []byte, markers [][]byte) bool {
 	lower := bytes.ToLower(body)
-	for _, marker := range reasoningDecodeFailureMarkers {
+	for _, marker := range markers {
 		if bytes.Contains(lower, marker) {
 			return true
 		}
@@ -239,9 +293,27 @@ func isReasoningDecodeFailure(body []byte) bool {
 	return false
 }
 
-// stripReasoningEncryptedContent removes opaque reasoning state while
-// preserving any readable summary/content. An encrypted-only reasoning item
-// becomes empty after stripping and is removed entirely.
+func hasCompactionInputItem(body []byte) bool {
+	var payload struct {
+		Input []struct {
+			Type string `json:"type"`
+		} `json:"input"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	for _, item := range payload.Input {
+		if strings.TrimSpace(item.Type) == "compaction" {
+			return true
+		}
+	}
+	return false
+}
+
+// stripReasoningEncryptedContent removes only undecodable opaque reasoning.
+// Readable reasoning summaries are kept as portable assistant messages; empty
+// encrypted-only reasoning items are dropped. Compaction items are client-held
+// upstream state and must never be rewritten by reasoning recovery.
 func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 	var payload map[string]any
 	if json.Unmarshal(body, &payload) != nil {
@@ -255,23 +327,28 @@ func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 	rebuilt := make([]any, 0, len(input))
 	for _, raw := range input {
 		item, ok := raw.(map[string]any)
-		if !ok || stringField(item, "type") != "reasoning" {
+		if !ok {
 			rebuilt = append(rebuilt, raw)
 			continue
 		}
-		encrypted, ok := item["encrypted_content"].(string)
-		if !ok || strings.TrimSpace(encrypted) == "" {
-			rebuilt = append(rebuilt, raw)
+		if stringField(item, "type") == "reasoning" {
+			encrypted, hasEncrypted := item["encrypted_content"].(string)
+			if !hasEncrypted || strings.TrimSpace(encrypted) == "" {
+				if portable, ok := portableReasoningSummaryMessage(item); ok {
+					changed = true
+					rebuilt = append(rebuilt, portable)
+					continue
+				}
+				rebuilt = append(rebuilt, raw)
+				continue
+			}
+			changed = true
+			if portable, ok := portableReasoningSummaryMessage(item); ok {
+				rebuilt = append(rebuilt, portable)
+			}
 			continue
 		}
-		cleaned := cloneJSONObject(item)
-		delete(cleaned, "encrypted_content")
-		delete(cleaned, "id")
-		delete(cleaned, "status")
-		changed = true
-		if hasReadableReasoningContent(cleaned) {
-			rebuilt = append(rebuilt, cleaned)
-		}
+		rebuilt = append(rebuilt, raw)
 	}
 	if !changed {
 		return body, false
@@ -284,17 +361,29 @@ func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 	return encoded, true
 }
 
-func hasReadableReasoningContent(item map[string]any) bool {
+func portableReasoningSummaryMessage(item map[string]any) (map[string]any, bool) {
+	text := reasoningPortableText(item)
+	if text == "" {
+		return nil, false
+	}
+	return map[string]any{
+		"type": "message", "role": "assistant",
+		"content": "Prior model reasoning summary:\n" + text,
+	}, true
+}
+
+func reasoningPortableText(item map[string]any) string {
+	var parts []string
 	for _, field := range []string{"summary", "content"} {
-		parts, _ := item[field].([]any)
-		for _, raw := range parts {
+		values, _ := item[field].([]any)
+		for _, raw := range values {
 			part, _ := raw.(map[string]any)
-			if strings.TrimSpace(stringField(part, "text")) != "" {
-				return true
+			if text := strings.TrimSpace(stringField(part, "text")); text != "" {
+				parts = append(parts, text)
 			}
 		}
 	}
-	return false
+	return strings.Join(parts, "\n")
 }
 
 func appendCompatibilityWarning(header http.Header, warning string) {

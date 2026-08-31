@@ -2,9 +2,12 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 )
 
 func TestApplyBuildBotFlaggedFilterOnlyAffectsBuild(t *testing.T) {
@@ -45,5 +48,27 @@ func TestApplyBuildBotFlaggedFilterOnlyAffectsBuild(t *testing.T) {
 	}
 	if len(unfiltered) != 4 {
 		t.Fatalf("disabled filter should keep all candidates, got %d", len(unfiltered))
+	}
+}
+
+func TestAcquirePinnedBypassesBuildBotFlagSchedulingExclusion(t *testing.T) {
+	repo := newLayeredRepositoryFixture()
+	repo.bases[0].Credential.BuildBotFlagSource = 1
+	selector := NewSelector(repo, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	selector.UpdateExcludeBuildBotFlaggedFromScheduling(true)
+
+	_, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model-a", "", "", nil, false)
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionNoAccounts {
+		t.Fatalf("ordinary scheduling error = %v", err)
+	}
+
+	lease, err := selector.AcquirePinned(context.Background(), account.ProviderBuild, 1, 0, "model-a", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != 1 || lease.Credential.BuildBotFlagSource != 1 {
+		t.Fatalf("pinned lease = %#v", lease.Credential)
 	}
 }

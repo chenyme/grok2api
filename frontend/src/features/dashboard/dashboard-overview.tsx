@@ -5,10 +5,11 @@ import { Pie, PieChart } from "recharts";
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
 import { Spinner } from "@/components/ui/spinner";
 import type { DashboardDTO } from "@/features/dashboard/dashboard-api";
-import { formatUSD, formatUSDValue, usdTicksToValue } from "@/features/dashboard/dashboard-format";
+import { formatUSD, formatUSDValue } from "@/features/dashboard/dashboard-format";
 import { DashboardPanel } from "@/features/dashboard/dashboard-panel";
 import { cn } from "@/shared/lib/cn";
 import { formatDuration, formatNumber } from "@/shared/lib/format";
+import { usdTicksToValue } from "@/shared/lib/usd";
 
 type DashboardDataProps = {
   dashboard?: DashboardDTO;

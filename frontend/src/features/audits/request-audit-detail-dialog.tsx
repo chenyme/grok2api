@@ -20,6 +20,7 @@ import { CopyButton } from "@/shared/components/copy-button";
 import { ErrorState, LoadingState } from "@/shared/components/data-state";
 import { cn } from "@/shared/lib/cn";
 import { formatDateTime, formatNumber } from "@/shared/lib/format";
+import { formatUSDTicksWithEstimate } from "@/shared/lib/usd";
 
 const AUDIT_DETAIL_CACHE_TIME_MS = 60_000;
 const PRE_UPSTREAM_ERROR_CODES = new Set([
@@ -27,6 +28,7 @@ const PRE_UPSTREAM_ERROR_CODES = new Set([
   "upstream_cooling",
   "upstream_model_cooling",
   "upstream_model_unavailable",
+  "upstream_pinned_account_unavailable",
   "upstream_quota_exhausted",
   "upstream_saturated",
   "upstream_unavailable",
@@ -164,10 +166,11 @@ function RequestOverviewPanel({ audit }: { audit: AuditDTO }) {
   }, [audit, t, i18n.language]);
 
   const costDisplay = useMemo(() => {
-    const costTicks = audit.costInUsdTicks > 0 ? audit.costInUsdTicks : audit.estimatedCostInUsdTicks;
-    if (!costTicks) return "$0";
-    const usd = (costTicks / 100_000_000).toFixed(6);
-    return `$${usd}${audit.costInUsdTicks <= 0 && audit.estimatedCostInUsdTicks > 0 ? ` (${t("audits.estimated")})` : ""}`;
+    return formatUSDTicksWithEstimate(
+      audit.costInUsdTicks,
+      audit.estimatedCostInUsdTicks,
+      t("audits.estimated"),
+    );
   }, [audit, t]);
 
   const durationDisplay = useMemo(() => {

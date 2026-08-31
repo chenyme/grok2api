@@ -299,7 +299,7 @@ Web can be weakly linked one-to-one with matching Build and Console accounts. Li
 
 ### Codex, Claude Code, and prompt caching
 
-Responses and Messages support streaming, tools, reasoning, multi-turn sessions, and compaction. Stable client session signals are preserved for Grok Build prompt-cache affinity. Cache hits still require a compatible upstream account and an unchanged prompt prefix. A still-decryptable compaction summary from this gateway instance is expanded even if the session or PromptCacheKey remaps; foreign or undecodable blobs remain a compatibility boundary.
+Responses and Messages support streaming, tools, reasoning, multi-turn sessions, and compaction. Stable client session signals are preserved for Grok Build prompt-cache affinity. Cache hits still require a compatible upstream account and an unchanged prompt prefix. A still-decryptable `g2a_compact_v1` summary from this gateway instance is expanded even if the session or PromptCacheKey remaps; an invalid prefixed blob is rejected with 400. Other compaction blobs keep their original `encrypted_content` when forwarded as upstream state, and any Build rejection is returned to the client.
 
 Responses and Chat Completions report OpenAI-style total input. Messages reports Anthropic-style uncached input and cache reads separately. Audits retain total and cached input for billing reconciliation.
 
@@ -369,8 +369,9 @@ qualityGuard:
   enabled: true
   model: "grok-4.6"
   # Withhold thinking-model streams that have no streamed reasoning.
-  # Observe for up to 30s. An open stream with a reasoning start and visible
-  # output is released at the deadline; empty/terminal failures still retry.
+  # Observe for up to 30s. A stub plus enough visible output at the deadline
+  # is withheld; empty stub-only streams keep waiting. Floor-met dumps that
+  # flush a short greeting in under 1s are also withheld.
   requestRetry:
     enabled: true
     maxAttempts: 6
@@ -381,7 +382,7 @@ qualityGuard:
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` runs on the gateway request path and is independent of the sidecar. The example enables it. When enabled, a thinking-model stream with enough visible output and no streamed reasoning is **not delivered**; another account is tried. If every attempt still has no reasoning, `onExhausted` either returns `503 quality_degraded` or delivers the last body. Image, video, stored-response, and ForcedEgress probe requests are unchanged. Grok TUI tool turns stay held so 0-thinking dumps cannot skip the gate.
+`requestRetry` runs on the gateway request path and is independent of the sidecar. `config.example.yaml` keeps `enabled: false`; set it true to intercept. When enabled, a thinking-model stream with enough visible output and no streamed reasoning is **not delivered**; replay-safe stateless requests may try another account. TUI follow-ups (`previous_response_id`) and hosted-tool turns are still held for classification, but a quality withhold never replays account-bound state or side-effecting tools across accounts; `onExhausted` returns `503 quality_degraded` or releases that held body. Context compaction, image, video, and ForcedEgress probe requests are unchanged.
 
 ```bash
 docker compose --profile quality-guard up -d --build

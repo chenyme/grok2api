@@ -223,7 +223,7 @@ qualityGuard:
 func TestDefaultQualityGuardRequestRetryContract(t *testing.T) {
 	t.Parallel()
 	got := defaultConfig().QualityGuard.RequestRetry
-	if got.Enabled || got.MaxAttempts != 6 || got.HoldTimeout.Value() != 30*time.Second || got.MinOutputTokens != 8 || got.OnExhausted != "fail_closed" || got.AccountCooldown.Value() != 12*time.Hour || got.IdleAccountCooldown.Value() != 15*time.Minute {
+	if got.Enabled || got.MaxAttempts != 6 || got.HoldTimeout.Value() != 30*time.Second || got.MinOutputTokens != 8 || got.OnExhausted != "fail_closed" || got.AccountCooldown.Value() != 12*time.Hour || got.IdleAccountCooldown.Value() != 15*time.Minute || got.MinEncryptedBytes != 256 || got.EncryptedBytesPerReasoningToken != 4 {
 		t.Fatalf("requestRetry defaults = %#v", got)
 	}
 }

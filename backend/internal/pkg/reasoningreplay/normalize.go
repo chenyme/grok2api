@@ -105,10 +105,11 @@ func normalizeReasoningItem(raw map[string]json.RawMessage) ([]byte, bool) {
 	if !validGrokReplayEncryptedContent(encrypted) {
 		return nil, false
 	}
+	// xAI treats extra keys such as content:null as a modified compaction blob and 400s.
+	// Replay only the portable input shape: type, summary, encrypted_content.
 	out := map[string]any{
 		"type":              "reasoning",
 		"summary":           []any{},
-		"content":           nil,
 		"encrypted_content": encrypted,
 	}
 	data, err := json.Marshal(out)
