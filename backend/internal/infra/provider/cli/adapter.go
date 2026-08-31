@@ -247,17 +247,14 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				request.NormalizedMetadata.ReasoningEffort = conversationOptions.ReasoningEffort
 			}
 		} else {
-			var foreignCompactions, driftedCompactions int
-			body, foreignCompactions, driftedCompactions, err = expandGatewayCompactionHistory(body, a.compaction, request.PromptCacheKey)
+			var driftedCompactions int
+			body, driftedCompactions, err = expandGatewayCompactionHistory(body, a.compaction, request.PromptCacheKey)
 			if err != nil {
 				return invalidResponsesResponse(err), nil
 			}
 			body, toolCompatibility, err = normalizeResponsesRequestWithMetadata(body, request.Model, request.NormalizedMetadata)
 			if toolCompatibility != nil {
 				compactionRequested = toolCompatibility.compactionRequested
-				if foreignCompactions > 0 {
-					toolCompatibility.addWarning("foreign_compaction_omitted")
-				}
 				if driftedCompactions > 0 {
 					toolCompatibility.addWarning("compaction_session_drifted")
 				}
@@ -317,21 +314,28 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	// Explicit mode wins; in auto mode only confirmed Super accounts with bot_flag_source/bfs in {1,2} default to XAI.
 	primaryBase := a.primaryBaseURL()
 	base := a.inferenceBaseForOperation(request.Credential, request.Billing, request.Method, request.Path)
-	// Cache affinity and reasoning replay use separate identities. Replay is also bound to the actual account and upstream plane,
-	// preventing opaque reasoning issued for one account or Build plane from reaching another scope.
+	// Cache affinity and reasoning replay use separate identities. Replay is bound to the
+	// upstream plane (Build vs XAI) so a blob captured on one API is not injected onto the other.
+	// Encrypted reasoning is portable across accounts, so the cache key is not account-scoped.
 	replayBaseBody := body
 	body, replayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, base)
-	resp, reqURL, err := a.doResponseRequest(ctx, request, accessToken, body, base)
-	if err != nil {
+	call := a.doResponseRequest(ctx, request, accessToken, body, base)
+	if call.err != nil {
+		return nil, call.err
+	}
+	if err := normalizeGzipResponse(call.response); err != nil {
 		return nil, err
 	}
-	if err := normalizeGzipResponse(resp); err != nil {
-		return nil, err
+	call, reasoningRecovery, recoveryErr := a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, base, replayKey, call)
+	if recoveryErr != nil {
+		return nil, recoveryErr
 	}
-	resp, reqURL, reasoningRecovery := a.recoverReasoningDecodeFailure(ctx, request, accessToken, body, base, replayKey, resp, reqURL)
+	resp, reqURL := call.response, call.upstreamURL
 	var recoveredPrimaryFailure *provider.DiagnosticResponse
+	var recoveredPrimaryAttempt *provider.RecoveredAttempt
 	// Only eligible operations probe XAI with an equivalent request after the Build primary explicitly returns 403.
 	if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Billing, request.Method, request.Path, resp.StatusCode) {
+		primaryCall := call
 		// Buffer the primary 403 body and replay it unchanged if fallback fails; never issue a second primary POST.
 		primaryBody, primaryTruncated, readErr := provider.ReadDiagnosticBody(resp.Body)
 		_ = resp.Body.Close()
@@ -346,22 +350,32 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 			if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
 				fallbackBody, fallbackReplayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, fallbackBase)
 				fallbackCtx := infraegress.WithPhysicalCallStage(ctx, "plane_fallback")
-				fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(fallbackCtx, request, accessToken, fallbackBody, fallbackBase)
+				fallbackCall := a.doResponseRequest(fallbackCtx, request, accessToken, fallbackBody, fallbackBase)
+				fallbackErr := fallbackCall.err
 				if fallbackErr == nil {
-					fallbackErr = normalizeGzipResponse(fallbackResp)
+					fallbackErr = normalizeGzipResponse(fallbackCall.response)
 				}
 				fallbackRecovery := reasoningRecoveryOutcome{}
 				if fallbackErr == nil {
-					fallbackResp, fallbackURL, fallbackRecovery = a.recoverReasoningDecodeFailure(ctx, request, accessToken, fallbackBody, fallbackBase, fallbackReplayKey, fallbackResp, fallbackURL)
+					fallbackCall, fallbackRecovery, fallbackErr = a.recoverReasoningDecodeFailure(ctx, request, accessToken, fallbackBody, fallbackBase, fallbackReplayKey, fallbackCall)
 				}
-				if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
+				if fallbackErr == nil && isHTTPSuccess(fallbackCall.response.StatusCode) {
 					recoveredPrimaryFailure = bufferedFailureDiagnostic(primaryResp, primaryBody, primaryTruncated)
+					recoveredPrimaryAttempt = &provider.RecoveredAttempt{
+						Stage:       "primary_plane_response",
+						Result:      "replaced_by_plane_fallback",
+						UpstreamURL: primaryCall.upstreamURL,
+						StartedAt:   primaryCall.startedAt,
+						DurationMS:  primaryCall.durationMS,
+						Diagnostic:  *recoveredPrimaryFailure,
+					}
 					a.activateBuildAPIFallback(ctx, &request.Credential)
-					resp, reqURL, base, body, replayKey = fallbackResp, fallbackURL, fallbackBase, fallbackBody, fallbackReplayKey
+					call = fallbackCall
+					resp, reqURL, base, body, replayKey = call.response, call.upstreamURL, fallbackBase, fallbackBody, fallbackReplayKey
 					reasoningRecovery = reasoningRecovery.merge(fallbackRecovery)
 				} else {
-					if fallbackErr == nil {
-						_ = fallbackResp.Body.Close()
+					if fallbackErr == nil && fallbackCall.response != nil {
+						_ = fallbackCall.response.Body.Close()
 					}
 					// Preserve the original primary 403 URL and buffered body without requesting the primary again.
 					resp = primaryResp
@@ -471,15 +485,24 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				if diagnostic == nil {
 					return nil, convertErr
 				}
-				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+				return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: diagnostic.Header.Clone(), Body: io.NopCloser(bytes.NewReader(data)), UpstreamURL: reqURL, Diagnostic: diagnostic, ReasoningRecoveryFailed: reasoningRecovery.failed, RecoveredPrimaryFailure: recoveredPrimaryFailure, RecoveredAttempts: recoveredAttempts(recoveredPrimaryAttempt, reasoningRecovery), RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(converted))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(converted)))
 			resp.Header.Set("Content-Type", "application/json")
-			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+			return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: diagnostic, ReasoningRecoveryFailed: reasoningRecovery.failed, RecoveredPrimaryFailure: recoveredPrimaryFailure, RecoveredAttempts: recoveredAttempts(recoveredPrimaryAttempt, reasoningRecovery), RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
 		}
 	}
-	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: rateLimitDiagnostic, RecoveredPrimaryFailure: recoveredPrimaryFailure, RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+	return &provider.Response{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone(), Body: resp.Body, UpstreamURL: reqURL, Diagnostic: rateLimitDiagnostic, ReasoningRecoveryFailed: reasoningRecovery.failed, RecoveredPrimaryFailure: recoveredPrimaryFailure, RecoveredAttempts: recoveredAttempts(recoveredPrimaryAttempt, reasoningRecovery), RateLimit: rateLimit, ModelCatalogChanged: modelCatalogChanged}, nil
+}
+
+// recoveredAttempts 按真实调用顺序汇总被 fallback 与 reasoning recovery 隐藏的失败。
+func recoveredAttempts(primary *provider.RecoveredAttempt, recovery reasoningRecoveryOutcome) []provider.RecoveredAttempt {
+	attempts := append([]provider.RecoveredAttempt(nil), recovery.attempts...)
+	if primary != nil {
+		attempts = append([]provider.RecoveredAttempt{*primary}, attempts...)
+	}
+	return attempts
 }
 
 func (a *Adapter) shouldCaptureReplay(request provider.ResponseResourceRequest, resp *http.Response, replayKey string) bool {
@@ -512,14 +535,14 @@ func (a *Adapter) applyReasoningReplay(ctx context.Context, request provider.Res
 
 func (a *Adapter) scopedReasoningReplayKey(request provider.ResponseResourceRequest, base string) string {
 	seed := strings.TrimSpace(request.ReasoningReplayKey)
-	if seed == "" || request.Credential.ID == 0 {
+	if seed == "" {
 		return ""
 	}
 	plane := "build"
 	if fallback := a.fallbackBaseURL(); fallback != "" && strings.EqualFold(strings.TrimRight(base, "/"), fallback) {
 		plane = "xai"
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("grok2api:reasoning-replay:v2:%s:%d:%s", seed, request.Credential.ID, plane)))
+	digest := sha256.Sum256([]byte(fmt.Sprintf("grok2api:reasoning-replay:v3:%s:%s", seed, plane)))
 	return hex.EncodeToString(digest[:])
 }
 
@@ -527,7 +550,21 @@ func isCompactPath(path string) bool {
 	return strings.Contains(strings.ToLower(path), "compact")
 }
 
-func (a *Adapter) doResponseRequest(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string) (*http.Response, string, error) {
+type responseCall struct {
+	response    *http.Response
+	upstreamURL string
+	startedAt   time.Time
+	durationMS  int64
+	err         error
+}
+
+// doResponseRequest 发起一次真实 Responses 上游调用，并保留该次调用自己的审计来源信息。
+func (a *Adapter) doResponseRequest(ctx context.Context, request provider.ResponseResourceRequest, accessToken string, body []byte, base string) (call responseCall) {
+	startedAt := time.Now()
+	call = responseCall{upstreamURL: a.urlWithBase(base, request.Path), startedAt: startedAt.UTC()}
+	defer func() {
+		call.durationMS = time.Since(startedAt).Milliseconds()
+	}()
 	var bodyReader io.Reader
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
@@ -541,12 +578,15 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 		plane = "xai"
 	}
 	requestCtx = infraegress.WithPhysicalCallPlane(requestCtx, plane)
-	req, err := http.NewRequestWithContext(requestCtx, request.Method, a.urlWithBase(base, request.Path), bodyReader)
+	req, err := http.NewRequestWithContext(requestCtx, request.Method, call.upstreamURL, bodyReader)
 	if err != nil {
-		return nil, "", err
+		call.err = err
+		return call
 	}
+	call.upstreamURL = req.URL.String()
 	if err := a.applyHeaders(req, request.Credential, accessToken, request.Model, request.PromptCacheKey, true); err != nil {
-		return nil, "", err
+		call.err = err
+		return call
 	}
 	applyGrokTurnIndexHeader(req, request.GrokTurnIndex)
 	if len(body) > 0 {
@@ -578,7 +618,8 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 		if responseIdleCancel != nil {
 			responseIdleCancel(nil)
 		}
-		return nil, "", err
+		call.err = err
+		return call
 	}
 	if responseIdleCancel != nil {
 		switch {
@@ -590,7 +631,8 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 			resp.Body = &cancelOnCloseReadCloser{ReadCloser: resp.Body, cancel: responseIdleCancel}
 		}
 	}
-	return resp, req.URL.String(), nil
+	call.response = resp
+	return call
 }
 
 // applyGrokTurnIndexHeader forwards a real client turn only when the request has a stable Grok session.

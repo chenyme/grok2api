@@ -74,14 +74,15 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 			stage = "compaction_retry"
 		}
 		attemptCtx := infraegress.WithPhysicalCallStage(ctx, stage)
-		resp, reqURL, err := a.doResponseRequest(attemptCtx, upstreamRequest, accessToken, body, base)
-		if err != nil {
-			lastErr = err
+		call := a.doResponseRequest(attemptCtx, upstreamRequest, accessToken, body, base)
+		if call.err != nil {
+			lastErr = call.err
 			if attempt < maxAttempts && waitGatewayCompactionRetry(ctx, retryDelay) {
 				continue
 			}
-			return nil, err
+			return nil, call.err
 		}
+		resp, reqURL := call.response, call.upstreamURL
 
 		var recoveredPrimaryFailure *provider.DiagnosticResponse
 		if strings.EqualFold(base, primaryBase) && shouldProbeXAIInferenceFallback(request.Credential, request.Billing, request.Method, request.Path, resp.StatusCode) {
@@ -97,14 +98,14 @@ func (a *Adapter) forwardGatewayCompactionWithPolicy(
 				fallbackBase := a.fallbackBaseURL()
 				if fallbackBase != "" && !strings.EqualFold(fallbackBase, base) {
 					fallbackCtx := infraegress.WithPhysicalCallStage(attemptCtx, "plane_fallback")
-					fallbackResp, fallbackURL, fallbackErr := a.doResponseRequest(fallbackCtx, upstreamRequest, accessToken, body, fallbackBase)
-					if fallbackErr == nil && isHTTPSuccess(fallbackResp.StatusCode) {
+					fallbackCall := a.doResponseRequest(fallbackCtx, upstreamRequest, accessToken, body, fallbackBase)
+					if fallbackCall.err == nil && isHTTPSuccess(fallbackCall.response.StatusCode) {
 						recoveredPrimaryFailure = bufferedFailureDiagnostic(primaryResp, primaryBody, primaryTruncated)
 						a.activateBuildAPIFallback(ctx, &request.Credential)
-						resp, reqURL, base = fallbackResp, fallbackURL, fallbackBase
+						resp, reqURL, base = fallbackCall.response, fallbackCall.upstreamURL, fallbackBase
 					} else {
-						if fallbackErr == nil {
-							_ = fallbackResp.Body.Close()
+						if fallbackCall.err == nil && fallbackCall.response != nil {
+							_ = fallbackCall.response.Body.Close()
 						}
 						resp = primaryResp
 					}
