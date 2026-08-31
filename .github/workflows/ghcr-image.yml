@@ -98,6 +98,8 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
+          build-args: |
+            SOURCE_COMMIT=${{ github.event.pull_request.head.sha || github.sha }}
           push: false
           cache-from: type=gha,scope=${{ matrix.arch }}
           provenance: false
@@ -160,6 +162,8 @@ jobs:
           context: .
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
+          build-args: |
+            SOURCE_COMMIT=${{ github.sha }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

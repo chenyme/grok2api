@@ -13,11 +13,11 @@
 <p align="center">
   <a href="./backend/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" /></a>
   <a href="./frontend/package.json"><img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827" /></a>
-  <a href="https://github.com/chenyme/grok2api/pkgs/container/grok2api"><img alt="Docker" src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ED?logo=docker&logoColor=white" /></a>
+  <a href="https://github.com/ohld/grok2api/pkgs/container/grok2api"><img alt="Docker" src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ED?logo=docker&logoColor=white" /></a>
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/19868?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-19868" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/19868" alt="chenyme%2Fgrok2api | Trendshift" width="250" height="55"/></a>
+  原项目候选补丁来源：<a href="https://github.com/chenyme/grok2api">chenyme/grok2api</a>
 </p>
 
 > [!TIP]
@@ -25,6 +25,12 @@
 
 > [!NOTE]
 > 本项目仅供技术研究与学习交流。使用时请务必遵循 Grok 官方的使用条款及当地法律法规，否则一切后果自负！
+
+> [!IMPORTANT]
+> CheapAIAPI 生产环境使用自有的 `ohld/grok2api` 分支，并固定到不可变的 GHCR
+> digest。原项目的 Release、提交、标签和版本检查仅是候选补丁来源，不会自动替换
+> 当前生产契约。可用改动必须经过人工评审、选择性移植，并通过本分支的路由、隐私、
+> 图片容量和生产 canary 门禁。
 
 ## 赞助商
 
@@ -154,10 +160,10 @@ flowchart LR
 
 ## 快速部署
 
-官方镜像支持 `linux/amd64` 和 `linux/arm64`。
+自有分支镜像支持 `linux/amd64` 和 `linux/arm64`。
 
 ```bash
-git clone https://github.com/chenyme/grok2api.git
+git clone https://github.com/ohld/grok2api.git
 cd grok2api
 cp config.example.yaml config.yaml
 ```
@@ -322,6 +328,25 @@ Authorization: Bearer g2a_xxx_xxx
 | `GET` | `/v1/media/images/{asset_id}`、`/v1/media/videos/{asset_id}` | 读取归档媒体 |
 
 stored response 和 compact 取决于最终 Provider。登录管理端后可在 `/docs` 查看当前模型与调用示例；仅在 `server.swaggerEnabled: true` 时提供 Swagger。
+
+### 自有分支图片容量证据
+
+认证后的管理接口
+`GET /api/admin/v1/client-keys/{id}/image-capacity-attestation?routeId={id}`
+只返回一个显式启用的 Web `image_pro` 路由与一个精确 Client Key 的聚合身份数量和域隔离集合哈希。
+其他图片额度模式（包括 lite/fast 路由）不会生成该证明。
+同时传入 RFC3339 `since` 和不可猜测的 24 位小写十六进制 `runMarker` 可查询成功图片覆盖率；匹配请求必须使用
+`X-Request-ID: {runMarker}:{providerCallUUID}`。接口不会返回账号 ID、名称、邮箱、请求 ID 或原始审计。
+
+eligible 与 successful 身份集合统一采用 NUL 结尾序列的 SHA-256：先写入
+`grok2api-image-identity-set-v1`，再写入排序、去重且非零的十进制身份 ID。路由拓扑采用相同编码，
+domain 为 `grok2api-image-route-topology-v1`，随后依次写入 route ID、external public ID、
+upstream model、capability、字面量 `true`，以及排序、去重且非零的绑定身份 ID。
+Coverage 使用闭区间 `[since, observedAt]`。
+
+Release 镜像通过 Docker `SOURCE_COMMIT` build argument 注入源码提交，并结合 `VERSION`
+计算 build fingerprint。部署必须将 `GROK2API_RUNTIME_IMAGE_DIGEST` 设为实际运行镜像的精确
+`sha256:...` digest。任一 build/runtime 证据缺失或格式错误时接口返回 `503`，不会猜测身份。
 
 `/v1/audio/transcriptions` 支持 `json`（默认）、`verbose_json` 和 `text`。视频编辑与延长按实际路由校验 Console `grok-imagine-video`，对外模型名仍可自定义。金额计费以网关能够可靠测量的官方计价单位为准：TTS 按输入字符数预留并结算，REST 与流式 STT 按成功响应返回的实际音频时长结算。STT 时长只能在请求完成后获得，因此并发中的请求可能使有限额 Key 短暂超过金额上限。Realtime、视频编辑与延长，以及未收录官方定价的自定义路由当前记录为“未计费”，保持可调用且不消耗金额额度。
 

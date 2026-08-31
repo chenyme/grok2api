@@ -7,24 +7,17 @@ import "errors"
 // submitted. The HTTP layer uses it to expose an opt-in safe-failover signal.
 var ErrUpstreamNotSubmitted = errors.New("upstream image request was not submitted")
 
-type imageSubmissionDisposition uint8
-
-const (
-	imageSubmissionUnknown imageSubmissionDisposition = iota
-	imageSubmissionProvenAbsent
-	imageSubmissionObserved
-)
-
-func (d *imageSubmissionDisposition) recordPreSubmissionFailure() {
-	if *d == imageSubmissionUnknown {
-		*d = imageSubmissionProvenAbsent
-	}
+type imageSubmissionState struct {
+	mayHaveSubmitted bool
 }
 
-func (d *imageSubmissionDisposition) recordResponse() {
-	*d = imageSubmissionObserved
+// markMayHaveSubmitted is the state machine's only transition. Once provider
+// I/O is ambiguous or a response exists, no later safe refusal can make replay
+// safe again.
+func (s *imageSubmissionState) markMayHaveSubmitted() {
+	s.mayHaveSubmitted = true
 }
 
-func (d imageSubmissionDisposition) provenAbsent() bool {
-	return d == imageSubmissionProvenAbsent
+func (s imageSubmissionState) canProveNotSubmitted() bool {
+	return !s.mayHaveSubmitted
 }

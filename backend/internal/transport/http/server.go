@@ -15,6 +15,7 @@ import (
 	dashboardapp "github.com/chenyme/grok2api/backend/internal/application/dashboard"
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	"github.com/chenyme/grok2api/backend/internal/application/gateway"
+	imagecapacityapp "github.com/chenyme/grok2api/backend/internal/application/imagecapacity"
 	mediaapp "github.com/chenyme/grok2api/backend/internal/application/media"
 	modelapp "github.com/chenyme/grok2api/backend/internal/application/model"
 	settingsapp "github.com/chenyme/grok2api/backend/internal/application/settings"
@@ -25,6 +26,7 @@ import (
 	clientkeyhttp "github.com/chenyme/grok2api/backend/internal/transport/http/clientkey"
 	dashboardhttp "github.com/chenyme/grok2api/backend/internal/transport/http/dashboard"
 	egresshttp "github.com/chenyme/grok2api/backend/internal/transport/http/egress"
+	imagecapacityhttp "github.com/chenyme/grok2api/backend/internal/transport/http/imagecapacity"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/inference"
 	mediahttp "github.com/chenyme/grok2api/backend/internal/transport/http/media"
 	"github.com/chenyme/grok2api/backend/internal/transport/http/middleware"
@@ -55,6 +57,7 @@ type Dependencies struct {
 	AccountSync            *accountsyncapp.Service
 	Models                 *modelapp.Service
 	ClientKeys             *clientkeyapp.Service
+	ImageCapacity          *imagecapacityapp.Service
 	Audits                 *auditapp.Service
 	Dashboard              *dashboardapp.Service
 	Gateway                *gateway.Service
@@ -152,6 +155,7 @@ func New(deps Dependencies) *gin.Engine {
 	accounthttp.NewHandler(deps.Accounts, deps.AccountSync).Register(adminProtected)
 	modelhttp.NewHandler(deps.Models).Register(adminProtected)
 	clientkeyhttp.NewHandler(deps.ClientKeys).Register(adminProtected)
+	imagecapacityhttp.NewHandler(deps.ImageCapacity).Register(adminProtected)
 	auditHandler := audithttp.NewHandler(deps.Audits)
 	auditHandler.Register(adminProtected)
 	dashboardhttp.NewHandler(deps.Dashboard).Register(adminProtected)
@@ -180,6 +184,9 @@ func New(deps Dependencies) *gin.Engine {
 		v1.Use(func(c *gin.Context) {
 			if deps.TrafficReady() {
 				c.Next()
+				return
+			}
+			if middleware.AbortImagePreSubmitRefusal(c) {
 				return
 			}
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{

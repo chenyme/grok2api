@@ -3,7 +3,7 @@ name: grok2api
 services:
   grok2api:
     container_name: grok2api
-    image: "${GROK2API_IMAGE:-ghcr.io/chenyme/grok2api:latest}"
+    image: "${GROK2API_IMAGE:-ghcr.io/ohld/grok2api:latest}"
     ports:
       - "${GROK2API_PORT:-8000}:8000"
     environment:

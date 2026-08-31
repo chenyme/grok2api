@@ -3,15 +3,21 @@ package clientkey
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 	"github.com/gin-gonic/gin"
 )
 
@@ -105,3 +111,113 @@ func TestCreateDistinguishesOmittedLimitsFromExplicitZero(t *testing.T) {
 		}
 	}
 }
+
+func TestConcurrencySnapshotIsExactReadOnlyAndSecretFree(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "client-key-concurrency-handler.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	limiter := &snapshotConcurrencyLimiter{values: make(map[string]int)}
+	service := clientkeyapp.NewService(relational.NewClientKeyRepository(database), nil, limiter, 60, 5, cipher)
+	created, err := service.Create(ctx, clientkeyapp.CreateInput{Name: "platform", Enabled: true, RPMLimit: 77, MaxConcurrent: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeKey := repository.ClientConcurrencyKey(created.Key.ID)
+	id := strconv.FormatUint(created.Key.ID, 10)
+	fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte("grok2api-client-key-v1\x00"+created.Secret)))
+	limiter.values[runtimeKey] = 3
+	router := gin.New()
+	NewHandler(service).Register(router.Group("/api"))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/client-keys/"+id+"/concurrency", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("snapshot response = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("snapshot cache control = %q", recorder.Header().Get("Cache-Control"))
+	}
+	body := recorder.Body.String()
+	for _, field := range []string{
+		`"id":"` + id + `"`,
+		`"name":"platform"`,
+		`"prefix":"` + created.Key.Prefix + `"`,
+		`"clientKeyFingerprint":"` + fingerprint + `"`,
+		`"rpmLimit":77`,
+		`"maxConcurrent":8`,
+		`"currentInflight":3`,
+	} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("snapshot body %s missing %s", body, field)
+		}
+	}
+	if strings.Contains(body, created.Secret) || strings.Contains(body, "secretHash") || strings.Contains(body, "encryptedSecret") {
+		t.Fatalf("snapshot leaked secret material: %s", body)
+	}
+	if limiter.acquireCalls != 0 || limiter.currentCalls != 0 || limiter.batchCalls != 1 ||
+		len(limiter.keys) != 1 || limiter.keys[0] != runtimeKey {
+		t.Fatalf(
+			"runtime reads: acquire=%d current=%d batch=%d keys=%v",
+			limiter.acquireCalls, limiter.currentCalls, limiter.batchCalls, limiter.keys,
+		)
+	}
+
+	limiter.err = errors.New("redis endpoint details")
+	request = httptest.NewRequest(http.MethodGet, "/api/client-keys/"+id+"/concurrency", nil)
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable ||
+		!strings.Contains(recorder.Body.String(), `"code":"clientKeyRuntimeUnavailable"`) ||
+		strings.Contains(recorder.Body.String(), "redis endpoint details") {
+		t.Fatalf("unavailable response = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type snapshotConcurrencyLimiter struct {
+	values       map[string]int
+	err          error
+	keys         []string
+	acquireCalls int
+	currentCalls int
+	batchCalls   int
+}
+
+func (l *snapshotConcurrencyLimiter) Acquire(context.Context, string, int) (func(), bool, error) {
+	l.acquireCalls++
+	return func() {}, true, nil
+}
+
+func (l *snapshotConcurrencyLimiter) Current(context.Context, string) (int, error) {
+	l.currentCalls++
+	return 0, nil
+}
+
+func (l *snapshotConcurrencyLimiter) CurrentMany(_ context.Context, keys []string) (map[string]int, error) {
+	l.batchCalls++
+	l.keys = append([]string(nil), keys...)
+	if l.err != nil {
+		return nil, l.err
+	}
+	values := make(map[string]int, len(keys))
+	for _, key := range keys {
+		if value := l.values[key]; value != 0 {
+			values[key] = value
+		}
+	}
+	return values, nil
+}
+
+var _ repository.ConcurrencyLimiter = (*snapshotConcurrencyLimiter)(nil)
+var _ repository.ConcurrencySnapshotReader = (*snapshotConcurrencyLimiter)(nil)

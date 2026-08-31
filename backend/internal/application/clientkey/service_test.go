@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	clientkeydomain "github.com/chenyme/grok2api/backend/internal/domain/clientkey"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
+	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -56,6 +58,121 @@ func TestCreateUsesG2AClientKeyFormat(t *testing.T) {
 	revealed, err := service.RevealSecret(ctx, created.Key.ID)
 	if err != nil || revealed != created.Secret {
 		t.Fatalf("revealed secret = %q, err = %v", revealed, err)
+	}
+}
+
+func TestConcurrencySnapshotDTOContainsOnlySafeFields(t *testing.T) {
+	snapshotType := reflect.TypeOf(ConcurrencySnapshot{})
+	want := []string{
+		"ID",
+		"Name",
+		"Prefix",
+		"RPMLimit",
+		"MaxConcurrent",
+		"KeyFingerprint",
+		"CurrentInflight",
+	}
+	if snapshotType.NumField() != len(want) {
+		t.Fatalf("snapshot fields = %d, want %d", snapshotType.NumField(), len(want))
+	}
+	for index, name := range want {
+		if actual := snapshotType.Field(index).Name; actual != name {
+			t.Fatalf("snapshot field %d = %q, want %q", index, actual, name)
+		}
+	}
+}
+
+func TestConcurrencySnapshotTracksAuthenticationLeaseLifecycle(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "client-key-snapshot-lifecycle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	limiter := memory.NewConcurrencyLimiter()
+	service := NewService(relational.NewClientKeyRepository(database), nil, limiter, 60, 5, testCipher(t))
+	created, err := service.Create(ctx, CreateInput{
+		Name: "snapshot-lifecycle", Enabled: true, RPMUnlimited: true, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated, release, err := service.Authenticate(ctx, created.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if authenticated.ID != created.Key.ID {
+		t.Fatalf("authenticated key = %d, want %d", authenticated.ID, created.Key.ID)
+	}
+
+	snapshot, err := service.GetConcurrencySnapshot(ctx, created.Key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ID != created.Key.ID || snapshot.Name != created.Key.Name || snapshot.Prefix != created.Key.Prefix ||
+		snapshot.RPMLimit != created.Key.RPMLimit || snapshot.MaxConcurrent != created.Key.MaxConcurrent ||
+		snapshot.CurrentInflight != 1 ||
+		snapshot.KeyFingerprint != security.ClientKeyFingerprint(created.Secret) {
+		t.Fatalf("active snapshot = %#v", snapshot)
+	}
+
+	release()
+	snapshot, err = service.GetConcurrencySnapshot(ctx, created.Key.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.CurrentInflight != 0 {
+		t.Fatalf("released snapshot = %#v", snapshot)
+	}
+}
+
+func TestConcurrencySnapshotFailsClosedOnUnverifiableState(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "client-key-snapshot-fail-closed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	keys := relational.NewClientKeyRepository(database)
+	cipher := testCipher(t)
+	created, err := NewService(keys, nil, memory.NewConcurrencyLimiter(), 60, 5, cipher).Create(
+		ctx,
+		CreateInput{Name: "snapshot-fail-closed", Enabled: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		service *Service
+	}{
+		{
+			name:    "missing snapshot reader",
+			service: NewService(keys, nil, successfulConcurrencyLimiter{}, 60, 5, cipher),
+		},
+		{
+			name:    "corrupt encrypted secret",
+			service: NewService(corruptSecretClientKeyRepository{ClientKeyRepository: keys}, nil, memory.NewConcurrencyLimiter(), 60, 5, cipher),
+		},
+		{
+			name:    "negative runtime count",
+			service: NewService(keys, nil, negativeSnapshotConcurrencyLimiter{}, 60, 5, cipher),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := test.service.GetConcurrencySnapshot(ctx, created.Key.ID); !errors.Is(err, ErrRuntimeUnavailable) {
+				t.Fatalf("snapshot error = %v, want ErrRuntimeUnavailable", err)
+			}
+		})
 	}
 }
 
@@ -429,6 +546,24 @@ func (successfulConcurrencyLimiter) Acquire(context.Context, string, int) (func(
 }
 func (successfulConcurrencyLimiter) Current(context.Context, string) (int, error) { return 0, nil }
 
+type negativeSnapshotConcurrencyLimiter struct{ successfulConcurrencyLimiter }
+
+func (negativeSnapshotConcurrencyLimiter) CurrentMany(_ context.Context, keys []string) (map[string]int, error) {
+	values := make(map[string]int, len(keys))
+	for _, key := range keys {
+		values[key] = -1
+	}
+	return values, nil
+}
+
+type corruptSecretClientKeyRepository struct{ repository.ClientKeyRepository }
+
+func (r corruptSecretClientKeyRepository) Get(ctx context.Context, id uint64) (clientkeydomain.Key, error) {
+	value, err := r.ClientKeyRepository.Get(ctx, id)
+	value.EncryptedSecret = "corrupt"
+	return value, err
+}
+
 type failingClientKeyRepository struct{ repository.ClientKeyRepository }
 
 func (failingClientKeyRepository) GetByPrefix(context.Context, string) (clientkeydomain.Key, error) {
@@ -447,3 +582,4 @@ func (r *countingClientKeyRepository) GetByPrefix(ctx context.Context, prefix st
 
 var _ repository.RateLimiter = failingRateLimiter{}
 var _ repository.ConcurrencyLimiter = failingConcurrencyLimiter{}
+var _ repository.ConcurrencySnapshotReader = negativeSnapshotConcurrencyLimiter{}

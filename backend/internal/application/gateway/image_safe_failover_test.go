@@ -29,6 +29,9 @@ type safeFailoverImageAdapter struct {
 	preSubmissionNode map[uint64]bool
 	ambiguousNode     map[uint64]bool
 	unauthorizedNode  map[uint64]bool
+	rateLimitedNode   map[uint64]bool
+	quotaKind         provider.QuotaKind
+	quotaMode         string
 }
 
 func (a *safeFailoverImageAdapter) Provider() accountdomain.Provider {
@@ -36,16 +39,24 @@ func (a *safeFailoverImageAdapter) Provider() accountdomain.Provider {
 }
 
 func (a *safeFailoverImageAdapter) Definition() provider.Definition {
+	quotaKind := a.quotaKind
+	if quotaKind == "" {
+		quotaKind = provider.QuotaLocalWindow
+	}
 	return provider.Definition{
 		Provider:          accountdomain.ProviderWeb,
 		ModelNamespace:    accountdomain.ProviderWeb.ModelNamespace(),
 		ModelCatalog:      provider.ModelCatalogStatic,
 		ModelCapabilities: []modeldomain.Capability{modeldomain.CapabilityImage},
-		Quota:             provider.QuotaLocalWindow,
+		Quota:             quotaKind,
 		Credential:        provider.CredentialSurface{AuthType: accountdomain.AuthTypeSSO},
 		Media:             provider.MediaSurface{ImageGeneration: true},
 		Inference:         provider.InferencePolicy{Usage: provider.UsageEstimated},
 	}
+}
+
+func (a *safeFailoverImageAdapter) QuotaMode(_ string) string {
+	return a.quotaMode
 }
 
 func (a *safeFailoverImageAdapter) GenerateImage(_ context.Context, request provider.ImageGenerationRequest) (*provider.Response, error) {
@@ -54,6 +65,7 @@ func (a *safeFailoverImageAdapter) GenerateImage(_ context.Context, request prov
 	preSubmission := a.preSubmissionNode[request.Credential.EgressNodeID]
 	ambiguous := a.ambiguousNode[request.Credential.EgressNodeID]
 	unauthorized := a.unauthorizedNode[request.Credential.EgressNodeID]
+	rateLimited := a.rateLimitedNode[request.Credential.EgressNodeID]
 	a.mu.Unlock()
 	if preSubmission {
 		return nil, provider.NewImagePreSubmissionError(errors.New("bound egress is cooling"))
@@ -63,6 +75,14 @@ func (a *safeFailoverImageAdapter) GenerateImage(_ context.Context, request prov
 	}
 	if unauthorized {
 		return nil, provider.ErrUnauthorized
+	}
+	if rateLimited {
+		return &provider.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header:     http.Header{"Content-Type": {"application/json"}, "Retry-After": {"30"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"limited"}`)),
+		}, nil
 	}
 	return &provider.Response{
 		StatusCode: http.StatusOK,
@@ -89,6 +109,23 @@ type safeFailoverImageFixture struct {
 }
 
 func newSafeFailoverImageFixture(t *testing.T, nodeIDs []uint64, preSubmissionNode, ambiguousNode map[uint64]bool) safeFailoverImageFixture {
+	return newSafeFailoverImageFixtureWithQuota(
+		t,
+		nodeIDs,
+		preSubmissionNode,
+		ambiguousNode,
+		provider.QuotaLocalWindow,
+		"",
+	)
+}
+
+func newSafeFailoverImageFixtureWithQuota(
+	t *testing.T,
+	nodeIDs []uint64,
+	preSubmissionNode, ambiguousNode map[uint64]bool,
+	quotaKind provider.QuotaKind,
+	quotaMode string,
+) safeFailoverImageFixture {
 	t.Helper()
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "image-safe-failover.db"))
@@ -136,6 +173,21 @@ func newSafeFailoverImageFixture(t *testing.T, nodeIDs []uint64, preSubmissionNo
 		}
 		credentials = append(credentials, credential)
 	}
+	if quotaMode != "" {
+		for _, credential := range credentials {
+			if err := accountRepo.SaveQuotaWindows(ctx, credential.ID, credential.WebTier, now, []accountdomain.QuotaWindow{{
+				AccountID: credential.ID,
+				Mode:      quotaMode,
+				Remaining: 4,
+				Total:     4,
+				Source:    accountdomain.QuotaSourceUpstream,
+				SyncedAt:  &now,
+				UpdatedAt: now,
+			}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	const model = "grok-image-safe-failover"
 	if err := modelRepo.UpsertRoutes(ctx, []modeldomain.Route{{
 		PublicID: model, Provider: accountdomain.ProviderWeb, UpstreamModel: model,
@@ -166,7 +218,12 @@ func newSafeFailoverImageFixture(t *testing.T, nodeIDs []uint64, preSubmissionNo
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter := &safeFailoverImageAdapter{preSubmissionNode: preSubmissionNode, ambiguousNode: ambiguousNode}
+	adapter := &safeFailoverImageAdapter{
+		preSubmissionNode: preSubmissionNode,
+		ambiguousNode:     ambiguousNode,
+		quotaKind:         quotaKind,
+		quotaMode:         quotaMode,
+	}
 	registry := provider.NewRegistry(adapter)
 	sticky := memory.NewStickyStore()
 	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
@@ -226,6 +283,32 @@ func TestImageAllPreSubmissionFailuresReturnExplicitSentinel(t *testing.T) {
 	}
 }
 
+func TestImageInitialSelectionFailureReturnsExplicitNotSubmittedSentinel(t *testing.T) {
+	ctx := context.Background()
+	fixture := newSafeFailoverImageFixture(t, []uint64{11}, nil, nil)
+	cooldownUntil := time.Now().UTC().Add(time.Minute)
+	credential := fixture.credentials[0]
+	if err := fixture.accountRepo.UpdateHealth(
+		ctx,
+		credential.ID,
+		credential.Provider,
+		1,
+		&cooldownUntil,
+		"test selector cooling",
+		false,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := fixture.generate(ctx, "req-image-selection-not-submitted")
+	if !errors.Is(err, ErrUpstreamNotSubmitted) {
+		t.Fatalf("selection error = %v, want ErrUpstreamNotSubmitted", err)
+	}
+	if attempts := fixture.adapter.Attempts(); len(attempts) != 0 {
+		t.Fatalf("attempts = %#v, want no provider submission", attempts)
+	}
+}
+
 func TestImageAmbiguousFailureDoesNotFailOverOrClaimNotSubmitted(t *testing.T) {
 	ctx := context.Background()
 	fixture := newSafeFailoverImageFixture(t, []uint64{11, 12}, nil, map[uint64]bool{11: true})
@@ -235,6 +318,33 @@ func TestImageAmbiguousFailureDoesNotFailOverOrClaimNotSubmitted(t *testing.T) {
 	}
 	if attempts := fixture.adapter.Attempts(); len(attempts) != 1 || attempts[0] != fixture.credentials[0].ID {
 		t.Fatalf("ambiguous failure attempts = %#v", attempts)
+	}
+}
+
+func TestImageRemoteWindow429NeverReplaysOnAnotherIdentity(t *testing.T) {
+	ctx := context.Background()
+	fixture := newSafeFailoverImageFixtureWithQuota(
+		t,
+		[]uint64{11, 12},
+		nil,
+		nil,
+		provider.QuotaRemoteWindow,
+		accountdomain.QuotaModeWebImagePro,
+	)
+	fixture.adapter.rateLimitedNode = map[uint64]bool{11: true}
+
+	result, err := fixture.generate(ctx, "req-image-remote-window-429")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", result.StatusCode)
+	}
+	_, _ = io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "", "upstream_rate_limited")
+	_ = result.Body.Close()
+	if attempts := fixture.adapter.Attempts(); len(attempts) != 1 || attempts[0] != fixture.credentials[0].ID {
+		t.Fatalf("remote-window 429 attempts = %#v, want only the first identity", attempts)
 	}
 }
 

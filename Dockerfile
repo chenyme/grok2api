@@ -27,6 +27,7 @@ FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS backend-builder
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG SOURCE_COMMIT
 
 WORKDIR /src/backend
 RUN apk add --no-cache ca-certificates git
@@ -38,10 +39,15 @@ RUN --mount=type=cache,id=grok2api-go-mod,target=/go/pkg/mod,sharing=locked \
 COPY backend/cmd ./cmd
 COPY backend/internal ./internal
 COPY backend/docs/docs.go ./docs/docs.go
+COPY VERSION /src/VERSION
 RUN --mount=type=cache,id=grok2api-go-mod,target=/go/pkg/mod,sharing=locked \
     --mount=type=cache,id=grok2api-go-build,target=/root/.cache/go-build,sharing=locked \
+    VERSION_VALUE="$(tr -d '\r\n' </src/VERSION)" && \
+    BUILD_FINGERPRINT="$(printf 'grok2api-owned-build-v1\0%s\0%s' "$SOURCE_COMMIT" "$VERSION_VALUE" | sha256sum | cut -d' ' -f1)" && \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/grok2api ./cmd/grok2api
+    go build -buildvcs=false -trimpath \
+      -ldflags="-s -w -X github.com/chenyme/grok2api/backend/internal/buildinfo.Version=$VERSION_VALUE -X github.com/chenyme/grok2api/backend/internal/buildinfo.SourceCommit=$SOURCE_COMMIT -X github.com/chenyme/grok2api/backend/internal/buildinfo.BuildFingerprint=$BUILD_FINGERPRINT" \
+      -o /out/grok2api ./cmd/grok2api
 
 
 FROM alpine:${ALPINE_VERSION}

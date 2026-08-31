@@ -14,6 +14,13 @@ func AccountConcurrencyKey(accountID uint64) string {
 	return "account:" + strconv.FormatUint(accountID, 10)
 }
 
+// ClientConcurrencyKey returns the canonical runtime lease key for one client key.
+// Both authentication and read-only runtime inspection must use this helper so
+// the reported count cannot drift from the lease namespace.
+func ClientConcurrencyKey(clientKeyID uint64) string {
+	return "client:" + strconv.FormatUint(clientKeyID, 10)
+}
+
 // RateLimiter 定义客户端 RPM 限制边界。
 type RateLimiter interface {
 	Allow(ctx context.Context, key string, limit int, now time.Time) (bool, error)

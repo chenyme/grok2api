@@ -49,7 +49,7 @@ const (
 	responseWriteTimeout            = 30 * time.Second
 )
 
-const upstreamRequestDispositionHeader = "X-Upstream-Request-Disposition"
+const upstreamRequestDispositionHeader = middleware.UpstreamRequestDispositionHeader
 
 var (
 	errResponseTransferLimit    = errors.New("响应超过代理安全上限")
@@ -2153,6 +2153,9 @@ func copyHeaders(destination, source http.Header) {
 		"connection": {}, "content-length": {}, "keep-alive": {}, "proxy-authenticate": {},
 		"proxy-authorization": {}, "set-cookie": {}, "te": {}, "trailer": {},
 		"transfer-encoding": {}, "upgrade": {}, "x-models-etag": {},
+		// This is a local provenance assertion consumed by downstream failover.
+		// An observed upstream response must never be able to mint it.
+		strings.ToLower(upstreamRequestDispositionHeader): {},
 	}
 	for _, value := range source.Values("Connection") {
 		for name := range strings.SplitSeq(value, ",") {
@@ -2193,14 +2196,14 @@ func writeImageGenerationUserError(c *gin.Context, code, param, message string) 
 }
 
 func writeGatewayError(c *gin.Context, err error) {
+	if errors.Is(err, gateway.ErrUpstreamNotSubmitted) && middleware.AbortImagePreSubmitRefusal(c) {
+		return
+	}
 	status, code := http.StatusBadGateway, "upstream_unavailable"
 	message := "上游服务暂不可用"
 	var upstreamFailure *gateway.UpstreamFailure
 	var selectionFailure *gateway.SelectionUnavailableError
 	switch {
-	case errors.Is(err, gateway.ErrUpstreamNotSubmitted):
-		status, code = http.StatusServiceUnavailable, "upstream_not_submitted"
-		c.Header(upstreamRequestDispositionHeader, "not-submitted")
 	case errors.Is(err, gateway.ErrLedgerUnavailable):
 		status, code = http.StatusServiceUnavailable, "ledger_unavailable"
 		message = gateway.ErrLedgerUnavailable.Error()

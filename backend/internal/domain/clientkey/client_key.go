@@ -265,10 +265,16 @@ func (k Key) IsAvailable(now time.Time) bool {
 }
 
 func (k Key) AllowsModel(modelID uint64) bool {
-	if len(k.AllowedModels) == 0 {
+	return AllowsModel(k.AllowedModels, modelID)
+}
+
+// AllowsModel is the canonical client-key model policy projection. An empty
+// allowlist means all route IDs are allowed.
+func AllowsModel(allowedModels []uint64, modelID uint64) bool {
+	if len(allowedModels) == 0 {
 		return true
 	}
-	for _, allowed := range k.AllowedModels {
+	for _, allowed := range allowedModels {
 		if allowed == modelID {
 			return true
 		}

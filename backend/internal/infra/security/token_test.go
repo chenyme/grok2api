@@ -17,3 +17,14 @@ func TestClientKeyFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestClientKeyFingerprintContract(t *testing.T) {
+	const raw = "g2a_abc123_secret_value"
+	const expected = "5693f66e0ebd7c354afba4941329b6d3f8387e77d196eb00e19cb8f15a5e3302"
+	if actual := ClientKeyFingerprint(raw); actual != expected {
+		t.Fatalf("fingerprint = %q, want %q", actual, expected)
+	}
+	if ClientKeyFingerprint(raw) == HashToken(raw) {
+		t.Fatal("fingerprint must remain domain-separated from the verifier hash")
+	}
+}

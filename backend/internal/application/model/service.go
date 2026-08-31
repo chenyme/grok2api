@@ -297,6 +297,12 @@ func (s *Service) Update(ctx context.Context, id uint64, input UpdateInput) (mod
 	}
 	var accountIDs *[]uint64
 	if input.AccountIDs != nil {
+		if value.Provider == account.ProviderWeb && value.Capability == modeldomain.CapabilityImage {
+			return modeldomain.Route{}, fmt.Errorf(
+				"%w: Web image 路由账号只能通过原子 add-only 接口变更",
+				ErrConflict,
+			)
+		}
 		validated, validateErr := s.validateBoundAccounts(ctx, value.Provider, *input.AccountIDs)
 		if validateErr != nil {
 			return modeldomain.Route{}, validateErr
@@ -355,20 +361,9 @@ func (s *Service) validateProviderCapability(providerValue account.Provider, cap
 }
 
 func (s *Service) validateBoundAccounts(ctx context.Context, providerValue account.Provider, ids []uint64) ([]uint64, error) {
-	if len(ids) > 1000 {
-		return nil, invalidInput("单个模型最多绑定 1000 个账号")
-	}
-	unique := make(map[uint64]struct{}, len(ids))
-	result := make([]uint64, 0, len(ids))
-	for _, id := range ids {
-		if id == 0 {
-			return nil, invalidInput("绑定账号 ID 无效")
-		}
-		if _, exists := unique[id]; exists {
-			continue
-		}
-		unique[id] = struct{}{}
-		result = append(result, id)
+	result, err := normalizeRouteAccountIDs(ids)
+	if err != nil {
+		return nil, err
 	}
 	if len(result) == 0 {
 		return result, nil

@@ -239,7 +239,7 @@ export function AppShell() {
               <CurrentVersionLabel />
             </Link>
             <Button variant="ghost" size="icon" className="size-7 text-muted-foreground [&_svg]:size-[15px]" asChild>
-              <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
+              <a href="https://github.com/ohld/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
                 <GitHubMark />
               </a>
             </Button>
@@ -269,7 +269,7 @@ export function AppShell() {
             </Sheet>
             <span className="flex items-baseline gap-2 text-sm font-semibold"><span>{t("appName")}</span><CurrentVersionLabel /></span>
             <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-foreground" asChild>
-              <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
+              <a href="https://github.com/ohld/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
                 <GitHubMark />
               </a>
             </Button>

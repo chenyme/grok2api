@@ -28,7 +28,18 @@ type ModelRepository interface {
 	ListStaleAccountSyncIDs(ctx context.Context, before time.Time, limit int) ([]uint64, error)
 	Create(ctx context.Context, value model.Route, accountIDs []uint64) (model.Route, error)
 	Update(ctx context.Context, value model.Route, accountIDs *[]uint64) (model.Route, error)
+	AddRouteAccounts(ctx context.Context, routeID uint64, expected ModelRouteExpectation, accountIDs []uint64) (model.Route, error)
 	Delete(ctx context.Context, id uint64) error
 	DeleteMany(ctx context.Context, ids []uint64) (int64, error)
 	UpdateManyEnabled(ctx context.Context, ids []uint64, enabled bool) (int64, error)
+}
+
+// ModelRouteExpectation is the complete non-secret route identity an atomic
+// membership write must still observe before it changes any bindings.
+type ModelRouteExpectation struct {
+	PublicID      string
+	Provider      account.Provider
+	UpstreamModel string
+	Capability    model.Capability
+	Enabled       bool
 }

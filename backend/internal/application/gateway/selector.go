@@ -472,59 +472,43 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 	var earliestRetry time.Time
 	for index, candidate := range values {
 		value := applyHealthSnapshot(candidate.Credential, healthOverrides)
-		if forcedEgressNodeID != 0 && value.EgressNodeID != forcedEgressNodeID {
+		admission := s.evaluateCandidateAdmission(provider, upstreamModel, quotaMode, candidate, value, accountScope, quotaConsumed, now, candidateAdmissionOptions{
+			excluded: excluded, allowQuotaProbe: allowQuotaProbe, forcedEgressNodeID: forcedEgressNodeID,
+		})
+		switch admission.state {
+		case candidateAdmissionSkipped:
 			continue
-		}
-		if !accountScopeAllowsCandidate(provider, accountScope, candidate) {
+		case candidateAdmissionUnsupported:
+			consideredCandidates++
 			continue
-		}
-		if excluded[value.ID] || value.AuthStatus != account.AuthStatusActive {
-			continue
-		}
-		consideredCandidates++
-		if !s.candidateSupportsModel(provider, upstreamModel, quotaMode, candidate) {
-			continue
-		}
-		supportedCandidates++
-		if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
+		case candidateAdmissionModelCooling:
+			consideredCandidates++
+			supportedCandidates++
 			modelCoolingCandidates++
-			earliestRetry = earlierFuture(earliestRetry, candidate.ModelQuotaBlock.CooldownUntil, now)
+			earliestRetry = earlierFuture(earliestRetry, admission.retryAfter, now)
 			continue
-		}
-		if candidateEgressLeaseCooling(candidate, value, now) {
+		case candidateAdmissionCooling:
+			consideredCandidates++
+			supportedCandidates++
 			coolingCandidates++
-			earliestRetry = earlierFuture(earliestRetry, candidate.EgressLeaseBlock.CooldownUntil, now)
+			earliestRetry = earlierFuture(earliestRetry, admission.retryAfter, now)
 			continue
-		}
-		if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
-			coolingCandidates++
-			earliestRetry = earlierFuture(earliestRetry, *value.CooldownUntil, now)
-			continue
-		}
-		quotaRecovery := candidate.QuotaRecovery
-		if quotaRecovery != nil && quotaRecovery.Status != account.QuotaRecoveryStatusActive {
-			if allowQuotaProbe && quotaRecovery.NextProbeAt != nil && !now.Before(*quotaRecovery.NextProbeAt) {
-				probeCandidates = append(probeCandidates, index)
-			} else {
-				quotaCandidates++
-				if quotaRecovery.NextProbeAt != nil {
-					earliestRetry = earlierFuture(earliestRetry, *quotaRecovery.NextProbeAt, now)
-				}
-			}
-			continue
-		}
-		if candidate.Billing != nil && candidate.Billing.IsExhausted(value.MinimumRemaining) {
+		case candidateAdmissionQuotaBlocked:
+			consideredCandidates++
+			supportedCandidates++
 			quotaCandidates++
+			earliestRetry = earlierFuture(earliestRetry, admission.retryAfter, now)
 			continue
-		}
-		if quotaWindowExhausted(candidate, quotaConsumed) {
-			quotaCandidates++
-			if candidate.QuotaWindow.ResetAt != nil {
-				earliestRetry = earlierFuture(earliestRetry, *candidate.QuotaWindow.ResetAt, now)
-			}
+		case candidateAdmissionQuotaProbe:
+			consideredCandidates++
+			supportedCandidates++
+			probeCandidates = append(probeCandidates, index)
 			continue
+		case candidateAdmissionEligible:
+			consideredCandidates++
+			supportedCandidates++
+			normalCandidates = append(normalCandidates, index)
 		}
-		normalCandidates = append(normalCandidates, index)
 	}
 	if len(normalCandidates) == 0 && len(probeCandidates) == 0 {
 		reason := SelectionNoAccounts
@@ -788,33 +772,22 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 		if value.ID != accountID {
 			continue
 		}
-		if !accountScopeAllowsCandidate(provider, accountScope, candidate) {
-			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
-		}
-		if !value.Enabled || value.AuthStatus != account.AuthStatusActive {
-			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
-		}
 		if inference {
-			if !s.candidateSupportsModel(provider, upstreamModel, quotaMode, candidate) {
+			admission := s.evaluateCandidateAdmission(provider, upstreamModel, quotaMode, candidate, value, accountScope, quotaConsumed, now, candidateAdmissionOptions{
+				allowQuotaProbe: true, ignoreEgressLeaseBlock: ignoreEgressLeaseBlock,
+			})
+			switch admission.state {
+			case candidateAdmissionSkipped:
+				return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+			case candidateAdmissionUnsupported:
 				return nil, &SelectionUnavailableError{Reason: SelectionUnsupportedModel}
-			}
-			if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
-				return nil, &SelectionUnavailableError{Reason: SelectionModelCooling, RetryAfter: retryDelay(now, candidate.ModelQuotaBlock.CooldownUntil)}
-			}
-			if !ignoreEgressLeaseBlock && candidateEgressLeaseCooling(candidate, value, now) {
-				return nil, &SelectionUnavailableError{Reason: SelectionCooling, RetryAfter: retryDelay(now, candidate.EgressLeaseBlock.CooldownUntil)}
-			}
-			if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
-				return nil, &SelectionUnavailableError{Reason: SelectionCooling, RetryAfter: retryDelay(now, *value.CooldownUntil)}
-			}
-			if recovery := candidate.QuotaRecovery; recovery != nil && recovery.Status != account.QuotaRecoveryStatusActive {
-				if recovery.NextProbeAt == nil || now.Before(*recovery.NextProbeAt) {
-					var retryAfter time.Duration
-					if recovery.NextProbeAt != nil {
-						retryAfter = retryDelay(now, *recovery.NextProbeAt)
-					}
-					return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: retryAfter}
-				}
+			case candidateAdmissionModelCooling:
+				return nil, &SelectionUnavailableError{Reason: SelectionModelCooling, RetryAfter: retryDelay(now, admission.retryAfter)}
+			case candidateAdmissionCooling:
+				return nil, &SelectionUnavailableError{Reason: SelectionCooling, RetryAfter: retryDelay(now, admission.retryAfter)}
+			case candidateAdmissionQuotaBlocked:
+				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: retryDelay(now, admission.retryAfter)}
+			case candidateAdmissionQuotaProbe:
 				lease, err := s.acquirePinnedCapacity(ctx, value)
 				if err != nil {
 					if errors.Is(err, errRoutingCredentialStale) {
@@ -831,20 +804,13 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 					return nil, fmt.Errorf("绑定的上游账号恢复探测已被占用")
 				}
 				lease.QuotaProbe = true
-				lease.QuotaProbeKind = recovery.Kind
+				lease.QuotaProbeKind = candidate.QuotaRecovery.Kind
 				lease.Billing = candidate.Billing
 				return lease, nil
+			case candidateAdmissionEligible:
 			}
-			if candidate.Billing != nil && candidate.Billing.IsExhausted(value.MinimumRemaining) {
-				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted}
-			}
-			if quotaWindowExhausted(candidate, quotaConsumed) {
-				var retryAfter time.Duration
-				if candidate.QuotaWindow.ResetAt != nil {
-					retryAfter = retryDelay(now, *candidate.QuotaWindow.ResetAt)
-				}
-				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: retryAfter}
-			}
+		} else if !accountScopeAllowsCandidate(provider, accountScope, candidate) || !value.Enabled || value.AuthStatus != account.AuthStatusActive {
+			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
 		}
 		lease, err := s.acquirePinnedCapacity(ctx, value)
 		if err != nil {

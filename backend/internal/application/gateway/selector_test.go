@@ -802,6 +802,90 @@ func TestSelectorKeepsWebQuotaModesIsolated(t *testing.T) {
 	}
 }
 
+func TestWebImageSelectionSessionMatchesAttestedQuotaAdmission(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-image-attestation-parity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	models := relational.NewModelRepository(database)
+	create := func(name string) account.Credential {
+		value, _, createErr := accounts.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: account.WebTierSuper,
+			Name: name, SourceKey: name, EncryptedAccessToken: "encrypted", Enabled: true,
+			AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return value
+	}
+	missing := create("missing-image-quota")
+	wrongSource := create("estimated-image-quota")
+	unsynced := create("unsynced-image-quota")
+	valid := create("valid-image-quota")
+	now := time.Now().UTC()
+	saveWindow := func(credential account.Credential, source account.QuotaSource, syncedAt *time.Time) {
+		if saveErr := accounts.SaveQuotaWindows(ctx, credential.ID, credential.WebTier, now, []account.QuotaWindow{{
+			AccountID: credential.ID, Mode: account.QuotaModeWebImagePro, Remaining: 4, Total: 4,
+			SyncedAt: syncedAt, Source: source,
+		}}); saveErr != nil {
+			t.Fatal(saveErr)
+		}
+	}
+	saveWindow(wrongSource, account.QuotaSourceEstimated, &now)
+	saveWindow(unsynced, account.QuotaSourceUpstream, nil)
+	saveWindow(valid, account.QuotaSourceUpstream, &now)
+	route, err := models.Create(ctx, modeldomain.Route{
+		PublicID: "grok-image-parity", Provider: account.ProviderWeb, UpstreamModel: "grok-imagine-image-2.0",
+		Capability: modeldomain.CapabilityImage, Enabled: true,
+	}, []uint64{missing.ID, wrongSource.ID, unsynced.ID, valid.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), staticTierOrder{order: []account.WebTier{account.WebTierSuper}}, time.Hour, time.Second, time.Minute)
+	scope := clientkeydomain.AccountScope{Providers: clientkeydomain.ProviderScopeWeb, Tiers: clientkeydomain.TierScopeSuper}
+	session, err := selector.beginSelectionSessionForKey(ctx, route.Provider, route.ID, route.UpstreamModel, account.QuotaModeWebImagePro, "", nil, false, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := session.Acquire(ctx, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release()
+	if lease.Credential.ID != valid.ID {
+		t.Fatalf("runtime image session selected account %d, want %d", lease.Credential.ID, valid.ID)
+	}
+	eligible, err := selector.EligibleAccountIDsForKey(ctx, route.Provider, route.ID, route.UpstreamModel, account.QuotaModeWebImagePro, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(eligible, []uint64{valid.ID}) {
+		t.Fatalf("attested identities = %v, want [%d]", eligible, valid.ID)
+	}
+	for name, acquire := range map[string]func() (*accountLease, error){
+		"pinned": func() (*accountLease, error) {
+			return selector.AcquirePinnedForKey(ctx, route.Provider, missing.ID, route.ID, route.UpstreamModel, account.QuotaModeWebImagePro, true, scope)
+		},
+		"quality-probe": func() (*accountLease, error) {
+			return selector.AcquirePinnedForQualityProbe(ctx, route.Provider, missing.ID, route.ID, route.UpstreamModel, account.QuotaModeWebImagePro, scope)
+		},
+	} {
+		if pinnedLease, pinnedErr := acquire(); pinnedErr == nil {
+			pinnedLease.Release()
+			t.Fatalf("%s selected missing image quota", name)
+		} else if !isSelectionUnavailable(pinnedErr, SelectionQuotaExhausted) {
+			t.Fatalf("%s error = %v", name, pinnedErr)
+		}
+	}
+}
+
 func TestSelectorUsesTierSpecificWebImageEditQuotaAndPrefersBasic(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-web-image-edit.db"))

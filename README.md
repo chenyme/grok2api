@@ -13,11 +13,11 @@
 <p align="center">
   <a href="./backend/go.mod"><img alt="Go" src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" /></a>
   <a href="./frontend/package.json"><img alt="React" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827" /></a>
-  <a href="https://github.com/chenyme/grok2api/pkgs/container/grok2api"><img alt="Docker" src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ED?logo=docker&logoColor=white" /></a>
+  <a href="https://github.com/ohld/grok2api/pkgs/container/grok2api"><img alt="Docker" src="https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ED?logo=docker&logoColor=white" /></a>
 </p>
 
 <p align="center">
-  <a href="https://trendshift.io/repositories/19868?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-19868" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/19868" alt="chenyme%2Fgrok2api | Trendshift" width="250" height="55"/></a>
+  Original upstream candidate source: <a href="https://github.com/chenyme/grok2api">chenyme/grok2api</a>
 </p>
 
 > [!TIP]
@@ -25,6 +25,14 @@
 
 > [!NOTE]
 > This project is for technical research and learning purposes only. Please comply with Grok's official terms of use and local laws when using it; otherwise, you will be solely responsible for all consequences!
+
+> [!IMPORTANT]
+> CheapAIAPI production uses an owned `ohld/grok2api` fork pinned by immutable
+> GHCR digest. Releases, commits, tags, and version checks from the original
+> upstream repository are candidate patch sources only. They never replace the
+> running contract automatically: useful changes are reviewed, selectively
+> cherry-picked, and must pass the fork's routing, privacy, image-capacity, and
+> production canary gates.
 
 ## Sponsors
 > [Want to sponsor this project?](mailto:chenyme03@gmail.com)
@@ -153,10 +161,10 @@ Each Provider keeps its own credentials, quota, health, cooldown, concurrency, a
 
 ## Quick start
 
-Official images support `linux/amd64` and `linux/arm64`.
+Owned-fork images support `linux/amd64` and `linux/arm64`.
 
 ```bash
-git clone https://github.com/chenyme/grok2api.git
+git clone https://github.com/ohld/grok2api.git
 cd grok2api
 cp config.example.yaml config.yaml
 ```
@@ -324,6 +332,30 @@ Authorization: Bearer g2a_xxx_xxx
 | `GET` | `/v1/media/images/{asset_id}`, `/v1/media/videos/{asset_id}` | Read archived media |
 
 Stored responses and compact depend on the selected Provider. The signed-in admin console provides live examples at `/docs`; Swagger is available only when `server.swaggerEnabled: true`.
+
+### Owned-fork image-capacity evidence
+
+The authenticated admin endpoint
+`GET /api/admin/v1/client-keys/{id}/image-capacity-attestation?routeId={id}`
+returns only aggregate identity counts and domain-separated set hashes for one
+explicit, enabled Web `image_pro` route and one exact client key. Other image
+quota modes, including the lite/fast route, are deliberately not attestable. Add RFC3339 `since`
+and an unguessable 24-character lowercase-hex `runMarker` together to report successful image coverage;
+matching requests must use `X-Request-ID: {runMarker}:{providerCallUUID}`. Account
+IDs, names, emails, request IDs, and raw audits are never returned.
+
+Both eligible and successful identity sets use SHA-256 over the NUL-terminated
+sequence `grok2api-image-identity-set-v1`, followed by sorted unique nonzero
+decimal identity IDs. Route topology uses the same encoding with domain
+`grok2api-image-route-topology-v1`, then route ID, external public ID, upstream
+model, capability, literal `true`, and sorted unique nonzero bound identity IDs.
+Coverage is the closed timestamp interval `[since, observedAt]`.
+
+Release images inject `SourceCommit` through the Docker `SOURCE_COMMIT` build
+argument; the build derives its fingerprint from that commit and `VERSION`.
+The deployment must set `GROK2API_RUNTIME_IMAGE_DIGEST` to the exact
+`sha256:...` image digest it runs. Missing or malformed build/runtime evidence
+makes the endpoint return `503` rather than infer an identity.
 
 `/v1/audio/transcriptions` supports `json` (default), `verbose_json`, and `text`. Video edit/extension routes must resolve to Console `grok-imagine-video`; custom public model names remain supported. Monetary billing is applied only when the gateway can reliably measure the official pricing unit: TTS is reserved and settled from its input character count, while REST and streaming STT are settled from the actual audio duration returned by a successful response. Because STT duration is known only after completion, concurrent requests may briefly take a billing-limited key beyond its spend limit. Realtime, video edits/extensions, and custom routes without a recognized official price are currently audited as unpriced; they remain callable and do not consume the spend limit.
 

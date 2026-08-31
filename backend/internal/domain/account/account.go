@@ -339,6 +339,10 @@ const (
 	QuotaModeWebVideo     = "video"
 	QuotaModeWebVideo720p = "video_720p"
 	QuotaGroupWebImagine  = "web_imagine"
+	// ImageProFairnessPolicy names the selector contract used by the signed
+	// image-capacity attestation. Eligible image_pro identities are ordered by
+	// their oldest successful slot reservation before tier or priority.
+	ImageProFairnessPolicy = "image_pro_oldest_selection_first_v1"
 )
 
 func WebImagineQuotaModes() []string {

@@ -76,6 +76,11 @@ func TestSemanticVersionComparison(t *testing.T) {
 	if compareSemanticVersion(hotfix1, sameBasePrerelease) <= 0 {
 		t.Fatal("project hotfix should follow ordinary prereleases")
 	}
+	forkBuild, ok := parseSemanticVersion("v3.1.4+cheapai.1")
+	forkBase, _ := parseSemanticVersion("v3.1.4")
+	if !ok || compareSemanticVersion(forkBuild, forkBase) != 0 {
+		t.Fatal("fork build metadata must not create a false upstream update")
+	}
 }
 
 func TestCheckFindsHotfixAfterStableRelease(t *testing.T) {

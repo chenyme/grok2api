@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,10 +66,88 @@ func TestInferenceTrafficIsRejectedWhileReconciling(t *testing.T) {
 	deps.TrafficReady = func() bool { return false }
 	router := New(deps)
 	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	request.Header.Set(middleware.UpstreamRequestDispositionHeader, "not-submitted")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"service_reconciling"`) {
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"code":"service_reconciling"`) || recorder.Header().Get(middleware.UpstreamRequestDispositionHeader) != "" {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestImageTrafficReadyGateProvesNotSubmittedBeforeAuth(t *testing.T) {
+	for _, path := range []string{"/v1/images/generations", "/v1/images/edits"} {
+		t.Run(path, func(t *testing.T) {
+			deps := testDependencies()
+			deps.TrafficReady = func() bool { return false }
+			router := New(deps)
+			request := httptest.NewRequest(http.MethodPost, path, nil)
+			request.Header.Set("Authorization", "Bearer invalid-before-auth")
+			request.Header.Set(middleware.UpstreamRequestDispositionHeader, "submitted")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			assertImageNotSubmitted(t, recorder)
+		})
+	}
+}
+
+func TestImageConcurrencyGateProvesNotSubmittedBeforeReadinessAndAuth(t *testing.T) {
+	for _, path := range []string{"/v1/images/generations", "/v1/images/edits"} {
+		t.Run(path, func(t *testing.T) {
+			deps := testDependencies()
+			deps.ConcurrencyGate = middleware.NewConcurrencyGate(1)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			var once, releaseOnce sync.Once
+			releaseGate := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(releaseGate)
+			deps.TrafficReady = func() bool {
+				once.Do(func() { close(entered) })
+				<-release
+				return false
+			}
+			router := New(deps)
+			firstDone := make(chan int, 1)
+			go func() {
+				recorder := httptest.NewRecorder()
+				router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+				firstDone <- recorder.Code
+			}()
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("first request did not enter readiness behind concurrency gate")
+			}
+
+			request := httptest.NewRequest(http.MethodPost, path, nil)
+			request.Header.Set("Authorization", "Bearer invalid-before-auth")
+			request.Header.Set(middleware.UpstreamRequestDispositionHeader, "submitted")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			assertImageNotSubmitted(t, recorder)
+			if recorder.Header().Get("Retry-After") != "1" {
+				t.Fatalf("retry-after = %q", recorder.Header().Get("Retry-After"))
+			}
+
+			nonImageRequest := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			nonImageRequest.Header.Set(middleware.UpstreamRequestDispositionHeader, "not-submitted")
+			nonImage := httptest.NewRecorder()
+			router.ServeHTTP(nonImage, nonImageRequest)
+			if nonImage.Code != http.StatusServiceUnavailable || !strings.Contains(nonImage.Body.String(), `"code":"server_overloaded"`) || nonImage.Header().Get(middleware.UpstreamRequestDispositionHeader) != "" {
+				t.Fatalf("non-image status=%d headers=%#v body=%s", nonImage.Code, nonImage.Header(), nonImage.Body.String())
+			}
+
+			releaseGate()
+			if status := <-firstDone; status != http.StatusServiceUnavailable {
+				t.Fatalf("first status = %d", status)
+			}
+		})
+	}
+}
+
+func assertImageNotSubmitted(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get(middleware.UpstreamRequestDispositionHeader) != "not-submitted" || !strings.Contains(recorder.Body.String(), `"code":"upstream_not_submitted"`) {
+		t.Fatalf("status=%d headers=%#v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
 	}
 }
 
@@ -83,6 +162,9 @@ func TestSystemEndpointsRequireAdminAuthentication(t *testing.T) {
 		{method: http.MethodGet, path: "/api/admin/v1/system"},
 		{method: http.MethodGet, path: "/api/admin/v1/system/version"},
 		{method: http.MethodPost, path: "/api/admin/v1/system/update/check"},
+		{method: http.MethodGet, path: "/api/admin/v1/client-keys/1/concurrency"},
+		{method: http.MethodGet, path: "/api/admin/v1/client-keys/1/image-capacity-attestation?routeId=1"},
+		{method: http.MethodPost, path: "/api/admin/v1/models/1/accounts"},
 	} {
 		request := httptest.NewRequest(route.method, route.path, nil)
 		recorder := httptest.NewRecorder()

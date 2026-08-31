@@ -32,7 +32,10 @@ const (
 )
 
 type Snapshot struct {
-	CurrentVersion  string     `json:"currentVersion"`
+	CurrentVersion string `json:"currentVersion"`
+	// LatestVersion and UpdateAvailable are retained wire names for existing
+	// admin clients. In the owned fork they describe an upstream patch
+	// candidate, never an instruction to replace the running contract.
 	LatestVersion   string     `json:"latestVersion"`
 	UpdateAvailable bool       `json:"updateAvailable"`
 	Status          Status     `json:"status"`
@@ -129,11 +132,11 @@ func (s *Service) fetchLatest(ctx context.Context) (latestRelease, error) {
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	response, err := s.client.Do(request)
 	if err != nil {
-		return latestRelease{}, fmt.Errorf("检查 GitHub Release 失败: %w", err)
+		return latestRelease{}, fmt.Errorf("检查上游候选 GitHub Release 失败: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return latestRelease{}, fmt.Errorf("GitHub Release 检查失败（HTTP %d）", response.StatusCode)
+		return latestRelease{}, fmt.Errorf("上游候选 GitHub Release 检查失败（HTTP %d）", response.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxReleaseBytes+1))
 	if err != nil {

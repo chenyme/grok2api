@@ -39,6 +39,9 @@ func (g *ConcurrencyGate) Middleware() gin.HandlerFunc {
 		if g.active >= g.limit {
 			g.mu.Unlock()
 			c.Header("Retry-After", "1")
+			if AbortImagePreSubmitRefusal(c) {
+				return
+			}
 			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{
 				"code": "server_overloaded", "message": "服务并发已达到上限，请稍后重试", "param": nil, "type": "server_error",
 			}})

@@ -48,7 +48,7 @@ body:
     attributes:
       label: 版本信息
       description: 请提供版本号、Docker 镜像标签或 Commit SHA。
-      placeholder: "v0.2.99、ghcr.io/chenyme/grok2api:latest、main@abcdef1"
+      placeholder: "v3.1.4+cheapai.2、ghcr.io/ohld/grok2api@sha256:...、main@abcdef1"
     validations:
       required: true
 

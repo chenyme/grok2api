@@ -97,13 +97,26 @@ func ClientAuth(service *clientkeyapp.Service) gin.HandlerFunc {
 		}
 		value, release, err := service.Authenticate(c.Request.Context(), raw)
 		if err != nil {
-			writeOpenAIError(c, clientErrorStatus(err), clientErrorCode(err), clientErrorMessage(err))
+			writeClientAuthError(c, err)
 			return
 		}
 		defer release()
 		c.Set(ClientKey, value)
 		c.Next()
 	}
+}
+
+func writeClientAuthError(c *gin.Context, err error) {
+	if imageClientCapacityRefusal(err) && AbortImagePreSubmitRefusal(c) {
+		return
+	}
+	writeOpenAIError(c, clientErrorStatus(err), clientErrorCode(err), clientErrorMessage(err))
+}
+
+func imageClientCapacityRefusal(err error) bool {
+	return errors.Is(err, clientkeyapp.ErrRateLimited) ||
+		errors.Is(err, clientkeyapp.ErrConcurrencyLimit) ||
+		errors.Is(err, clientkeyapp.ErrBillingLimit)
 }
 
 func bearerToken(header string) (string, bool) {

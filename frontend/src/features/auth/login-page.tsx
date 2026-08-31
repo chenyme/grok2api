@@ -53,7 +53,7 @@ export function LoginPage() {
       <header className="mx-auto flex h-16 w-full max-w-[960px] items-center justify-between px-5 sm:px-8 lg:px-0">
         <span className="text-sm font-semibold text-foreground">{t("appName")}</span>
         <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-foreground" asChild>
-          <a href="https://github.com/chenyme/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
+          <a href="https://github.com/ohld/grok2api" target="_blank" rel="noreferrer" aria-label="GitHub">
             <GitHubMark />
           </a>
         </Button>

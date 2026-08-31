@@ -38,6 +38,12 @@ type segmentedClaimResult struct {
 const segmentedWindowsBeforeFullFallback = 4
 
 func (s *Selector) nextSegmentedActiveRequest(provider account.Provider, upstreamModel, quotaMode string, candidateCount int) *segmentedSelectorActiveRequest {
+	// image_pro has an attested all-identity fairness contract. The bounded
+	// large-pool planner intentionally groups by tier and priority, so it must
+	// not serve this one capacity route.
+	if provider == account.ProviderWeb && quotaMode == account.QuotaModeWebImagePro {
+		return nil
+	}
 	s.configMu.RLock()
 	config := s.segmentedConfig
 	s.configMu.RUnlock()

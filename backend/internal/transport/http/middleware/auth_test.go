@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -75,6 +76,82 @@ func TestClientRuntimeStoreFailureUsesServiceUnavailable(t *testing.T) {
 	}
 	if message := clientErrorMessage(err); message == err.Error() {
 		t.Fatal("runtime implementation detail leaked to client")
+	}
+}
+
+func TestClientAuthImageCapacityRefusalProvesNotSubmitted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name string
+		path string
+		err  error
+	}{
+		{name: "generation concurrency", path: "/v1/images/generations", err: clientkeyapp.ErrConcurrencyLimit},
+		{name: "generation rpm", path: "/v1/images/generations", err: clientkeyapp.ErrRateLimited},
+		{name: "edit billing", path: "/v1/images/edits", err: clientkeyapp.ErrBillingLimit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			context.Request = httptest.NewRequest(http.MethodPost, test.path, nil)
+			writeClientAuthError(context, test.err)
+			if context.Writer.Status() != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", context.Writer.Status(), http.StatusServiceUnavailable)
+			}
+			if disposition := context.Writer.Header().Get("X-Upstream-Request-Disposition"); disposition != "not-submitted" {
+				t.Fatalf("disposition = %q", disposition)
+			}
+			var payload struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Error.Code != "upstream_not_submitted" {
+				t.Fatalf("error code = %q", payload.Error.Code)
+			}
+		})
+	}
+}
+
+func TestClientAuthNonImageOrAmbiguousFailureNeverClaimsNotSubmitted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name   string
+		path   string
+		err    error
+		status int
+		code   string
+	}{
+		{name: "chat concurrency", path: "/v1/chat/completions", err: clientkeyapp.ErrConcurrencyLimit, status: http.StatusTooManyRequests, code: "concurrency_limit_exceeded"},
+		{name: "image runtime", path: "/v1/images/generations", err: clientkeyapp.ErrRuntimeUnavailable, status: http.StatusServiceUnavailable, code: "runtime_store_unavailable"},
+		{name: "image authentication", path: "/v1/images/generations", err: clientkeyapp.ErrInvalidKey, status: http.StatusUnauthorized, code: "invalid_api_key"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			context, _ := gin.CreateTestContext(recorder)
+			context.Request = httptest.NewRequest(http.MethodPost, test.path, nil)
+			writeClientAuthError(context, test.err)
+			if context.Writer.Status() != test.status {
+				t.Fatalf("status = %d, want %d", context.Writer.Status(), test.status)
+			}
+			if disposition := context.Writer.Header().Get("X-Upstream-Request-Disposition"); disposition != "" {
+				t.Fatalf("unexpected disposition = %q", disposition)
+			}
+			var payload struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Error.Code != test.code {
+				t.Fatalf("error code = %q, want %q", payload.Error.Code, test.code)
+			}
+		})
 	}
 }
 

@@ -36,6 +36,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/models/sync", h.sync)
 	router.PATCH("/models/batch", h.batchUpdate)
 	router.DELETE("/models", h.batchDelete)
+	router.POST("/models/:id/accounts", h.addRouteAccounts)
 	router.PATCH("/models/:id", h.update)
 	router.DELETE("/models/:id", h.delete)
 }

@@ -68,55 +68,43 @@ func (s *Selector) beginSelectionSessionForKey(ctx context.Context, provider acc
 
 	for index, candidate := range values {
 		value := applyHealthSnapshot(candidate.Credential, healthOverrides)
-		if !accountScopeAllowsCandidate(provider, accountScope, candidate) {
+		admission := s.evaluateCandidateAdmission(provider, upstreamModel, quotaMode, candidate, value, accountScope, quotaConsumed, now, candidateAdmissionOptions{
+			excluded: excluded, allowQuotaProbe: allowQuotaProbe,
+		})
+		switch admission.state {
+		case candidateAdmissionSkipped:
 			continue
-		}
-		if excluded[value.ID] || value.AuthStatus != account.AuthStatusActive {
+		case candidateAdmissionUnsupported:
+			consideredCandidates++
 			continue
-		}
-		consideredCandidates++
-		if !s.candidateSupportsModel(provider, upstreamModel, quotaMode, candidate) {
-			continue
-		}
-		supportedCandidates++
-		if candidate.ModelQuotaBlock != nil && now.Before(candidate.ModelQuotaBlock.CooldownUntil) {
+		case candidateAdmissionModelCooling:
+			consideredCandidates++
+			supportedCandidates++
 			modelCoolingCandidates++
-			earliestRetry = earlierFuture(earliestRetry, candidate.ModelQuotaBlock.CooldownUntil, now)
+			earliestRetry = earlierFuture(earliestRetry, admission.retryAfter, now)
 			continue
-		}
-		if candidateEgressLeaseCooling(candidate, value, now) {
+		case candidateAdmissionCooling:
+			consideredCandidates++
+			supportedCandidates++
 			coolingCandidates++
-			earliestRetry = earlierFuture(earliestRetry, candidate.EgressLeaseBlock.CooldownUntil, now)
+			earliestRetry = earlierFuture(earliestRetry, admission.retryAfter, now)
 			continue
-		}
-		if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
-			coolingCandidates++
-			earliestRetry = earlierFuture(earliestRetry, *value.CooldownUntil, now)
-			continue
-		}
-		if recovery := candidate.QuotaRecovery; recovery != nil && recovery.Status != account.QuotaRecoveryStatusActive {
-			if recovery.NextProbeAt != nil && !now.Before(*recovery.NextProbeAt) {
-				session.probeCandidates = append(session.probeCandidates, index)
-			} else {
-				quotaCandidates++
-				if recovery.NextProbeAt != nil {
-					earliestRetry = earlierFuture(earliestRetry, *recovery.NextProbeAt, now)
-				}
-			}
-			continue
-		}
-		if candidate.Billing != nil && candidate.Billing.IsExhausted(value.MinimumRemaining) {
+		case candidateAdmissionQuotaBlocked:
+			consideredCandidates++
+			supportedCandidates++
 			quotaCandidates++
+			earliestRetry = earlierFuture(earliestRetry, admission.retryAfter, now)
 			continue
-		}
-		if quotaWindowExhausted(candidate, quotaConsumed) {
-			quotaCandidates++
-			if candidate.QuotaWindow.ResetAt != nil {
-				earliestRetry = earlierFuture(earliestRetry, *candidate.QuotaWindow.ResetAt, now)
-			}
+		case candidateAdmissionQuotaProbe:
+			consideredCandidates++
+			supportedCandidates++
+			session.probeCandidates = append(session.probeCandidates, index)
 			continue
+		case candidateAdmissionEligible:
+			consideredCandidates++
+			supportedCandidates++
+			session.normalCandidates = append(session.normalCandidates, index)
 		}
-		session.normalCandidates = append(session.normalCandidates, index)
 	}
 
 	if len(session.normalCandidates) > 0 || (allowQuotaProbe && len(session.probeCandidates) > 0) {

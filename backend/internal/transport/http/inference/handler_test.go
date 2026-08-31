@@ -232,29 +232,51 @@ func TestGatewayErrorExposesSafeImageFailoverOnlyForExplicitNotSubmittedSentinel
 	gin.SetMode(gin.TestMode)
 	for _, test := range []struct {
 		name        string
+		method      string
+		path        string
 		err         error
 		status      int
 		code        string
 		disposition string
 	}{
 		{
-			name: "proven not submitted", err: fmt.Errorf("wrapped: %w", gateway.ErrUpstreamNotSubmitted),
+			name: "proven generation not submitted", method: http.MethodPost, path: "/v1/images/generations",
+			err:    fmt.Errorf("wrapped: %w", gateway.ErrUpstreamNotSubmitted),
 			status: http.StatusServiceUnavailable, code: "upstream_not_submitted", disposition: "not-submitted",
 		},
 		{
-			name: "ambiguous upstream failure", err: errors.New("write may have reached upstream"),
+			name: "proven edit not submitted", method: http.MethodPost, path: "/v1/images/edits",
+			err:    fmt.Errorf("wrapped: %w", gateway.ErrUpstreamNotSubmitted),
+			status: http.StatusServiceUnavailable, code: "upstream_not_submitted", disposition: "not-submitted",
+		},
+		{
+			name: "sentinel on wrong method fails closed", method: http.MethodGet, path: "/v1/images/generations",
+			err:    fmt.Errorf("wrapped: %w", gateway.ErrUpstreamNotSubmitted),
 			status: http.StatusBadGateway, code: "upstream_unavailable",
 		},
 		{
-			name: "ordinary account exhaustion", err: gateway.ErrNoAvailableAccount,
+			name: "sentinel on non image route fails closed", method: http.MethodPost, path: "/v1/responses",
+			err:    fmt.Errorf("wrapped: %w", gateway.ErrUpstreamNotSubmitted),
+			status: http.StatusBadGateway, code: "upstream_unavailable",
+		},
+		{
+			name: "ambiguous upstream failure", method: http.MethodPost, path: "/v1/images/generations",
+			err:    errors.New("write may have reached upstream"),
+			status: http.StatusBadGateway, code: "upstream_unavailable",
+		},
+		{
+			name: "ordinary account exhaustion", method: http.MethodPost, path: "/v1/images/generations",
+			err:    gateway.ErrNoAvailableAccount,
 			status: http.StatusServiceUnavailable, code: "upstream_unavailable",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			router := gin.New()
-			router.GET("/", func(c *gin.Context) { writeGatewayError(c, test.err) })
+			router.Handle(test.method, test.path, func(c *gin.Context) { writeGatewayError(c, test.err) })
 			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+			request := httptest.NewRequest(test.method, test.path, nil)
+			request.Header.Set(upstreamRequestDispositionHeader, "not-submitted")
+			router.ServeHTTP(recorder, request)
 			var payload struct {
 				Error struct {
 					Code string `json:"code"`
@@ -466,6 +488,31 @@ func TestDirectUpstreamCredentialResponsesAreRewritten(t *testing.T) {
 				t.Fatalf("permission message missing: %s", recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestObservedUpstreamResponseCannotMintNotSubmittedDisposition(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	result := &gateway.Result{
+		StatusCode: http.StatusServiceUnavailable,
+		Header: http.Header{
+			"Content-Type":                   {"application/json"},
+			upstreamRequestDispositionHeader: {"not-submitted"},
+		},
+		Body:     io.NopCloser(strings.NewReader(`{"error":{"code":"upstream_not_submitted","message":"spoofed provider assertion"}}`)),
+		Finalize: func(gateway.Usage, string, string) {},
+	}
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) { handler.writeResult(c, result, false, streamProtocolImage) })
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get(upstreamRequestDispositionHeader) != "" {
+		t.Fatalf("status=%d headers=%#v body=%s", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"code":"upstream_not_submitted"`) {
+		t.Fatalf("provider body should remain transparent after provenance header is stripped: %s", recorder.Body.String())
 	}
 }
 
@@ -1572,12 +1619,13 @@ func TestExtractMetadataPreservesLargeCostTicks(t *testing.T) {
 
 func TestCopyHeadersFiltersHopByHopAndUpstreamCookies(t *testing.T) {
 	source := http.Header{
-		"Connection":          {"X-Upstream-Internal"},
-		"Content-Type":        {"application/json"},
-		"Set-Cookie":          {"upstream_session=secret"},
-		"X-Models-Etag":       {`"upstream-account-catalog"`},
-		"X-Request-Id":        {"req_123"},
-		"X-Upstream-Internal": {"hidden"},
+		"Connection":                     {"X-Upstream-Internal"},
+		"Content-Type":                   {"application/json"},
+		"Set-Cookie":                     {"upstream_session=secret"},
+		"X-Models-Etag":                  {`"upstream-account-catalog"`},
+		"X-Request-Id":                   {"req_123"},
+		"X-Upstream-Internal":            {"hidden"},
+		upstreamRequestDispositionHeader: {"not-submitted"},
 	}
 	destination := make(http.Header)
 
@@ -1586,7 +1634,7 @@ func TestCopyHeadersFiltersHopByHopAndUpstreamCookies(t *testing.T) {
 	if destination.Get("Content-Type") != "application/json" || destination.Get("X-Request-Id") != "req_123" {
 		t.Fatalf("forwarded headers = %#v", destination)
 	}
-	if destination.Get("Set-Cookie") != "" || destination.Get("X-Models-Etag") != "" || destination.Get("X-Upstream-Internal") != "" || destination.Get("Connection") != "" {
+	if destination.Get("Set-Cookie") != "" || destination.Get("X-Models-Etag") != "" || destination.Get("X-Upstream-Internal") != "" || destination.Get("Connection") != "" || destination.Get(upstreamRequestDispositionHeader) != "" {
 		t.Fatalf("filtered headers leaked = %#v", destination)
 	}
 }

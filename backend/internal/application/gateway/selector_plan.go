@@ -14,6 +14,7 @@ import (
 type candidateScore struct {
 	index             int
 	webCatalogSupport bool
+	imageProFair      bool
 	tier              int
 	preferFreeBuild   bool
 	quotaKnown        bool
@@ -84,6 +85,19 @@ func candidateScoreBetter(values []account.RoutingCandidate, leftScore, rightSco
 	}
 	if leftScore.quotaKnown != rightScore.quotaKnown {
 		return leftScore.quotaKnown
+	}
+	// The owned image-capacity route must be able to spend every eligible
+	// identity regardless of administrative tier/priority. Saturated accounts
+	// were already removed above, so oldest selection is the narrow, safe
+	// fairness signal for authoritative image_pro windows.
+	if leftScore.imageProFair && rightScore.imageProFair {
+		if !leftScore.lastSelected.Equal(rightScore.lastSelected) {
+			return leftScore.lastSelected.Before(rightScore.lastSelected)
+		}
+		if leftScore.inFlight != rightScore.inFlight {
+			return leftScore.inFlight < rightScore.inFlight
+		}
+		return left.ID < right.ID
 	}
 	if leftScore.preferFreeBuild != rightScore.preferFreeBuild {
 		return leftScore.preferFreeBuild
@@ -194,6 +208,7 @@ func (s *Selector) planCandidateIndexesWithHints(ctx context.Context, values []a
 		score := candidateScore{
 			index: index, tier: tierOrderRank(tierOrder, candidate.Credential.WebTier),
 			webCatalogSupport: candidate.Credential.Provider == account.ProviderWeb && len(tierOrder) > 0 && webTierInOrder(tierOrder, candidate.Credential.WebTier),
+			imageProFair:      candidate.Credential.Provider == account.ProviderWeb && candidate.QuotaWindow != nil && candidate.QuotaWindow.Mode == account.QuotaModeWebImagePro && candidate.QuotaWindow.Source == account.QuotaSourceUpstream,
 			preferFreeBuild:   preferFreeBuild && candidate.IsKnownFreeBuild(),
 			inFlight:          inFlight[position], lastSelected: s.lastSelectedAt[candidate.Credential.ID],
 		}

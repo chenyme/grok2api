@@ -474,6 +474,11 @@ func (s *Service) SetLogger(logger *slog.Logger) {
 
 func (s *Service) UpdateMaxAttempts(maxAttempts int) { s.maxAttempts.Store(int64(maxAttempts)) }
 
+// ImageCapacityMaxAttempts returns the exact hot-reloadable routing budget
+// consumed by the image request loop. It is exposed only to the signed admin
+// attestation; -1 means unlimited.
+func (s *Service) ImageCapacityMaxAttempts() int { return int(s.maxAttempts.Load()) }
+
 // UpdateVideoMaxAttempts configures create-phase account failover for video jobs.
 // 0 is treated as the general default pool size for legacy configs.
 func (s *Service) UpdateVideoMaxAttempts(maxAttempts int) {

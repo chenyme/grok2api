@@ -12,7 +12,10 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const clientKeyScheme = "g2a"
+const (
+	clientKeyScheme            = "g2a"
+	clientKeyFingerprintDomain = "grok2api-client-key-v1\x00"
+)
 
 type adminClaims struct {
 	AdminID   uint64 `json:"adminId"`
@@ -89,6 +92,15 @@ func NewHexToken(bytesLength int) (string, error) {
 // HashToken 返回不可逆的 SHA-256 十六进制摘要。
 func HashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+// ClientKeyFingerprint returns the stable cross-service identity for a raw
+// client key: lowercase hex(SHA-256("grok2api-client-key-v1\\0" || raw)).
+// Domain separation prevents this public identity from reusing the verifier
+// hash stored for authentication.
+func ClientKeyFingerprint(raw string) string {
+	sum := sha256.Sum256([]byte(clientKeyFingerprintDomain + raw))
 	return hex.EncodeToString(sum[:])
 }
 

@@ -24,6 +24,7 @@ func (h *Handler) Register(router *gin.RouterGroup) {
 	router.POST("/client-keys", h.create)
 	router.PATCH("/client-keys/batch", h.batchUpdate)
 	router.DELETE("/client-keys", h.batchDelete)
+	router.GET("/client-keys/:id/concurrency", h.concurrency)
 	router.GET("/client-keys/:id/secret", h.revealSecret)
 	router.PATCH("/client-keys/:id", h.update)
 	router.DELETE("/client-keys/:id", h.delete)
@@ -84,6 +85,16 @@ type keyResponse struct {
 	TierScope            []string   `json:"tierScope"`
 	RoutingCohort        string     `json:"routingCohort"`
 	LastUsedAt           *time.Time `json:"lastUsedAt,omitempty"`
+}
+
+type concurrencyResponse struct {
+	ID                   uint64 `json:"id,string"`
+	Name                 string `json:"name"`
+	Prefix               string `json:"prefix"`
+	ClientKeyFingerprint string `json:"clientKeyFingerprint"`
+	RPMLimit             int    `json:"rpmLimit"`
+	MaxConcurrent        int    `json:"maxConcurrent"`
+	CurrentInflight      int    `json:"currentInflight"`
 }
 
 func (h *Handler) list(c *gin.Context) {
@@ -252,6 +263,29 @@ func (h *Handler) revealSecret(c *gin.Context) {
 	response.Success(c, http.StatusOK, gin.H{"secret": secret})
 }
 
+func (h *Handler) concurrency(c *gin.Context) {
+	id, ok := pathID(c)
+	if !ok {
+		return
+	}
+	snapshot, err := h.service.GetConcurrencySnapshot(c.Request.Context(), id)
+	if err != nil {
+		h.writeServiceError(c, "clientKeyConcurrencyReadFailed", err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	response.Success(c, http.StatusOK, concurrencyResponse{
+		ID:                   snapshot.ID,
+		Name:                 snapshot.Name,
+		Prefix:               snapshot.Prefix,
+		ClientKeyFingerprint: snapshot.KeyFingerprint,
+		RPMLimit:             snapshot.RPMLimit,
+		MaxConcurrent:        snapshot.MaxConcurrent,
+		CurrentInflight:      snapshot.CurrentInflight,
+	})
+}
+
 func (h *Handler) delete(c *gin.Context) {
 	id, ok := pathID(c)
 	if !ok {
@@ -277,6 +311,8 @@ func (h *Handler) writeServiceError(c *gin.Context, code string, err error) {
 		response.Error(c, http.StatusConflict, "clientKeySecretUnavailable", err.Error())
 	case errors.Is(err, clientkeyapp.ErrSystemManaged):
 		response.Error(c, http.StatusConflict, "clientKeySystemManaged", err.Error())
+	case errors.Is(err, clientkeyapp.ErrRuntimeUnavailable):
+		response.Error(c, http.StatusServiceUnavailable, "clientKeyRuntimeUnavailable", "客户端 Key 运行态暂不可用")
 	default:
 		response.Error(c, http.StatusInternalServerError, code, "客户端 Key 操作失败")
 	}

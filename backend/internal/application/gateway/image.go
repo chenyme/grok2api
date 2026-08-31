@@ -204,7 +204,7 @@ func (s *Service) executeImage(
 	var response *provider.Response
 	var lastCredentialFailure *accountdomain.Credential
 	var lastCredentialError error
-	var submissionDisposition imageSubmissionDisposition
+	var submissionState imageSubmissionState
 	for attempt := 0; attemptPolicy.allows(attempt); attempt++ {
 		if selection == nil {
 			selection, err = s.selector.beginSelectionSessionForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, key.AccountScope())
@@ -213,7 +213,7 @@ func (s *Service) executeImage(
 			lease, err = selection.Acquire(ctx, excluded, false)
 		}
 		if err != nil {
-			if submissionDisposition.provenAbsent() {
+			if submissionState.canProveNotSubmitted() {
 				writeFailureAudit(http.StatusServiceUnavailable, "upstream_not_submitted", lastCredentialFailure)
 				return nil, fmt.Errorf("%w: %w", ErrUpstreamNotSubmitted, err)
 			}
@@ -242,7 +242,6 @@ func (s *Service) executeImage(
 				failedCredential := credential
 				lastCredentialFailure = &failedCredential
 				lastCredentialError = err
-				submissionDisposition.recordPreSubmissionFailure()
 				if credential.EgressNodeID == 0 {
 					// An unbound credential receives its physical egress inside
 					// the Adapter. The selection session cannot prove that a
@@ -264,7 +263,7 @@ func (s *Service) executeImage(
 			// crossed the generation write boundary. Record that fact before
 			// every credential-rejection continue/return so an earlier safe
 			// attempt can never leak a false not-submitted sentinel.
-			submissionDisposition.recordResponse()
+			submissionState.markMayHaveSubmitted()
 			lease.markSelectorUpstreamStarted()
 			if isSSOCredentialRejected(err, credential) {
 				s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
@@ -286,7 +285,7 @@ func (s *Service) executeImage(
 			return nil, err
 		}
 		lease.markSelectorUpstreamStarted()
-		submissionDisposition.recordResponse()
+		submissionState.markMayHaveSubmitted()
 		if response.StatusCode == http.StatusUnauthorized && credential.AuthType == accountdomain.AuthTypeSSO {
 			_, _ = readRetryableBody(response.Body)
 			s.markSSOCredentialRejected(ctx, credential, fmt.Sprintf("%s SSO credential rejected", credential.Provider))
@@ -313,16 +312,15 @@ func (s *Service) executeImage(
 			if reconcileErr != nil || !exhausted {
 				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
 			}
-			if attemptPolicy.hasNext(attempt) {
-				_, _ = readRetryableBody(response.Body)
-				lease.Release()
-				continue
-			}
+			// A remote-window 429 updates future routing state, but the response
+			// does not prove that the image payload was rejected before submit.
+			// Return this response instead of risking a duplicate image on a
+			// second identity.
 		}
 		break
 	}
 	if response == nil {
-		if submissionDisposition.provenAbsent() {
+		if submissionState.canProveNotSubmitted() {
 			writeFailureAudit(http.StatusServiceUnavailable, "upstream_not_submitted", lastCredentialFailure)
 			if lastCredentialError == nil {
 				lastCredentialError = ErrNoAvailableAccount
