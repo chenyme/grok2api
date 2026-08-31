@@ -5,11 +5,12 @@ import { Area, Bar, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "rec
 import { ChartContainer, ChartLegend, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { Spinner } from "@/components/ui/spinner";
 import type { DashboardDTO, DashboardPeriod } from "@/features/dashboard/dashboard-api";
-import { formatCompactNumber, formatCompactUSD, formatUSDValue, usdTicksToValue } from "@/features/dashboard/dashboard-format";
+import { formatCompactNumber, formatCompactUSD, formatUSDValue } from "@/features/dashboard/dashboard-format";
 import { DashboardPanel } from "@/features/dashboard/dashboard-panel";
 import { EmptyState } from "@/shared/components/data-state";
 import { cn } from "@/shared/lib/cn";
 import { formatNumber } from "@/shared/lib/format";
+import { usdTicksToValue } from "@/shared/lib/usd";
 
 type DashboardTrendProps = {
   dashboard?: DashboardDTO;
