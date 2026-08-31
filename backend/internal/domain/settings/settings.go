@@ -15,7 +15,18 @@ const (
 	DefaultConsoleStreamIdleTimeout = 2 * time.Minute
 	MinProviderStreamIdleTimeout    = 30 * time.Second
 	MaxProviderStreamIdleTimeout    = 10 * time.Minute
+
+	DefaultWebFreeVideoDurationCap = 6
+	MinWebFreeVideoDurationCap     = 1
+	MaxWebFreeVideoDurationCap     = 15
 )
+
+func NormalizeWebFreeVideoDurationCap(value int) int {
+	if value < MinWebFreeVideoDurationCap || value > MaxWebFreeVideoDurationCap {
+		return DefaultWebFreeVideoDurationCap
+	}
+	return value
+}
 
 // Config 表示可跨重启持久化并支持热加载的网关运行参数。
 type Config struct {
@@ -56,23 +67,24 @@ type MediaConfig struct {
 }
 
 type ProviderWebConfig struct {
-	BaseURL             string
-	StatsigMode         string
-	StatsigManualValue  string
-	StatsigSignerURL    string
-	ClearanceMode       string
-	FlareSolverrURL     string
-	ClearanceTimeout    time.Duration
-	ClearanceRefresh    time.Duration
-	QuotaTimeout        time.Duration
-	ChatTimeout         time.Duration
-	StreamIdleTimeout   time.Duration
-	ImageTimeout        time.Duration
-	VideoTimeout        time.Duration
-	MediaConcurrency    int
-	AllowNSFW           bool
-	RecoveryBackoffBase time.Duration
-	RecoveryBackoffMax  time.Duration
+	BaseURL              string
+	StatsigMode          string
+	StatsigManualValue   string
+	StatsigSignerURL     string
+	ClearanceMode        string
+	FlareSolverrURL      string
+	ClearanceTimeout     time.Duration
+	ClearanceRefresh     time.Duration
+	QuotaTimeout         time.Duration
+	ChatTimeout          time.Duration
+	StreamIdleTimeout    time.Duration
+	ImageTimeout         time.Duration
+	VideoTimeout         time.Duration
+	MediaConcurrency     int
+	AllowNSFW            bool
+	FreeVideoDurationCap int
+	RecoveryBackoffBase  time.Duration
+	RecoveryBackoffMax   time.Duration
 }
 
 // BatchConfig 定义账号导入、转换、同步和凭据刷新的并发上限。

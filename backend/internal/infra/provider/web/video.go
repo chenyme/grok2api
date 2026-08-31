@@ -16,6 +16,7 @@ import (
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	domainegress "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	settingsdomain "github.com/chenyme/grok2api/backend/internal/domain/settings"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 )
 
@@ -263,7 +264,8 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	defer lease.Release()
-	segments := videoSegments(request.Duration)
+	seconds := applyFreeWebVideoDurationCap(request.Duration, cfg.FreeVideoDurationCap, request.Billing)
+	segments := videoSegments(seconds)
 	if len(segments) == 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("duration 必须在 1 到 15 秒之间"))
 	}
@@ -514,6 +516,30 @@ func videoSegments(seconds int) []int {
 		return nil
 	}
 	return []int{seconds}
+}
+
+func normalizeFreeVideoDurationCap(value int) int {
+	return settingsdomain.NormalizeWebFreeVideoDurationCap(value)
+}
+
+func isFreeWebVideoAccount(billing *account.Billing) bool {
+	if billing == nil || billing.IsPaid() {
+		return false
+	}
+	return billing.HasFreeProfileSignal() || billing.HasInferredFreeProfileSignal()
+}
+
+// applyFreeWebVideoDurationCap clamps duration for free-tier Web accounts so
+// upstream 429s from >6s (or the configured cap) do not trigger useless account rotation.
+func applyFreeWebVideoDurationCap(seconds, cap int, billing *account.Billing) int {
+	if !isFreeWebVideoAccount(billing) {
+		return seconds
+	}
+	cap = normalizeFreeVideoDurationCap(cap)
+	if seconds > cap {
+		return cap
+	}
+	return seconds
 }
 
 // videoCreatePayload mirrors the current Grok Imagine browser request.
