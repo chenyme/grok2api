@@ -179,7 +179,7 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 			if changed {
 				converted["parameters"] = normalized
 				c.changed = true
-				c.addWarning("function_parameters_nullable_root_normalized")
+				c.addWarning("function_parameters_root_normalized")
 			}
 		}
 		identity := responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name}
@@ -273,9 +273,19 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 	}
 }
 
-// normalizeBuildFunctionParametersRoot removes root-level nullability from function schemas.
-// Build requires the parameter root to be an object, while Codex can emit `object | null`
-// for tools with an optional argument object. Nested nullable fields remain untouched.
+const maxRootUnionDepth = 32
+const maxRootUnionLeaves = 32
+
+// NormalizeBuildFunctionParametersRoot rewrites a function parameters schema so
+// Grok Build can compile it: the root is an object, or a oneOf of object
+// leaves. Nested oneOf/anyOf at the root are lifted; $ref inside properties
+// and recursive property $ref are left alone.
+func NormalizeBuildFunctionParametersRoot(value any, param string) (any, bool, error) {
+	return normalizeBuildFunctionParametersRoot(value, param)
+}
+
+// normalizeBuildFunctionParametersRoot removes root-level nullability from function schemas
+// and lifts nested root unions. Nested nullable fields remain untouched.
 func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, error) {
 	schema, ok := value.(map[string]any)
 	if !ok {
@@ -302,56 +312,162 @@ func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, e
 		}
 	}
 
-	for _, keyword := range []string{"anyOf", "oneOf"} {
-		rawBranches, exists := normalized[keyword]
-		if !exists {
-			continue
-		}
-		branches, ok := rawBranches.([]any)
-		if !ok {
-			continue
-		}
-		filtered := make([]any, 0, len(branches))
-		removedNull := false
-		for _, rawBranch := range branches {
-			if isNullOnlySchema(rawBranch) {
-				removedNull = true
-				continue
-			}
-			filtered = append(filtered, rawBranch)
-		}
-		if !removedNull {
-			continue
-		}
-		changed = true
-		if len(filtered) == 0 {
-			return nil, false, invalidBuildFunctionParametersRoot(param)
-		}
-		if len(filtered) == 1 {
-			branch, ok := filtered[0].(map[string]any)
-			if !ok || !isObjectRootSchema(branch, normalized, nil) {
-				return nil, false, invalidBuildFunctionParametersRoot(param)
-			}
-			if len(normalized) == 1 {
-				normalized = cloneJSONObject(branch)
-				normalized["type"] = "object"
-				continue
-			}
-			normalized[keyword] = cloneJSONArray(filtered)
-			normalized["type"] = "object"
-			continue
-		}
-		for _, rawBranch := range filtered {
-			branch, ok := rawBranch.(map[string]any)
-			if !ok || !isObjectRootSchema(branch, normalized, nil) {
-				return nil, false, invalidBuildFunctionParametersRoot(param)
-			}
-		}
-		normalized[keyword] = cloneJSONArray(filtered)
-		normalized["type"] = "object"
+	if !rootHasUnion(normalized) {
+		return normalized, changed, nil
 	}
+	leaves, err := collectRootObjectLeaves(normalized, param)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(leaves) == 0 {
+		return nil, false, invalidBuildFunctionParametersRoot(param)
+	}
+	var out map[string]any
+	if len(leaves) == 1 {
+		out = leaves[0]
+	} else {
+		branches := make([]any, len(leaves))
+		for i, leaf := range leaves {
+			branches[i] = leaf
+		}
+		out = map[string]any{"oneOf": branches}
+	}
+	if defs := referencedDefs(out, normalized); len(defs) > 0 {
+		out["$defs"] = defs
+	}
+	return out, true, nil
+}
 
-	return normalized, changed, nil
+func rootHasUnion(schema map[string]any) bool {
+	for _, keyword := range []string{"anyOf", "oneOf"} {
+		if _, ok := schema[keyword].([]any); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func collectRootObjectLeaves(doc map[string]any, param string) ([]map[string]any, error) {
+	var leaves []map[string]any
+	if err := walkRootUnion(doc, doc, param, nil, 0, &leaves); err != nil {
+		return nil, err
+	}
+	return leaves, nil
+}
+
+func walkRootUnion(node any, doc map[string]any, param string, seen map[string]struct{}, depth int, leaves *[]map[string]any) error {
+	if depth > maxRootUnionDepth || len(*leaves) > maxRootUnionLeaves {
+		return invalidBuildFunctionParametersRoot(param)
+	}
+	schema, ok := node.(map[string]any)
+	if !ok {
+		return invalidBuildFunctionParametersRoot(param)
+	}
+	if ref, ok := schema["$ref"].(string); ok && !hasUnionKeys(schema) && schema["type"] == nil && schema["properties"] == nil {
+		if !strings.HasPrefix(ref, "#/") {
+			return invalidBuildFunctionParametersRoot(param)
+		}
+		if _, loop := seen[ref]; loop {
+			return invalidBuildFunctionParametersRoot(param)
+		}
+		resolved, ok := resolveLocalSchemaRef(doc, ref)
+		if !ok {
+			return invalidBuildFunctionParametersRoot(param)
+		}
+		next := cloneRefSeen(seen)
+		next[ref] = struct{}{}
+		return walkRootUnion(resolved, doc, param, next, depth+1, leaves)
+	}
+	if isNullOnlySchema(schema) {
+		return nil
+	}
+	if hasUnionKeys(schema) {
+		for _, keyword := range []string{"anyOf", "oneOf"} {
+			raw, ok := schema[keyword].([]any)
+			if !ok {
+				continue
+			}
+			for _, branch := range raw {
+				if err := walkRootUnion(branch, doc, param, cloneRefSeen(seen), depth+1, leaves); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if !isObjectRootSchema(schema, doc, nil) {
+		return invalidBuildFunctionParametersRoot(param)
+	}
+	leaf := cloneJSONObject(schema)
+	leaf["type"] = "object"
+	*leaves = append(*leaves, leaf)
+	if len(*leaves) > maxRootUnionLeaves {
+		return invalidBuildFunctionParametersRoot(param)
+	}
+	return nil
+}
+
+func hasUnionKeys(schema map[string]any) bool {
+	_, anyOf := schema["anyOf"]
+	_, oneOf := schema["oneOf"]
+	return anyOf || oneOf
+}
+
+func cloneRefSeen(seen map[string]struct{}) map[string]struct{} {
+	out := make(map[string]struct{}, len(seen)+1)
+	for key, value := range seen {
+		out[key] = value
+	}
+	return out
+}
+
+func referencedDefs(node any, doc map[string]any) map[string]any {
+	rawDefs, _ := doc["$defs"].(map[string]any)
+	if len(rawDefs) == 0 {
+		return nil
+	}
+	needed := map[string]struct{}{}
+	collectDefRefs(node, needed)
+	changed := true
+	for changed {
+		changed = false
+		for name := range needed {
+			extra := map[string]struct{}{}
+			collectDefRefs(rawDefs[name], extra)
+			for key := range extra {
+				if _, exists := needed[key]; !exists {
+					needed[key] = struct{}{}
+					changed = true
+				}
+			}
+		}
+	}
+	if len(needed) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(needed))
+	for name := range needed {
+		if def, ok := rawDefs[name]; ok {
+			out[name] = cloneJSONValue(def)
+		}
+	}
+	return out
+}
+
+func collectDefRefs(node any, needed map[string]struct{}) {
+	switch typed := node.(type) {
+	case map[string]any:
+		if ref, ok := typed["$ref"].(string); ok && strings.HasPrefix(ref, "#/$defs/") {
+			needed[strings.TrimPrefix(ref, "#/$defs/")] = struct{}{}
+		}
+		for _, value := range typed {
+			collectDefRefs(value, needed)
+		}
+	case []any:
+		for _, value := range typed {
+			collectDefRefs(value, needed)
+		}
+	}
 }
 
 func withoutNullSchemaTypes(types []any) ([]any, bool) {

@@ -279,7 +279,7 @@ func TestNormalizeResponsesRequestRemovesNullableFunctionParameterRoot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "function_parameters_nullable_root_normalized") {
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "function_parameters_root_normalized") {
 		t.Fatalf("compatibility = %#v", compatibility)
 	}
 	var payload map[string]any
@@ -328,7 +328,7 @@ func TestNormalizeResponsesRequestRemovesNullableLocalRefFunctionRoot(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "function_parameters_nullable_root_normalized") {
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "function_parameters_root_normalized") {
 		t.Fatalf("compatibility = %#v", compatibility)
 	}
 	var payload map[string]any
@@ -336,12 +336,12 @@ func TestNormalizeResponsesRequestRemovesNullableLocalRefFunctionRoot(t *testing
 		t.Fatal(err)
 	}
 	parameters := payload["tools"].([]any)[0].(map[string]any)["parameters"].(map[string]any)
-	if parameters["type"] != "object" {
+	if parameters["type"] != "object" || parameters["anyOf"] != nil {
 		t.Fatalf("upstream parameters = %#v", parameters)
 	}
-	branches := parameters["anyOf"].([]any)
-	if len(branches) != 1 || branches[0].(map[string]any)["$ref"] != "#/$defs/Args" {
-		t.Fatalf("upstream branches = %#v", branches)
+	properties := parameters["properties"].(map[string]any)
+	if properties["query"].(map[string]any)["type"] != "string" {
+		t.Fatalf("upstream properties = %#v", properties)
 	}
 	visibleParameters := compatibility.visibleTools[0].(map[string]any)["parameters"].(map[string]any)
 	visibleBranches := visibleParameters["anyOf"].([]any)
