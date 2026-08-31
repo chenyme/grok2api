@@ -171,6 +171,40 @@ func (r *failureAttemptRecorder) captureStreamFailure(credential accountdomain.C
 	})
 }
 
+func (r *failureAttemptRecorder) hasStreamFailureFor(accountID uint64) bool {
+	for _, attempt := range r.attempts {
+		if attempt.Stage != "response_stream" || attempt.AccountID == nil || *attempt.AccountID != accountID {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// ensureStreamFailureAttempt 补记已完成 2xx 响应头握手、但随后失败的流式尝试。
+// 既有 4xx 或传输失败记录不能屏蔽该尝试；同一账号已有 response_stream 时不重复追加。
+func (r *failureAttemptRecorder) ensureStreamFailureAttempt(credential accountdomain.Credential, startedAt time.Time, response *provider.Response, errorCode string) {
+	if response == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || r.hasStreamFailureFor(credential.ID) {
+		return
+	}
+	statusCode := response.StatusCode
+	r.append(audit.Attempt{
+		Source:             audit.AttemptSourceUpstreamHTTP,
+		Stage:              "response_stream",
+		AccountID:          auditAccountID(credential.ID),
+		AccountName:        credential.Name,
+		Method:             r.method,
+		RequestPath:        r.path,
+		UpstreamURL:        sanitizeUpstreamURL(response.UpstreamURL),
+		StartedAt:          startedAt.UTC(),
+		DurationMS:         time.Since(startedAt).Milliseconds(),
+		UpstreamStatusCode: &statusCode,
+		UpstreamStatus:     response.Status,
+		ResponseHeaders:    sanitizeDiagnosticHeaders(response.Header),
+		TransportError:     errorCode,
+	})
+}
+
 func (r *failureAttemptRecorder) captureQualityDegraded(credential accountdomain.Credential, startedAt time.Time) {
 	status := http.StatusOK
 	r.append(audit.Attempt{

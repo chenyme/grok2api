@@ -1018,6 +1018,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	// A lease recovery probe stays on exactly one account and one rendered proxy
 	// identity. Retrying the same pinned account would provide neither failover
 	// nor new evidence and can multiply a slow/failing probe.
+	holdCfg := s.qualityRetryConfig()
+	qualityHoldEnabled := shouldHoldQualityStream(input, ownership, route, operation, holdCfg)
+	qualityCrossAccountReplay := canReplayQualityHoldAcrossAccounts(input, ownership)
 	attemptPolicy := newRequestRoutingAttemptPolicy(int(s.maxAttempts.Load()), ownership != nil || input.ForcedAccountID != 0)
 	idempotencyID, _ := security.NewOpaqueToken(18)
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
@@ -1032,8 +1035,6 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	excluded := make(map[uint64]bool)
 	failureFingerprints := make(map[string]int)
 	authRecoveryAttempted := make(map[uint64]bool)
-	holdCfg := s.qualityRetryConfig()
-	qualityHoldEnabled := shouldHoldQualityStream(input, ownership, route, operation, holdCfg)
 	// Count accounts that actually reached the upstream. Credential-only skips
 	// do not consume the quality retry budget; refreshes stay on the same account.
 	qualityAccountAttempts := 0
@@ -1118,26 +1119,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				}
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
-				attempts := failureAttempts.snapshot()
-				if !successful && len(attempts) == 0 {
-					statusCode := response.StatusCode
-					failureAttempts.append(audit.Attempt{
-						Source:             audit.AttemptSourceUpstreamHTTP,
-						Stage:              "response_stream",
-						AccountID:          auditAccountID(credential.ID),
-						AccountName:        credential.Name,
-						Method:             http.MethodPost,
-						RequestPath:        sanitizeRequestPath(path),
-						UpstreamURL:        sanitizeUpstreamURL(response.UpstreamURL),
-						StartedAt:          upstreamStartedAt.UTC(),
-						DurationMS:         time.Since(upstreamStartedAt).Milliseconds(),
-						UpstreamStatusCode: &statusCode,
-						UpstreamStatus:     response.Status,
-						ResponseHeaders:    sanitizeDiagnosticHeaders(response.Header),
-						TransportError:     errorCode,
-					})
-					attempts = failureAttempts.snapshot()
+				if !successful && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+					failureAttempts.ensureStreamFailureAttempt(credential, upstreamStartedAt, response, errorCode)
 				}
+				attempts := failureAttempts.snapshot()
 				if !successful || len(attempts) > 0 {
 					record.Attempts = attempts
 				}
@@ -1611,14 +1596,16 @@ attemptLoop:
 						}
 						writeCancel()
 					}
-					if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
+					if !qualityCrossAccountReplay || shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 						break
 					}
 					continue
 				}
 				response.Body = replay
-				hasNextAccount := attemptPolicy.hasNext(attempt) && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
-				hasNextAccount = hasNextAccount && qualityAccountAttempts < holdCfg.MaxAttempts
+				hasNextAccount := qualityCrossAccountReplay && attemptPolicy.hasNext(attempt) && qualityAccountAttempts < holdCfg.MaxAttempts
+				if hasNextAccount {
+					hasNextAccount = selection != nil && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
+				}
 				commit := CommitQualityHold(verdict, qualityAccountAttempts-1, holdCfg.MaxAttempts, hasNextAccount, holdCfg.OnExhausted)
 				if verdict == QualityWithhold {
 					s.applyMissingThinkingPenalty(ctx, input.RequestID, credential, holdCfg.AccountCooldown)
@@ -2092,8 +2079,18 @@ func isRetryable(status int) bool {
 	return status == 402 || status == 403 || status == 429 || status >= 500
 }
 
+func isReasoningRecoveryFailedResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
+	return upstreamProvider == accountdomain.ProviderBuild && response != nil && response.ReasoningRecoveryFailed
+}
+
 func isRetryableResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
-	if response == nil || !isRetryable(response.StatusCode) {
+	if response == nil {
+		return false
+	}
+	if response.StatusCode == http.StatusBadRequest && isReasoningRecoveryFailedResponse(response, upstreamProvider) {
+		return true
+	}
+	if !isRetryable(response.StatusCode) {
 		return false
 	}
 	// Account-scoped payment failures must always rotate accounts.

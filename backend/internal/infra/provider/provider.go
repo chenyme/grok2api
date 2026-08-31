@@ -385,6 +385,10 @@ type Response struct {
 	QuotaUnits  int
 	UpstreamURL string
 	Diagnostic  *DiagnosticResponse
+	// ReasoningRecoveryFailed is an internal retry hint emitted only after the Build
+	// adapter exhausts same-account recovery for an opaque reasoning 400. Gateway
+	// policy must not infer this state from an upstream-controlled response header.
+	ReasoningRecoveryFailed bool
 	// RecoveredPrimaryFailure records a primary-plane failure hidden by a successful Provider fallback.
 	RecoveredPrimaryFailure *DiagnosticResponse
 	RateLimit               *RateLimitMetadata
