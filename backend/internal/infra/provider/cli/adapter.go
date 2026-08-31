@@ -513,7 +513,7 @@ func (a *Adapter) applyReasoningReplay(ctx context.Context, request provider.Res
 
 func (a *Adapter) scopedReasoningReplayKey(request provider.ResponseResourceRequest, base string) string {
 	seed := strings.TrimSpace(request.ReasoningReplayKey)
-	if seed == "" || request.Credential.ID == 0 {
+	if seed == "" {
 		return ""
 	}
 	plane := "build"
