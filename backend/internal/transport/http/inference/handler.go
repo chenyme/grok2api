@@ -2380,6 +2380,8 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 			message = "上游账号当前均达到并发上限"
 		case gateway.SelectionUnsupportedModel:
 			message = "当前账号池不支持该模型"
+		case gateway.SelectionPinnedUnavailable:
+			message = "绑定的上游账号当前不可用"
 		}
 	}
 	if failure.RetryAfter > 0 {

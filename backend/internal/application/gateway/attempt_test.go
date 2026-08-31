@@ -95,6 +95,45 @@ func TestFailureAttemptRecorderCapturesStreamFailure(t *testing.T) {
 	}
 }
 
+func TestEnsureStreamFailureAttemptKeepsPrior429AndSkipsDuplicate(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	first := account.Credential{ID: 11, Name: "retry-a"}
+	second := account.Credential{ID: 12, Name: "retry-b"}
+	exhausted := &provider.Response{StatusCode: http.StatusTooManyRequests, Status: "Too Many Requests", Body: io.NopCloser(strings.NewReader(`{"code":"subscription:free-usage-exhausted"}`))}
+	if err := recorder.captureResponse(first, time.Now(), exhausted, nil); err != nil {
+		t.Fatal(err)
+	}
+	stream := &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"text/event-stream"}}, UpstreamURL: "https://cli-chat-proxy.grok.com/v1/responses"}
+	recorder.ensureStreamFailureAttempt(second, time.Now().Add(-time.Second), stream, "upstream_stream_interrupted")
+	stored := recorder.snapshot()
+	if len(stored) != 2 || stored[0].Stage != "upstream_response" || stored[1].Stage != "response_stream" {
+		t.Fatalf("attempts = %#v", stored)
+	}
+	if stored[1].AccountID == nil || *stored[1].AccountID != second.ID || stored[1].TransportError != "upstream_stream_interrupted" {
+		t.Fatalf("retry stream attempt = %#v", stored[1])
+	}
+	recorder.ensureStreamFailureAttempt(second, time.Now(), stream, "upstream_stream_interrupted")
+	if got := recorder.snapshot(); len(got) != 2 {
+		t.Fatalf("duplicate stream attempt = %#v", got)
+	}
+	inStream := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	inStream.captureStreamFailure(second, time.Now(), stream, StreamFailureDiagnostic{Body: []byte(`{"type":"response.failed"}`)})
+	inStream.ensureStreamFailureAttempt(second, time.Now(), stream, "upstream_stream_error")
+	if got := inStream.snapshot(); len(got) != 1 || got[0].Stage != "response_stream" {
+		t.Fatalf("ensure after in-stream capture = %#v", got)
+	}
+}
+
+func TestEnsureStreamFailureAttemptSkipsNon2xx(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	credential := account.Credential{ID: 12, Name: "retry-b"}
+	forbidden := &provider.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden"}
+	recorder.ensureStreamFailureAttempt(credential, time.Now(), forbidden, "upstream_forbidden")
+	if got := recorder.snapshot(); len(got) != 0 {
+		t.Fatalf("non-2xx stream attempt = %#v", got)
+	}
+}
+
 func TestFailureAttemptRecorderClassifiesTransportErrorChain(t *testing.T) {
 	dnsErr := &net.DNSError{Err: "no such host", Name: "api.example.test", IsNotFound: true}
 	requestErr := &url.Error{Op: "Post", URL: "https://user:password@api.example.test/v1/responses?token=secret", Err: dnsErr}
@@ -134,5 +173,150 @@ func TestFailureAttemptRecorderBoundsTotalBodyAndErrorChain(t *testing.T) {
 	}
 	if frames := errorFrames(wrapped); len(frames) != diagnosticErrorFrameLimit {
 		t.Fatalf("error frames = %d", len(frames))
+	}
+}
+
+func TestFailureAttemptRecorderKeepsRecoveredAttemptsOn2xx(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	status := http.StatusBadRequest
+	recoveredStartedAt := time.Now().UTC().Add(-2 * time.Second)
+	response := &provider.Response{
+		StatusCode:  http.StatusOK,
+		Status:      "200 OK",
+		UpstreamURL: "https://api.x.ai/v1/responses",
+		Body:        io.NopCloser(strings.NewReader(`{"id":"ok"}`)),
+		RecoveredAttempts: []provider.RecoveredAttempt{{
+			Stage:       "reasoning_decode_rejected",
+			Result:      "recovered_encrypted_content_stripped",
+			UpstreamURL: "https://cli-chat-proxy.grok.com/v1/responses?token=secret",
+			StartedAt:   recoveredStartedAt,
+			DurationMS:  17,
+			Diagnostic: provider.DiagnosticResponse{
+				StatusCode: status,
+				Status:     "400 Bad Request",
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       []byte(`{"error":"Could not decode the compaction blob. Ensure it is unmodified from the compact response."}`),
+			},
+		}},
+	}
+	if err := recorder.captureResponse(account.Credential{ID: 9, Name: "primary"}, time.Now(), response, nil); err != nil {
+		t.Fatal(err)
+	}
+	stored := recorder.snapshot()
+	if len(stored) != 1 || stored[0].Stage != "reasoning_decode_rejected" || stored[0].TransportError != "recovered_encrypted_content_stripped" {
+		t.Fatalf("stored = %#v", stored)
+	}
+	if stored[0].UpstreamStatusCode == nil || *stored[0].UpstreamStatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %#v", stored[0].UpstreamStatusCode)
+	}
+	if stored[0].UpstreamURL != "https://cli-chat-proxy.grok.com/v1/responses" || !stored[0].StartedAt.Equal(recoveredStartedAt) || stored[0].DurationMS != 17 {
+		t.Fatalf("provenance = %#v", stored[0])
+	}
+	if !strings.Contains(string(stored[0].ResponseBody), "compaction blob") {
+		t.Fatalf("body = %q", stored[0].ResponseBody)
+	}
+}
+
+func TestFailureAttemptRecorderRedactsRecoveredOpaqueState(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	response := &provider.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		RecoveredAttempts: []provider.RecoveredAttempt{{
+			Stage:  "reasoning_decode_rejected",
+			Result: "recovered_session_reset",
+			Diagnostic: provider.DiagnosticResponse{StatusCode: http.StatusBadRequest, Body: []byte(
+				`{"error":{"message":"decode failed","encrypted_content":"opaque-secret","details":[{"compactionBlob":"compact-secret"}]}}`,
+			)},
+		}},
+	}
+	if err := recorder.captureResponse(account.Credential{ID: 9}, time.Now(), response, nil); err != nil {
+		t.Fatal(err)
+	}
+	body := string(recorder.snapshot()[0].ResponseBody)
+	if strings.Contains(body, "opaque-secret") || strings.Contains(body, "compact-secret") || strings.Count(body, "[REDACTED]") != 2 {
+		t.Fatalf("redacted body = %q", body)
+	}
+
+	truncatedRecorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	truncated, _ := truncatedRecorder.captureBody([]byte(`{"encrypted_content":"secret with spaces`), true)
+	if strings.Contains(string(truncated), "secret with spaces") || !strings.Contains(string(truncated), "[REDACTED]") {
+		t.Fatalf("truncated redaction = %q", truncated)
+	}
+}
+
+func TestFailureAttemptRecorderKeepsHiddenRetryWithoutDuplicatingFinal400(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	response := &provider.Response{
+		StatusCode:  http.StatusBadRequest,
+		Status:      "400 Bad Request",
+		UpstreamURL: "https://build.test/v1/responses",
+		Diagnostic: &provider.DiagnosticResponse{
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
+			Body:       []byte(`{"error":"Could not decode the compaction blob"}`),
+		},
+		RecoveredAttempts: []provider.RecoveredAttempt{{
+			Stage:       "reasoning_session_reset",
+			Result:      "retry_rejected",
+			UpstreamURL: "https://build.test/v1/responses",
+			StartedAt:   time.Now().UTC(),
+			Diagnostic: provider.DiagnosticResponse{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Body:       []byte(`{"error":"session reset still rejected"}`),
+			},
+		}},
+	}
+	if err := recorder.captureResponse(account.Credential{ID: 9}, time.Now(), response, nil); err != nil {
+		t.Fatal(err)
+	}
+	stored := recorder.snapshot()
+	if len(stored) != 2 || stored[0].Stage != "reasoning_session_reset" || stored[1].Stage != "upstream_response" || stored[0].UpstreamStatusCode == nil || *stored[0].UpstreamStatusCode != http.StatusBadRequest || stored[1].UpstreamStatusCode == nil || *stored[1].UpstreamStatusCode != http.StatusBadRequest {
+		t.Fatalf("attempts = %#v", stored)
+	}
+	if strings.Contains(string(stored[0].ResponseBody), "compaction blob") || !strings.Contains(string(stored[1].ResponseBody), "compaction blob") {
+		t.Fatalf("final 400 duplication = %#v", stored)
+	}
+}
+
+func TestFailureAttemptRecorderCapturesRecoveredTransportCall(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	startedAt := time.Now().UTC().Add(-time.Second)
+	failure := &url.Error{Op: "Post", URL: "https://build.test/v1/responses?token=secret", Err: errors.New("connection reset")}
+	response := &provider.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		RecoveredAttempts: []provider.RecoveredAttempt{{
+			Stage:       "reasoning_session_reset",
+			Result:      "transport_failed",
+			UpstreamURL: failure.URL,
+			StartedAt:   startedAt,
+			DurationMS:  23,
+			Failure:     failure,
+		}},
+	}
+	if err := recorder.captureResponse(account.Credential{ID: 9}, time.Now(), response, nil); err != nil {
+		t.Fatal(err)
+	}
+	stored := recorder.snapshot()
+	if len(stored) != 1 || stored[0].Source != audit.AttemptSourceTransport || stored[0].UpstreamStatusCode != nil || stored[0].Stage != "reasoning_session_reset" {
+		t.Fatalf("attempt = %#v", stored)
+	}
+	if stored[0].UpstreamURL != "https://build.test/v1/responses" || !stored[0].StartedAt.Equal(startedAt) || stored[0].DurationMS != 23 || !strings.Contains(stored[0].TransportError, "connection reset") || len(stored[0].ErrorChain) < 2 {
+		t.Fatalf("transport provenance = %#v", stored[0])
+	}
+}
+
+func TestFailureAttemptRecorderCapturesPinnedSelectionFailure(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	err := pinnedUnavailableError(42, "bound-account")
+	recorder.captureSelectionFailure(0, "", err)
+	stored := recorder.snapshot()
+	if len(stored) != 1 || stored[0].Source != audit.AttemptSourceCredential || stored[0].Stage != string(SelectionPinnedUnavailable) {
+		t.Fatalf("stored = %#v", stored)
+	}
+	if stored[0].AccountID == nil || *stored[0].AccountID != 42 || stored[0].AccountName != "bound-account" {
+		t.Fatalf("account = %#v", stored[0])
 	}
 }
