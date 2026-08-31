@@ -181,11 +181,10 @@ func (r *failureAttemptRecorder) hasStreamFailureFor(accountID uint64) bool {
 	return false
 }
 
-// ensureStreamFailureAttempt records the handed-off 2xx stream when it later
-// fails. Prior 4xx/transport attempts must not suppress this row — otherwise
-// diagnostics only show the first 429 while the list account is the retry.
+// ensureStreamFailureAttempt 补记已完成 2xx 响应头握手、但随后失败的流式尝试。
+// 既有 4xx 或传输失败记录不能屏蔽该尝试；同一账号已有 response_stream 时不重复追加。
 func (r *failureAttemptRecorder) ensureStreamFailureAttempt(credential accountdomain.Credential, startedAt time.Time, response *provider.Response, errorCode string) {
-	if response == nil || r.hasStreamFailureFor(credential.ID) {
+	if response == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || r.hasStreamFailureFor(credential.ID) {
 		return
 	}
 	statusCode := response.StatusCode

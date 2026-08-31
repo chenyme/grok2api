@@ -3064,6 +3064,17 @@ func TestGatewaySafetyRejectionDoesNotTouchAccountState(t *testing.T) {
 			}
 		}
 	}
+	logs, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || len(logs) != 1 {
+		t.Fatalf("audit list = %#v, total=%d, err=%v", logs, total, err)
+	}
+	detail, err := auditRepo.Get(ctx, logs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.AttemptCount != 1 || len(detail.Attempts) != 1 || detail.Attempts[0].Stage != "upstream_response" || detail.Attempts[0].UpstreamStatusCode == nil || *detail.Attempts[0].UpstreamStatusCode != http.StatusForbidden {
+		t.Fatalf("terminal 403 attempts = %#v", detail.Attempts)
+	}
 }
 
 func TestGatewayConsoleDPoPRequirementStopsAfterOneAccount(t *testing.T) {

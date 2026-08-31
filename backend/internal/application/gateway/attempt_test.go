@@ -124,6 +124,16 @@ func TestEnsureStreamFailureAttemptKeepsPrior429AndSkipsDuplicate(t *testing.T) 
 	}
 }
 
+func TestEnsureStreamFailureAttemptSkipsNon2xx(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	credential := account.Credential{ID: 12, Name: "retry-b"}
+	forbidden := &provider.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden"}
+	recorder.ensureStreamFailureAttempt(credential, time.Now(), forbidden, "upstream_forbidden")
+	if got := recorder.snapshot(); len(got) != 0 {
+		t.Fatalf("non-2xx stream attempt = %#v", got)
+	}
+}
+
 func TestFailureAttemptRecorderClassifiesTransportErrorChain(t *testing.T) {
 	dnsErr := &net.DNSError{Err: "no such host", Name: "api.example.test", IsNotFound: true}
 	requestErr := &url.Error{Op: "Post", URL: "https://user:password@api.example.test/v1/responses?token=secret", Err: dnsErr}
