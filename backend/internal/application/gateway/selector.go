@@ -67,6 +67,67 @@ const defaultFreeQuotaRecoveryPause = 24 * time.Hour
 
 var errRoutingCredentialStale = errors.New("routing credential is no longer available")
 
+// credentialMaterialFailureSkipLimit 限制一次选号连续跳过的同类瞬态故障。
+// 少量失败仍按单号隔离；超过上限时保留原始存储错误，避免大账号池放大系统性故障。
+const credentialMaterialFailureSkipLimit = 8
+
+type credentialMaterialFailureTracker struct {
+	class string
+	count int
+}
+
+func (tracker *credentialMaterialFailureTracker) record(class string) (int, bool) {
+	if tracker == nil {
+		return 1, true
+	}
+	if tracker.class != class {
+		tracker.class = class
+		tracker.count = 0
+	}
+	tracker.count++
+	return tracker.count, tracker.count <= credentialMaterialFailureSkipLimit
+}
+
+func (tracker *credentialMaterialFailureTracker) reset() {
+	if tracker == nil {
+		return
+	}
+	tracker.class = ""
+	tracker.count = 0
+}
+
+// skipUnusableCredentialMaterial 只把账号缺失或明确的瞬态存储故障转成可跳过的过期 claim。
+// 请求取消、永久错误和无法分类的错误保留根因返回，不能伪装成整池无可用账号。
+func (s *Selector) skipUnusableCredentialMaterial(ctx context.Context, value account.Credential, loadErr error, tracker *credentialMaterialFailureTracker) error {
+	if ctx != nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if errors.Is(loadErr, repository.ErrNotFound) {
+		tracker.reset()
+		s.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: value.Provider, AccountID: value.ID})
+		return errRoutingCredentialStale
+	}
+	failureClass, transient := transientRoutingStoreFailureClass(loadErr)
+	if !transient {
+		return fmt.Errorf("加载账号 %d 的凭据材料: %w", value.ID, loadErr)
+	}
+	consecutiveFailures, allowed := tracker.record(failureClass)
+	if !allowed {
+		return fmt.Errorf("连续加载账号凭据材料失败（%s，%d 次）: %w", failureClass, consecutiveFailures, loadErr)
+	}
+	if s.logger != nil {
+		s.logger.Warn(
+			"routing_credential_material_skipped",
+			"account_id", value.ID,
+			"provider", value.Provider,
+			"failure_class", failureClass,
+			"consecutive_failures", consecutiveFailures,
+			"error", loadErr,
+		)
+	}
+	return errRoutingCredentialStale
+}
+
 type quotaRecoveryHints struct {
 	Billing *account.Billing
 }
@@ -544,6 +605,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 		}
 		normalCandidates = append(normalCandidates, index)
 	}
+	materialFailures := credentialMaterialFailureTracker{}
 	if len(normalCandidates) == 0 && len(probeCandidates) == 0 {
 		reason := SelectionNoAccounts
 		switch {
@@ -566,7 +628,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			return nil, err
 		}
 		for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
-			lease, err := s.claimAccountSlot(ctx, candidate.Credential)
+			lease, err := s.claimAccountSlotTracked(ctx, candidate.Credential, &materialFailures)
 			if err != nil {
 				if errors.Is(err, errRoutingCredentialStale) {
 					staleClaims++
@@ -614,7 +676,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 					stickyID = boundID
 				}
 				if eligible {
-					lease, acquireErr := s.acquirePinnedCapacity(ctx, candidate.Credential)
+					lease, acquireErr := s.acquirePinnedCapacity(ctx, candidate.Credential, &materialFailures)
 					if acquireErr == nil {
 						lease.Billing = candidate.Billing
 						lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
@@ -642,7 +704,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			if candidate.Credential.ID == saturatedStickyID {
 				continue
 			}
-			lease, claimErr := s.claimAccountSlot(ctx, candidate.Credential)
+			lease, claimErr := s.claimAccountSlotTracked(ctx, candidate.Credential, &materialFailures)
 			if claimErr != nil {
 				if errors.Is(claimErr, errRoutingCredentialStale) {
 					continue
@@ -660,7 +722,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 	}
 	activeRequest := s.nextSegmentedActiveRequest(provider, upstreamModel, quotaMode, len(normalCandidates))
 	if activeRequest != nil {
-		lease, acquireErr := s.acquireSegmentedCandidates(ctx, values, normalCandidates, quotaMode, s.resolveTierOrder(provider, upstreamModel, quotaMode), *activeRequest)
+		lease, acquireErr := s.acquireSegmentedCandidates(ctx, values, normalCandidates, quotaMode, s.resolveTierOrder(provider, upstreamModel, quotaMode), *activeRequest, &materialFailures)
 		if acquireErr != nil || lease == nil || stickyKey == "" {
 			return lease, acquireErr
 		}
@@ -668,7 +730,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			lease.Release()
 			return nil, errors.New("分段选号缺少候选上下文")
 		}
-		return s.completeStickyLease(ctx, stickyKey, values, normalCandidates, *lease.routingCandidate, lease, quotaMode)
+		return s.completeStickyLease(ctx, stickyKey, values, normalCandidates, *lease.routingCandidate, lease, quotaMode, &materialFailures)
 	}
 	_, _, _, capacityWait := s.routingConfig()
 	waitDeadline := time.Now().Add(capacityWait)
@@ -681,7 +743,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 			return nil, err
 		}
 		for candidate, ok := plan.Next(); ok; candidate, ok = plan.Next() {
-			lease, err := s.claimAccountSlot(ctx, candidate.Credential)
+			lease, err := s.claimAccountSlotTracked(ctx, candidate.Credential, &materialFailures)
 			if err != nil {
 				if errors.Is(err, errRoutingCredentialStale) {
 					staleClaims++
@@ -693,7 +755,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 				capacityMisses++
 				continue
 			}
-			return s.completeStickyLease(ctx, stickyKey, values, normalCandidates, candidate, lease, quotaMode)
+			return s.completeStickyLease(ctx, stickyKey, values, normalCandidates, candidate, lease, quotaMode, &materialFailures)
 		}
 		if staleClaims > 0 && capacityMisses == 0 {
 			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
@@ -711,7 +773,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 	}
 }
 
-func (s *Selector) completeStickyLease(ctx context.Context, stickyKey string, values []account.RoutingCandidate, normalCandidates []int, candidate account.RoutingCandidate, lease *accountLease, quotaMode string) (*accountLease, error) {
+func (s *Selector) completeStickyLease(ctx context.Context, stickyKey string, values []account.RoutingCandidate, normalCandidates []int, candidate account.RoutingCandidate, lease *accountLease, quotaMode string, materialFailures *credentialMaterialFailureTracker) (*accountLease, error) {
 	if stickyKey != "" {
 		stickyTTL, _, _, _ := s.routingConfig()
 		now := time.Now().UTC()
@@ -722,7 +784,7 @@ func (s *Selector) completeStickyLease(ctx context.Context, stickyKey string, va
 		}
 		if boundID != candidate.Credential.ID {
 			if boundCandidate, eligible := routingCandidateByID(values, normalCandidates, boundID); eligible {
-				boundLease, acquireErr := s.acquirePinnedCapacity(ctx, boundCandidate.Credential)
+				boundLease, acquireErr := s.acquirePinnedCapacity(ctx, boundCandidate.Credential, materialFailures)
 				if acquireErr == nil {
 					lease.Release()
 					lease = boundLease
@@ -836,7 +898,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 					}
 					return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: retryAfter}
 				}
-				lease, err := s.acquirePinnedCapacity(ctx, value)
+				lease, err := s.acquirePinnedCapacity(ctx, value, nil)
 				if err != nil {
 					if errors.Is(err, errRoutingCredentialStale) {
 						return nil, pinnedUnavailableError(accountID, value.Name)
@@ -867,7 +929,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 				return nil, &SelectionUnavailableError{Reason: SelectionQuotaExhausted, RetryAfter: retryAfter}
 			}
 		}
-		lease, err := s.acquirePinnedCapacity(ctx, value)
+		lease, err := s.acquirePinnedCapacity(ctx, value, nil)
 		if err != nil {
 			if errors.Is(err, errRoutingCredentialStale) {
 				return nil, pinnedUnavailableError(accountID, value.Name)
@@ -1761,39 +1823,54 @@ func canUseStaleRoutingSnapshot(ctx context.Context, err error) bool {
 	if err == nil || ctx != nil && ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
+	_, transient := transientRoutingStoreFailureClass(err)
+	return transient
+}
+
+// transientRoutingStoreFailureClass 仅识别带有明确瞬态信号的存储错误，
+// 同时返回不包含账号或错误正文的稳定分类，供单次选号的故障放大保护使用。
+func transientRoutingStoreFailureClass(err error) (string, bool) {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return "", false
+	}
 	if errors.Is(err, repository.ErrNotFound) || errors.Is(err, repository.ErrConflict) || errors.Is(err, repository.ErrLimitExceeded) || errors.Is(err, repository.ErrInvalidRecord) || errors.Is(err, repository.ErrAccountPoolMismatch) {
-		return false
+		return "", false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline", true
 	}
 	if errors.Is(err, sql.ErrConnDone) || errors.Is(err, driver.ErrBadConn) {
-		return true
+		return "sql_connection", true
 	}
 	var networkError net.Error
 	if errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary()) {
-		return true
+		return fmt.Sprintf("network:%T", networkError), true
 	}
 	var temporary interface{ Temporary() bool }
 	if errors.As(err, &temporary) && temporary.Temporary() {
-		return true
+		return fmt.Sprintf("temporary:%T", temporary), true
 	}
 	// modernc SQLite exposes the primary/extended result through Code().
 	// SQLITE_BUSY (5) and SQLITE_LOCKED (6) are safe to retry.
 	var sqliteError interface{ Code() int }
 	if errors.As(err, &sqliteError) {
-		switch sqliteError.Code() & 0xff {
+		primaryCode := sqliteError.Code() & 0xff
+		switch primaryCode {
 		case 5, 6:
-			return true
+			return fmt.Sprintf("sqlite:%d", primaryCode), true
 		}
 	}
 	// pgx exposes SQLSTATE without requiring the application layer to depend on
 	// a concrete PostgreSQL driver type.
 	var postgresError interface{ SQLState() string }
 	if errors.As(err, &postgresError) {
-		switch state := postgresError.SQLState(); {
+		state := postgresError.SQLState()
+		switch {
 		case strings.HasPrefix(state, "08"), strings.HasPrefix(state, "40"), state == "55P03", state == "57P01", state == "57P02", state == "57P03":
-			return true
+			return "postgres:" + state, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func (s *Selector) logStaleRoutingFallback(layer string, provider account.Provider, now, staleUntil time.Time, err error) {
@@ -1995,6 +2072,10 @@ func (s *Selector) evictCandidate(provider account.Provider, accountID uint64) {
 }
 
 func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credential) (*accountLease, error) {
+	return s.claimAccountSlotTracked(ctx, value, nil)
+}
+
+func (s *Selector) claimAccountSlotTracked(ctx context.Context, value account.Credential, materialFailures *credentialMaterialFailureTracker) (*accountLease, error) {
 	now := time.Now().UTC()
 	value = s.applyRoutingHealth(value, now)
 	if value.CooldownUntil != nil && now.Before(*value.CooldownUntil) {
@@ -2019,12 +2100,9 @@ func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credentia
 		material, loadErr := s.accounts.GetCredentialMaterial(ctx, value.ID, value.Provider)
 		if loadErr != nil {
 			releaseSlot()
-			if errors.Is(loadErr, repository.ErrNotFound) {
-				s.ApplyInvalidation(repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged, Provider: value.Provider, AccountID: value.ID})
-				return nil, errRoutingCredentialStale
-			}
-			return nil, fmt.Errorf("加载账号执行凭据: %w", loadErr)
+			return nil, s.skipUnusableCredentialMaterial(ctx, value, loadErr, materialFailures)
 		}
+		materialFailures.reset()
 		hydrated, matched := material.ApplyTo(value)
 		if !matched {
 			releaseSlot()
@@ -2041,11 +2119,11 @@ func (s *Selector) claimAccountSlot(ctx context.Context, value account.Credentia
 	}}, nil
 }
 
-func (s *Selector) acquirePinnedCapacity(ctx context.Context, value account.Credential) (*accountLease, error) {
+func (s *Selector) acquirePinnedCapacity(ctx context.Context, value account.Credential, materialFailures *credentialMaterialFailureTracker) (*accountLease, error) {
 	_, _, _, capacityWait := s.routingConfig()
 	deadline := time.Now().Add(capacityWait)
 	for {
-		lease, err := s.claimAccountSlot(ctx, value)
+		lease, err := s.claimAccountSlotTracked(ctx, value, materialFailures)
 		if err != nil || lease != nil {
 			return lease, err
 		}
