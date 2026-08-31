@@ -4110,6 +4110,102 @@ func TestGatewayPreviousResponseIDDoesNotCrossAccounts(t *testing.T) {
 	}
 }
 
+func TestGatewayPinnedDisabledOwnerRecordsSpecific503(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "pinned-disabled-owner.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	const model = "grok-pinned-disabled"
+	owner, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "disabled-owner", SourceKey: "disabled-owner", EncryptedAccessToken: "owner-access",
+		ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "healthy-pool", SourceKey: "healthy-pool", EncryptedAccessToken: "healthy-access",
+		ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{owner.ID, healthy.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{model}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "pinned-disabled-key", Prefix: "pindisabled", SecretHash: strings.Repeat("8", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := responseRepo.Save(ctx, inferencedomain.ResponseOwnership{
+		ResponseID: "resp-pinned-disabled", AccountID: owner.ID, ClientKeyID: clientKey.ID,
+		Provider: account.ProviderBuild, PromptCacheKey: "session-pinned-disabled", ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	if updated, err := accountRepo.UpdateMany(ctx, account.ProviderBuild, []uint64{owner.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil || updated != 1 {
+		t.Fatalf("disable owner updated=%d err=%v", updated, err)
+	}
+
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		healthy.ID: {{status: http.StatusOK, body: `{"id":"must-not-run"}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	_, err = service.CreateResponse(ctx, Input{
+		RequestID: "req-pinned-disabled", ClientKey: clientKey, PublicModel: model,
+		PreviousResponseID: "resp-pinned-disabled",
+		Body:               []byte(`{"model":"grok-pinned-disabled","previous_response_id":"resp-pinned-disabled","input":"hello"}`),
+	})
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionPinnedUnavailable || unavailable.Code() != "upstream_pinned_account_unavailable" || unavailable.AccountID != owner.ID {
+		t.Fatalf("selection failure = %#v, err=%v", unavailable, err)
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 0 {
+		t.Fatalf("pinned failure must not use healthy account: %#v", attempts)
+	}
+	audits, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || len(audits) != 1 {
+		t.Fatalf("audits=%#v total=%d err=%v", audits, total, err)
+	}
+	detail, err := auditRepo.Get(ctx, audits[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.StatusCode != http.StatusServiceUnavailable || detail.ErrorCode != "upstream_pinned_account_unavailable" || detail.AccountID == nil || *detail.AccountID != owner.ID {
+		t.Fatalf("audit = %#v", detail)
+	}
+	if len(detail.Attempts) != 1 || detail.Attempts[0].Stage != string(SelectionPinnedUnavailable) || detail.Attempts[0].AccountID == nil || *detail.Attempts[0].AccountID != owner.ID {
+		t.Fatalf("selection attempts = %#v", detail.Attempts)
+	}
+}
+
 func TestGatewayPinnedResponseReturnsCachedTeamRateLimitWithoutSpinning(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "pinned-team-rate-limit.db"))
@@ -4752,6 +4848,7 @@ func TestAuditRequestSucceeded(t *testing.T) {
 	}{
 		{name: "2xx without error succeeds", statusCode: 200, errorCode: "", want: true},
 		{name: "2xx stream interruption fails", statusCode: 200, errorCode: "upstream_stream_interrupted", want: false},
+		{name: "2xx client stream interruption fails", statusCode: 200, errorCode: "client_stream_interrupted", want: false},
 		{name: "2xx stream incomplete fails", statusCode: 200, errorCode: "upstream_stream_incomplete", want: false},
 		{name: "2xx stream idle timeout fails", statusCode: 200, errorCode: "upstream_stream_idle_timeout", want: false},
 		{name: "any 2xx error fails", statusCode: 201, errorCode: "stream_interrupted", want: false},
@@ -4777,7 +4874,7 @@ func TestIsUpstreamStreamFailureIncludesIdleTimeout(t *testing.T) {
 	if !isUpstreamStreamFailure("upstream_response_empty") {
 		t.Fatal("empty non-streaming response must update account health after handoff")
 	}
-	if isUpstreamStreamFailure("") || isUpstreamStreamFailure("quality_degraded") {
+	if isUpstreamStreamFailure("") || isUpstreamStreamFailure("quality_degraded") || isUpstreamStreamFailure("client_stream_interrupted") || isUpstreamStreamFailure("request_canceled") {
 		t.Fatal("non-stream codes must not look like mid-stream failures")
 	}
 }

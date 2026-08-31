@@ -295,16 +295,7 @@ func qualityPeekAbortError(ctx context.Context, err error) error {
 // isClientRequestCancel reports a real client disconnect. Upstream idle
 // timeouts cancel the same context and must not be classified as 499.
 func isClientRequestCancel(ctx context.Context, err error) bool {
-	if neterrorpkg.IsUpstreamStreamIdleTimeout(err) {
-		return false
-	}
-	if ctx != nil && neterrorpkg.IsUpstreamStreamIdleTimeout(context.Cause(ctx)) {
-		return false
-	}
-	if ctx != nil && ctx.Err() != nil {
-		return true
-	}
-	return errors.Is(err, context.Canceled)
+	return neterrorpkg.IsClientRequestCancel(ctx, err)
 }
 
 // DecideQualityRetry caps withhold recovery at maxAttempts (default 6:

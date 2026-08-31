@@ -1246,6 +1246,13 @@ attemptLoop:
 			if lastFailure == nil {
 				lastErr = err
 			}
+			pinnedID := uint64(0)
+			if ownership != nil {
+				pinnedID = ownership.AccountID
+			} else if input.ForcedAccountID != 0 {
+				pinnedID = input.ForcedAccountID
+			}
+			failureAttempts.captureSelectionFailure(pinnedID, "", err)
 			break
 		}
 		excluded[lease.Credential.ID] = true
@@ -1718,6 +1725,15 @@ attemptLoop:
 	if errors.As(lastErr, &selectionFailure) {
 		record.StatusCode = selectionFailure.HTTPStatus()
 		record.ErrorCode = selectionFailure.Code()
+		if selectionFailure.AccountID != 0 {
+			accountID := selectionFailure.AccountID
+			record.AccountID = &accountID
+			record.AccountName = selectionFailure.AccountName
+		}
+	}
+	if record.AccountID == nil && ownership != nil {
+		accountID := ownership.AccountID
+		record.AccountID = &accountID
 	}
 	record.Attempts = failureAttempts.snapshot()
 	record.CreatedAt = time.Now().UTC()

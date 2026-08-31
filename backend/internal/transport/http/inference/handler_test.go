@@ -2,6 +2,7 @@ package inference
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1033,6 +1034,24 @@ func TestCopyStreamPreservesBufferedTailOnReadError(t *testing.T) {
 	}
 }
 
+func TestClassifyCopyErrorDistinguishesClientFromUpstream(t *testing.T) {
+	readErr := fmt.Errorf("%w: cut", errUpstreamStreamRead)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := classifyCopyError(canceled, readErr); got != "client_stream_interrupted" {
+		t.Fatalf("client abort = %q", got)
+	}
+	if got := classifyCopyError(context.Background(), readErr); got != "upstream_stream_interrupted" {
+		t.Fatalf("upstream abort = %q", got)
+	}
+	idle, stop := context.WithCancelCause(context.Background())
+	stop(neterror.ErrUpstreamStreamIdleTimeout)
+	idleErr := fmt.Errorf("%w: %w", errUpstreamStreamRead, neterror.ErrUpstreamStreamIdleTimeout)
+	if got := classifyCopyError(idle, idleErr); got != "upstream_stream_idle_timeout" {
+		t.Fatalf("idle timeout = %q", got)
+	}
+}
+
 func TestCopyStreamWritesTerminalOnIdleTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
@@ -1540,6 +1559,52 @@ func TestWriteResultRecordsStreamFailureDiagnostic(t *testing.T) {
 	}
 }
 
+func TestWriteResultClientAbortKeepsUpstreamStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	var finalCode string
+	result := &gateway.Result{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       io.NopCloser(&chunkErrorReader{data: []byte("data: {\"type\":\"response.created\"}\n\n")}),
+		Finalize:   func(_ gateway.Usage, _, code string) { finalCode = code },
+	}
+	router := gin.New()
+	router.POST("/", func(c *gin.Context) {
+		handler.writeResult(c, result, true, streamProtocolResponses)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx))
+	if recorder.Code != http.StatusOK || finalCode != "client_stream_interrupted" {
+		t.Fatalf("status=%d finalize=%q body=%q", recorder.Code, finalCode, recorder.Body.String())
+	}
+}
+
+func TestWriteResultUpstreamCutStaysUpstreamInterrupted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	var finalCode string
+	result := &gateway.Result{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       io.NopCloser(&chunkErrorReader{data: []byte("data: {\"type\":\"response.created\"}\n\n")}),
+		Finalize:   func(_ gateway.Usage, _, code string) { finalCode = code },
+	}
+	router := gin.New()
+	router.POST("/", func(c *gin.Context) {
+		handler.writeResult(c, result, true, streamProtocolResponses)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil))
+	if recorder.Code != http.StatusOK || finalCode != "upstream_stream_interrupted" {
+		t.Fatalf("status=%d finalize=%q body=%q", recorder.Code, finalCode, recorder.Body.String())
+	}
+}
+
 func TestProjectStreamFailureDiagnosticBoundsErrorMessage(t *testing.T) {
 	diagnostic := projectStreamFailureDiagnostic([]byte(`{"type":"error","error":{"code":"server_error","message":"` + strings.Repeat("错误", maxStreamFailureDiagnosticBytes) + `"},"output":"must-not-be-audited"}`))
 	if !diagnostic.BodyTruncated || len(diagnostic.Body) > maxStreamFailureDiagnosticBytes || len(diagnostic.Body) == 0 || !utf8.Valid(diagnostic.Body) || strings.Contains(string(diagnostic.Body), "must-not-be-audited") {
@@ -1635,6 +1700,7 @@ func TestSelectionErrorResponseDistinguishesCoolingAndSaturation(t *testing.T) {
 		{name: "cooling", failure: &gateway.SelectionUnavailableError{Reason: gateway.SelectionCooling, RetryAfter: 1500 * time.Millisecond}, status: http.StatusTooManyRequests, code: "upstream_cooling", retryAfter: "2"},
 		{name: "model cooling", failure: &gateway.SelectionUnavailableError{Reason: gateway.SelectionModelCooling, RetryAfter: time.Second}, status: http.StatusTooManyRequests, code: "upstream_model_cooling", retryAfter: "1"},
 		{name: "saturated", failure: &gateway.SelectionUnavailableError{Reason: gateway.SelectionSaturated, RetryAfter: time.Second}, status: http.StatusServiceUnavailable, code: "upstream_saturated", retryAfter: "1"},
+		{name: "pinned unavailable", failure: &gateway.SelectionUnavailableError{Reason: gateway.SelectionPinnedUnavailable, AccountID: 9}, status: http.StatusServiceUnavailable, code: "upstream_pinned_account_unavailable"},
 		{name: "scoped account range", failure: &gateway.SelectionUnavailableError{Reason: gateway.SelectionNoAccounts, Scope: clientkeydomain.AccountScope{Providers: clientkeydomain.ProviderScopeBuild, Tiers: clientkeydomain.TierScopeFree}}, status: http.StatusServiceUnavailable, code: "client_key_account_scope_unavailable"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
