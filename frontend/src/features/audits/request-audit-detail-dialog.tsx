@@ -28,6 +28,7 @@ const PRE_UPSTREAM_ERROR_CODES = new Set([
   "upstream_cooling",
   "upstream_model_cooling",
   "upstream_model_unavailable",
+  "upstream_pinned_account_unavailable",
   "upstream_quota_exhausted",
   "upstream_saturated",
   "upstream_unavailable",

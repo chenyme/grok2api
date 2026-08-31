@@ -31,6 +31,7 @@ func TestSelectionUnavailableErrorClassification(t *testing.T) {
 		{reason: SelectionModelCooling, status: http.StatusTooManyRequests, code: "upstream_model_cooling"},
 		{reason: SelectionQuotaExhausted, status: http.StatusTooManyRequests, code: "upstream_quota_exhausted"},
 		{reason: SelectionSaturated, status: http.StatusServiceUnavailable, code: "upstream_saturated"},
+		{reason: SelectionPinnedUnavailable, status: http.StatusServiceUnavailable, code: "upstream_pinned_account_unavailable"},
 	}
 	for _, test := range tests {
 		t.Run(string(test.reason), func(t *testing.T) {
@@ -39,6 +40,43 @@ func TestSelectionUnavailableErrorClassification(t *testing.T) {
 				t.Fatalf("status=%d code=%q", failure.HTTPStatus(), failure.Code())
 			}
 		})
+	}
+}
+
+func TestAcquirePinnedMissingAccountIsNotEmptyPool(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "selector-pinned-miss.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	live, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "live", SourceKey: "live", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute)
+	lease, err := selector.AcquireForKey(ctx, account.ProviderBuild, 0, "", "", "", nil, false, clientkeydomain.AccountScope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.Credential.ID != live.ID {
+		t.Fatalf("pool account = %d", lease.Credential.ID)
+	}
+	lease.Release()
+	_, err = selector.AcquirePinnedForKey(ctx, account.ProviderBuild, live.ID+99, 0, "", "", true, clientkeydomain.AccountScope{})
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionPinnedUnavailable || unavailable.AccountID != live.ID+99 {
+		t.Fatalf("pinned miss = %v", err)
+	}
+	if unavailable.Code() == "upstream_unavailable" {
+		t.Fatal("pinned miss must not collapse to empty-pool unavailable")
 	}
 }
 

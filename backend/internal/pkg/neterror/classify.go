@@ -1,6 +1,7 @@
 package neterror
 
 import (
+	"context"
 	"errors"
 	"net"
 	"strings"
@@ -69,4 +70,28 @@ func (e *IdleTimeoutError) Unwrap() error { return ErrUpstreamStreamIdleTimeout 
 func IdleTimeoutObservedData(err error) bool {
 	var idle *IdleTimeoutError
 	return errors.As(err, &idle) && idle.DataObserved
+}
+
+// IsClientRequestCancel reports a real client disconnect.
+// Internal aborts (idle timeout, first-char timeout, …) cancel the same
+// context with a cause other than context.Canceled and must not be treated
+// as the client hanging up. Pre-header client cancel still maps to 499
+// request_canceled; a 2xx stream copy uses client_stream_interrupted.
+func IsClientRequestCancel(ctx context.Context, err error) bool {
+	if IsUpstreamStreamIdleTimeout(err) {
+		return false
+	}
+	if ctx != nil {
+		cause := context.Cause(ctx)
+		if IsUpstreamStreamIdleTimeout(cause) {
+			return false
+		}
+		if ctx.Err() != nil {
+			if cause != nil && !errors.Is(cause, context.Canceled) {
+				return false
+			}
+			return true
+		}
+	}
+	return errors.Is(err, context.Canceled)
 }

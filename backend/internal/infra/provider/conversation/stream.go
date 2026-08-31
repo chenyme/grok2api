@@ -52,36 +52,36 @@ func ConvertResponseStreamWithOptions(source io.ReadCloser, operation string, op
 }
 
 type streamConverter struct {
-	writer            io.Writer
-	operation         string
-	id                string
-	model             string
-	created           int64
-	started           bool
-	finished          bool
-	textStarted       bool
-	textIndex         int
-	thinkingStarted   bool
-	thinkingClosed    bool
-	thinkingIndex     int
-	thinkingItemID    string
-	chatReasoningMark bool
-	evidenceMarked    bool
-	reasoningItems    map[string]*reasoningStreamState
-	reasoningOrder    []string
-	activeReasoningID string
-	nextIndex         int
-	tools             map[string]streamTool
-	webSearch         []webSearchCall
-	webSearchEmitted  map[string]bool
-	deferSearchText   bool
-	pendingSearchText strings.Builder
-	usage             responseUsage
-	options           ResponseOptions
-	stopFilter        *anthropicStreamStopFilter
-	stopSequence      string
-	refused           bool
-	repeatTracker     streamRepeatTracker
+	writer                 io.Writer
+	operation              string
+	id                     string
+	model                  string
+	created                int64
+	started                bool
+	finished               bool
+	textStarted            bool
+	textIndex              int
+	thinkingStarted        bool
+	thinkingClosed         bool
+	thinkingIndex          int
+	thinkingItemID         string
+	chatReasoningMark      bool
+	reasoningEvidenceBytes int
+	reasoningItems         map[string]*reasoningStreamState
+	reasoningOrder         []string
+	activeReasoningID      string
+	nextIndex              int
+	tools                  map[string]streamTool
+	webSearch              []webSearchCall
+	webSearchEmitted       map[string]bool
+	deferSearchText        bool
+	pendingSearchText      strings.Builder
+	usage                  responseUsage
+	options                ResponseOptions
+	stopFilter             *anthropicStreamStopFilter
+	stopSequence           string
+	refused                bool
+	repeatTracker          streamRepeatTracker
 }
 
 // streamRepeatTracker 在协议转换、缓冲和 stop filter 之前跟踪上游增量，
@@ -148,20 +148,21 @@ func newStreamConverter(writer io.Writer, operation string, options ResponseOpti
 	}
 }
 
-// markReasoningEvidence preserves non-empty upstream encrypted_content for the
-// request-path quality scanner after protocol conversion. SSE clients ignore
-// comments, so Chat and Messages public event payloads remain unchanged.
-func (c *streamConverter) markReasoningEvidence() error {
-	if c.evidenceMarked {
+// markReasoningEvidence preserves the upstream encrypted_content byte length
+// for the request-path quality scanner after protocol conversion. SSE clients
+// ignore comments, so Chat and Messages public event payloads remain unchanged.
+func (c *streamConverter) markReasoningEvidence(encrypted string) error {
+	byteCount := len(strings.TrimSpace(encrypted))
+	if byteCount <= c.reasoningEvidenceBytes {
 		return nil
 	}
 	if err := c.start(); err != nil {
 		return err
 	}
-	if _, err := io.WriteString(c.writer, ": grok2api-reasoning-evidence\n\n"); err != nil {
+	if _, err := fmt.Fprintf(c.writer, ": grok2api-reasoning-evidence %d\n\n", byteCount); err != nil {
 		return err
 	}
-	c.evidenceMarked = true
+	c.reasoningEvidenceBytes = byteCount
 	return nil
 }
 
@@ -381,7 +382,7 @@ func (c *streamConverter) handle(event string, data []byte) error {
 				}
 			}
 			if strings.TrimSpace(item.Encrypted) != "" {
-				if err := c.markReasoningEvidence(); err != nil {
+				if err := c.markReasoningEvidence(item.Encrypted); err != nil {
 					return err
 				}
 			}
@@ -398,7 +399,7 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		c.setResponse(response)
 		for _, item := range response.Output {
 			if item.Type == "reasoning" && strings.TrimSpace(item.Encrypted) != "" {
-				if err := c.markReasoningEvidence(); err != nil {
+				if err := c.markReasoningEvidence(item.Encrypted); err != nil {
 					return err
 				}
 			}
