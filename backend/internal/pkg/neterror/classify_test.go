@@ -57,3 +57,30 @@ func TestIsUpstreamResponseEmpty(t *testing.T) {
 		t.Fatal("empty response sentinel classification failed")
 	}
 }
+
+func TestIsClientRequestCancel(t *testing.T) {
+	idleCtx, idleCancel := context.WithCancelCause(context.Background())
+	idleCancel(ErrUpstreamStreamIdleTimeout)
+	if IsClientRequestCancel(idleCtx, context.Canceled) {
+		t.Fatal("idle timeout must not look like a client cancel")
+	}
+	if IsClientRequestCancel(context.Background(), ErrUpstreamStreamIdleTimeout) {
+		t.Fatal("idle timeout error must not look like a client cancel")
+	}
+	plain, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !IsClientRequestCancel(plain, io.EOF) {
+		t.Fatal("canceled request context must be a client cancel")
+	}
+	if !IsClientRequestCancel(context.Background(), context.Canceled) {
+		t.Fatal("context.Canceled must be a client cancel")
+	}
+	if IsClientRequestCancel(context.Background(), io.EOF) {
+		t.Fatal("plain upstream EOF must not look like a client cancel")
+	}
+	internal, stop := context.WithCancelCause(context.Background())
+	stop(errors.New("upstream stream first char timeout"))
+	if IsClientRequestCancel(internal, context.Canceled) {
+		t.Fatal("internal cancel cause must not look like a client cancel")
+	}
+}

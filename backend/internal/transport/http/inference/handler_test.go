@@ -2,6 +2,7 @@ package inference
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1033,6 +1034,24 @@ func TestCopyStreamPreservesBufferedTailOnReadError(t *testing.T) {
 	}
 }
 
+func TestClassifyCopyErrorDistinguishesClientFromUpstream(t *testing.T) {
+	readErr := fmt.Errorf("%w: cut", errUpstreamStreamRead)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := classifyCopyError(canceled, readErr); got != "client_stream_interrupted" {
+		t.Fatalf("client abort = %q", got)
+	}
+	if got := classifyCopyError(context.Background(), readErr); got != "upstream_stream_interrupted" {
+		t.Fatalf("upstream abort = %q", got)
+	}
+	idle, stop := context.WithCancelCause(context.Background())
+	stop(neterror.ErrUpstreamStreamIdleTimeout)
+	idleErr := fmt.Errorf("%w: %w", errUpstreamStreamRead, neterror.ErrUpstreamStreamIdleTimeout)
+	if got := classifyCopyError(idle, idleErr); got != "upstream_stream_idle_timeout" {
+		t.Fatalf("idle timeout = %q", got)
+	}
+}
+
 func TestCopyStreamWritesTerminalOnIdleTimeout(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
@@ -1537,6 +1556,52 @@ func TestWriteResultRecordsStreamFailureDiagnostic(t *testing.T) {
 	}
 	if diagnostic == nil || !strings.Contains(string(diagnostic.Body), `"code":"server_error"`) {
 		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+}
+
+func TestWriteResultClientAbortKeepsUpstreamStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	var finalCode string
+	result := &gateway.Result{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       io.NopCloser(&chunkErrorReader{data: []byte("data: {\"type\":\"response.created\"}\n\n")}),
+		Finalize:   func(_ gateway.Usage, _, code string) { finalCode = code },
+	}
+	router := gin.New()
+	router.POST("/", func(c *gin.Context) {
+		handler.writeResult(c, result, true, streamProtocolResponses)
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil).WithContext(ctx))
+	if recorder.Code != http.StatusOK || finalCode != "client_stream_interrupted" {
+		t.Fatalf("status=%d finalize=%q body=%q", recorder.Code, finalCode, recorder.Body.String())
+	}
+}
+
+func TestWriteResultUpstreamCutStaysUpstreamInterrupted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	var finalCode string
+	result := &gateway.Result{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Type": {"text/event-stream"}},
+		Body:       io.NopCloser(&chunkErrorReader{data: []byte("data: {\"type\":\"response.created\"}\n\n")}),
+		Finalize:   func(_ gateway.Usage, _, code string) { finalCode = code },
+	}
+	router := gin.New()
+	router.POST("/", func(c *gin.Context) {
+		handler.writeResult(c, result, true, streamProtocolResponses)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil))
+	if recorder.Code != http.StatusOK || finalCode != "upstream_stream_interrupted" {
+		t.Fatalf("status=%d finalize=%q body=%q", recorder.Code, finalCode, recorder.Body.String())
 	}
 }
 
