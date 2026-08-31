@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,7 @@ func TestClassifyQualityHold(t *testing.T) {
 		sig  QualityStreamSignals
 		want QualityVerdict
 	}{
-		{name: "thinking delivers", sig: QualityStreamSignals{HasThinking: true, VisibleTokens: 10}, want: QualityDeliver},
+		{name: "thinking delivers", sig: QualityStreamSignals{HasThinking: true, HasReasoningDelta: true, VisibleTokens: 10}, want: QualityDeliver},
 		{name: "usage reasoning tokens alone withhold", sig: QualityStreamSignals{ReasoningTokens: 40, VisibleTokens: 80, Terminal: true}, want: QualityWithhold},
 		{name: "visible 32 no think withhold", sig: QualityStreamSignals{VisibleTokens: 32, Terminal: true}, want: QualityWithhold},
 		{name: "output 40 no think withhold", sig: QualityStreamSignals{OutputTokens: 40, Terminal: true}, want: QualityWithhold},
@@ -67,23 +68,28 @@ func TestClassifyQualityHoldBurst(t *testing.T) {
 		want QualityVerdict
 	}{
 		{
-			name: "hold-expired hello dump withholds",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 2, ReasoningTokens: 954, EncryptedBytes: 4000, HoldExpired: true},
+			name: "terminal hold-expired hello dump withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 2, ReasoningTokens: 954, EncryptedBytes: 4000, EncryptedFloor: 3816, UsageReported: true, FirstVisible: true, HoldExpired: true, Terminal: true},
 			want: QualityWithhold,
 		},
 		{
 			name: "hold-expired long answer delivers",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 200, ReasoningTokens: 954, EncryptedBytes: 8000, HoldExpired: true},
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 200, ReasoningTokens: 954, EncryptedBytes: 8000, EncryptedFloor: 3816, UsageReported: true, FirstVisible: true, HoldExpired: true},
 			want: QualityDeliver,
 		},
 		{
-			name: "barely-over-floor flush withholds",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 300, FirstVisible: true, VisibleFlushMS: 100},
+			name: "non-terminal barely-over-floor flush keeps observing",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 300, EncryptedFloor: 256, UsageReported: true, FirstVisible: true, VisibleFlushMS: 100},
+			want: QualityWait,
+		},
+		{
+			name: "terminal barely-over-floor flush withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 300, EncryptedFloor: 256, UsageReported: true, FirstVisible: true, VisibleFlushMS: 100, Terminal: true},
 			want: QualityWithhold,
 		},
 		{
 			name: "large cipher flush delivers",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 2000, FirstVisible: true, VisibleFlushMS: 100},
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 2000, EncryptedFloor: 256, UsageReported: true, FirstVisible: true, VisibleFlushMS: 100},
 			want: QualityDeliver,
 		},
 	}
@@ -94,6 +100,33 @@ func TestClassifyQualityHoldBurst(t *testing.T) {
 				t.Fatalf("ClassifyQualityHold() = %s, want %s (%#v)", got, test.want, test.sig)
 			}
 		})
+	}
+}
+
+func TestClassifyQualityHoldBurstUsesConfiguredFloor(t *testing.T) {
+	t.Parallel()
+	configuredHigh := QualityStreamSignals{
+		HasThinking: true, VisibleTokens: 40, ReasoningTokens: 100,
+		EncryptedBytes: 1100, EncryptedFloor: 1024, UsageReported: true,
+		FirstVisible: true, VisibleFlushMS: 100, Terminal: true,
+	}
+	if got := ClassifyQualityHold(configuredHigh, 8); got != QualityWithhold {
+		t.Fatalf("configured high floor verdict = %s, want withhold", got)
+	}
+	configuredLow := QualityStreamSignals{
+		HasThinking: true, VisibleTokens: 40, ReasoningTokens: 60,
+		EncryptedBytes: 300, EncryptedFloor: 64, UsageReported: true,
+		FirstVisible: true, VisibleFlushMS: 100, Terminal: true,
+	}
+	if got := ClassifyQualityHold(configuredLow, 8); got != QualityDeliver {
+		t.Fatalf("configured low floor verdict = %s, want deliver", got)
+	}
+}
+
+func TestEncryptedThinkingFloorSaturates(t *testing.T) {
+	t.Parallel()
+	if got := encryptedThinkingFloor(256, 16, math.MaxInt64); got != math.MaxInt64 {
+		t.Fatalf("overflowing floor = %d, want %d", got, int64(math.MaxInt64))
 	}
 }
 
@@ -365,6 +398,45 @@ func TestObserveQualityConvertedEncryptedThinking(t *testing.T) {
 	}
 }
 
+func TestObserveQualityConvertedShortEncryptedStubDoesNotBypassFloor(t *testing.T) {
+	t.Parallel()
+	const stub = "gAAAA-cipher"
+	source := sse(
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6"}}`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"`+stub+`"}}`,
+		`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("word ", 40)+`"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":90,"output_tokens_details":{"reasoning_tokens":60}}}}`,
+	)
+	for _, test := range []struct {
+		name      string
+		operation string
+		protocol  string
+		options   conversation.ResponseOptions
+	}{
+		{name: "chat", operation: conversation.OperationChat, protocol: qualityProtocolChat},
+		{name: "messages", operation: conversation.OperationMessages, protocol: qualityProtocolAnthropic, options: conversation.ResponseOptions{AnthropicThinking: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			converted, err := io.ReadAll(conversation.ConvertResponseStreamWithOptions(
+				io.NopCloser(strings.NewReader(source)), test.operation, test.options,
+			))
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := qualityScanState{protocol: test.protocol}
+			ObserveQualityChunk(&state, converted)
+			sig := state.signals()
+			if sig.HasThinking || sig.EncryptedBytes != len(stub) || !sig.ReasoningStarted {
+				t.Fatalf("converted short stub signals = %#v\n%s", sig, converted)
+			}
+			if got := ClassifyQualityHold(sig, 32); got != QualityWithhold {
+				t.Fatalf("converted short stub verdict = %s, want withhold", got)
+			}
+		})
+	}
+}
+
 func TestObserveQualityChunkWhitespaceIsNotThinking(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -557,6 +629,80 @@ func TestPeekQualityStreamThinkingDeliversRemainder(t *testing.T) {
 	got, _ := io.ReadAll(replay)
 	if !strings.Contains(string(got), "answer after think") || !strings.Contains(string(got), "thinking_content") {
 		t.Fatalf("replay lost frames: %s", got)
+	}
+}
+
+func TestPeekQualityStreamCipherBurstWaitsAcrossEventSplits(t *testing.T) {
+	t.Parallel()
+	cipher := strings.Repeat("A", 400)
+	createdAndCipher := sse(
+		`data: {"type":"response.created","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":80,"output_tokens_details":{"reasoning_tokens":80}}}}`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"`+cipher+`"}}`,
+	)
+	visible := sse(`data: {"type":"response.output_text.delta","delta":"你好"}`)
+	completed := sse(`data: {"type":"response.completed","response":{"id":"resp_1","model":"grok-4.6","usage":{"output_tokens":82,"output_tokens_details":{"reasoning_tokens":80}}}}`)
+	cfg := QualityRetryRuntime{MinOutputTokens: 8, HoldTimeout: 2 * time.Second}
+
+	coalesced, coalescedVerdict, _, _, err := peekQualityStream(
+		context.Background(), io.NopCloser(strings.NewReader(createdAndCipher+visible+completed)), qualityProtocolResponses, cfg,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = coalesced.Close()
+	if coalescedVerdict != QualityWithhold {
+		t.Fatalf("coalesced verdict = %s, want withhold", coalescedVerdict)
+	}
+
+	reader, writer := io.Pipe()
+	type peekResult struct {
+		replay  io.ReadCloser
+		verdict QualityVerdict
+		err     error
+	}
+	done := make(chan peekResult, 1)
+	go func() {
+		replay, verdict, _, _, peekErr := peekQualityStream(context.Background(), reader, qualityProtocolResponses, cfg)
+		done <- peekResult{replay: replay, verdict: verdict, err: peekErr}
+	}()
+	if _, err := io.WriteString(writer, createdAndCipher); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		if result.replay != nil {
+			_ = result.replay.Close()
+		}
+		t.Fatalf("ciphertext-only partial stream returned early: verdict=%s err=%v", result.verdict, result.err)
+	case <-time.After(40 * time.Millisecond):
+	}
+	if _, err := io.WriteString(writer, visible); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		if result.replay != nil {
+			_ = result.replay.Close()
+		}
+		t.Fatalf("non-terminal burst was finalized early: verdict=%s err=%v", result.verdict, result.err)
+	case <-time.After(40 * time.Millisecond):
+	}
+	if _, err := io.WriteString(writer, completed); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		if result.replay != nil {
+			_ = result.replay.Close()
+		}
+		if result.err != nil || result.verdict != QualityWithhold {
+			t.Fatalf("split verdict=%s err=%v, want withhold", result.verdict, result.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("split terminal stream did not finish")
 	}
 }
 
