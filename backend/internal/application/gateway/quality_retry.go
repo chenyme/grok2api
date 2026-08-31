@@ -173,12 +173,19 @@ func qualityIsBurstDump(sig QualityStreamSignals, minOutput int64) bool {
 	}
 	barelyCipher := sig.EncryptedBytes > 0 && int64(sig.EncryptedBytes) < barelyCeiling
 	flushed := sig.FirstVisible && sig.VisibleFlushMS >= 0 && sig.VisibleFlushMS < defaultBurstFlushMS
+	heavyReasoning := sig.ReasoningTokens >= defaultBurstMinReasoning
+	shortVisible := visible > 0 && visible < defaultBurstMaxVisible
 	// Hold timed out, then a short greeting dumped with a large reasoning bill
 	// (TUI "你好" after 30s / 954 thinking tokens).
-	if sig.HoldExpired && visible > 0 && visible < defaultBurstMaxVisible && sig.ReasoningTokens >= defaultBurstMinReasoning {
+	if sig.HoldExpired && shortVisible && heavyReasoning {
 		return true
 	}
-	if barelyCipher && flushed && (visible >= minOutput || sig.ReasoningTokens >= defaultBurstMinReasoning) {
+	// Cipher met the floor so HasThinking is true, but visible tokens then
+	// dump in <1s with almost no answer (148 out / 140 reasoning in 0.7s).
+	if flushed && shortVisible && heavyReasoning {
+		return true
+	}
+	if barelyCipher && flushed && (visible >= minOutput || heavyReasoning) {
 		return true
 	}
 	return false
@@ -195,11 +202,9 @@ func qualityIsBurstDump(sig QualityStreamSignals, minOutput int64) bool {
 // more bytes or a stream abort so an empty hang is not flushed as HTTP 200.
 //
 // An empty reasoning stub is not thinking. Before the hold deadline, wait for
-// real evidence or a terminal event. If the deadline expires while the stream
-// is still open and already has visible output, the result is inconclusive:
-// release it without penalizing the account. A stub-only empty stream keeps
-// waiting for idle/terminal handling. This keeps HoldTimeout a real latency
-// bound without reopening the empty-stream 200 response path.
+// real evidence or a terminal event. A stub plus enough visible output at the
+// deadline is withheld — that is the TUI dump after 30s, not late ciphertext.
+// Stub-only empty streams keep waiting for idle/terminal handling.
 // HasThinking that is only a thin ciphertext dump after the hold (or a
 // barely-over-floor flush in <1s) is still withheld.
 func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdict {
@@ -239,10 +244,7 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 		output = sig.OutputTokens
 	}
 	enough := output >= minOutput
-	if sig.ReasoningStarted && !sig.Terminal {
-		if sig.HoldExpired && output > 0 {
-			return QualityDeliver
-		}
+	if sig.ReasoningStarted && !sig.Terminal && !sig.HoldExpired {
 		return QualityWait
 	}
 	if sig.Terminal {
@@ -374,7 +376,7 @@ func CommitQualityHold(verdict QualityVerdict, qualityAttempt, maxAttempts int, 
 }
 
 func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwnership, route modeldomain.Route, operation audit.Operation, cfg QualityRetryRuntime) bool {
-	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || ownership != nil || input.skipQualityHold {
+	if !cfg.Enabled || !input.Streaming || input.ForcedEgressNodeID != 0 || input.skipQualityHold {
 		return false
 	}
 	switch operation {
@@ -382,26 +384,20 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 	default:
 		return false
 	}
-	// TUI compaction is a normal /v1/responses body (no compaction_trigger).
-	// Keep this defensive body check in addition to skipQualityHold so a caller
-	// that bypasses CreateResponse cannot withhold a 100s+ summary as missing-thinking.
+	// Context compaction is a system summary operation, not a normal reasoning
+	// turn. Holding it can quarantine a healthy account for producing the
+	// expected summary without streamed reasoning. Keep both compaction forms
+	// excluded even if a caller reaches this gate without skipQualityHold.
 	if isResponsesCompactionRequest(input.Body) {
 		return false
 	}
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// Client-executed tools are safe to hold: their calls have not reached the
-	// client yet, and completed results in the next request are immutable input.
-	// Hosted tools are different. Retrying them can repeat an upstream search,
-	// sandbox run, image job, or remote MCP call, so retain the old no-replay
-	// safety boundary for any request that declares one.
-	if qualityRequestHasReplayUnsafeHostedTools(input.Body) {
-		return false
-	}
-	// Aliases are rewritten before this gate, so inspect the effective request
-	// body instead of only the reasoning-capable base model. In particular,
-	// grok-4.3-none becomes grok-4.3 plus an explicit disabled setting.
+	// TUI commonly declares tools and follow-ups carry previous_response_id.
+	// They still need quality classification, but replay safety is decided
+	// separately: detecting a degraded response must not imply that an
+	// account-bound or side-effecting request can run on another account.
 	if qualityRequestDisablesReasoning(input.Body) {
 		return false
 	}
@@ -409,6 +405,15 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return true
 	}
 	return modeldomain.SupportsReasoningForProvider(route.Provider, route.UpstreamModel)
+}
+
+// canReplayQualityHoldAcrossAccounts separates response classification from
+// retry authority. Stored Responses are account-bound, while hosted tools may
+// already have produced an external side effect before their held response is
+// rejected. Both may be held, audited, and penalized, but neither is replayed
+// on another account.
+func canReplayQualityHoldAcrossAccounts(input Input, ownership *inferencedomain.ResponseOwnership) bool {
+	return ownership == nil && !qualityRequestHasReplayUnsafeHostedTools(input.Body)
 }
 
 func qualityRequestHasReplayUnsafeHostedTools(body []byte) bool {
