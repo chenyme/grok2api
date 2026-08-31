@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
 const (
@@ -817,7 +819,7 @@ func (t *streamRepeatTracker) trackContent(delta string) error {
 	}
 	t.contentRepeatCount++
 	if t.contentRepeatCount > contentDoomLoopThreshold {
-		return fmt.Errorf("model output loop detected (repeated content delta %d times)", t.contentRepeatCount)
+		return fmt.Errorf("%w (repeated content delta %d times)", neterror.ErrUpstreamOutputLoop, t.contentRepeatCount)
 	}
 	return nil
 }
@@ -833,7 +835,7 @@ func (t *streamRepeatTracker) trackReasoning(delta, message string) error {
 	}
 	t.reasonRepeatCount++
 	if t.reasonRepeatCount > reasoningDoomLoopThreshold {
-		return fmt.Errorf("%s (repeated delta %d times)", message, t.reasonRepeatCount)
+		return fmt.Errorf("%w: %s (repeated delta %d times)", neterror.ErrUpstreamOutputLoop, message, t.reasonRepeatCount)
 	}
 	return nil
 }
