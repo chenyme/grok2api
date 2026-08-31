@@ -380,18 +380,24 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return false
 	}
 	switch operation {
-	case audit.OperationChat, audit.OperationResponses, audit.OperationMessages, audit.OperationCompaction, "":
+	case audit.OperationChat, audit.OperationResponses, audit.OperationMessages, "":
 	default:
+		return false
+	}
+	// Context compaction is a system summary operation, not a normal reasoning
+	// turn. Holding it can quarantine a healthy account for producing the
+	// expected summary without streamed reasoning. Keep both compaction forms
+	// excluded even if a caller reaches this gate without skipQualityHold.
+	if isResponsesCompactionRequest(input.Body) {
 		return false
 	}
 	if route.Provider != accountdomain.ProviderBuild && route.Provider != accountdomain.ProviderConsole {
 		return false
 	}
-	// TUI always declares tools (including hosted web_search / image jobs) and
-	// follow-ups carry previous_response_id. Skipping either let 0-thinking
-	// dumps through on the common agent loop. Keep holding; the attempt loop
-	// unpins after the first missing-thinking hit. Skip only when the request
-	// explicitly disables reasoning.
+	// TUI commonly declares tools and follow-ups carry previous_response_id.
+	// They still need quality classification, but replay safety is decided
+	// separately: detecting a degraded response must not imply that an
+	// account-bound or side-effecting request can run on another account.
 	if qualityRequestDisablesReasoning(input.Body) {
 		return false
 	}
@@ -399,6 +405,15 @@ func shouldHoldQualityStream(input Input, ownership *inferencedomain.ResponseOwn
 		return true
 	}
 	return modeldomain.SupportsReasoningForProvider(route.Provider, route.UpstreamModel)
+}
+
+// canReplayQualityHoldAcrossAccounts separates response classification from
+// retry authority. Stored Responses are account-bound, while hosted tools may
+// already have produced an external side effect before their held response is
+// rejected. Both may be held, audited, and penalized, but neither is replayed
+// on another account.
+func canReplayQualityHoldAcrossAccounts(input Input, ownership *inferencedomain.ResponseOwnership) bool {
+	return ownership == nil && !qualityRequestHasReplayUnsafeHostedTools(input.Body)
 }
 
 func qualityRequestHasReplayUnsafeHostedTools(body []byte) bool {

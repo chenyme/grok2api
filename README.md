@@ -382,7 +382,7 @@ qualityGuard:
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` runs on the gateway request path and is independent of the sidecar. `config.example.yaml` keeps `enabled: false`; set it true to intercept. When enabled, a thinking-model stream with enough visible output and no streamed reasoning is **not delivered**; another account is tried. TUI follow-ups (`previous_response_id`) and hosted-tool turns stay held — the first attempt stays pinned, a withhold unpins and rotates. Image, video, and ForcedEgress probe requests are unchanged. If every attempt still has no reasoning, `onExhausted` either returns `503 quality_degraded` or delivers the last body.
+`requestRetry` runs on the gateway request path and is independent of the sidecar. `config.example.yaml` keeps `enabled: false`; set it true to intercept. When enabled, a thinking-model stream with enough visible output and no streamed reasoning is **not delivered**; replay-safe stateless requests may try another account. TUI follow-ups (`previous_response_id`) and hosted-tool turns are still held for classification, but a quality withhold never replays account-bound state or side-effecting tools across accounts; `onExhausted` returns `503 quality_degraded` or releases that held body. Context compaction, image, video, and ForcedEgress probe requests are unchanged.
 
 ```bash
 docker compose --profile quality-guard up -d --build

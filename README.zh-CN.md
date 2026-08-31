@@ -377,7 +377,7 @@ qualityGuard:
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。`config.example.yaml` 里 `enabled` 仍为 false，打开后才拦截。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**，排除该账号再试。TUI 续聊（`previous_response_id`）和 hosted tools 仍 hold：第一枪钉原账号，扣住后 unpin 换号。不处理图/视频和 ForcedEgress 探针。全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。
+`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。`config.example.yaml` 里 `enabled` 仍为 false，打开后才拦截。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**；只有可安全重放的无状态请求才会排除账号重试。TUI 续聊（`previous_response_id`）和 hosted tools 仍会进入 hold 检测，但质量拦截不会把账号绑定状态或有副作用的工具跨账号重放，最终按 `onExhausted` 返回 `503 quality_degraded` 或放出当前响应。上下文压缩、图片、视频和 ForcedEgress 探针不受影响。
 
 ```bash
 docker compose --profile quality-guard up -d --build

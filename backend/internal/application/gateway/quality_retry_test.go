@@ -93,18 +93,23 @@ func TestClassifyQualityHoldBurst(t *testing.T) {
 			want: QualityDeliver,
 		},
 		{
+			name: "non-terminal floor-met short burst keeps observing",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 3, ReasoningTokens: 1371, EncryptedBytes: 8000, EncryptedFloor: 5484, UsageReported: true, FirstVisible: true, VisibleFlushMS: 200},
+			want: QualityWait,
+		},
+		{
 			name: "floor-met short visible fast dump withholds",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 3, ReasoningTokens: 1371, EncryptedBytes: 8000, FirstVisible: true, VisibleFlushMS: 200},
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 3, ReasoningTokens: 1371, EncryptedBytes: 8000, EncryptedFloor: 5484, UsageReported: true, FirstVisible: true, VisibleFlushMS: 200, Terminal: true},
 			want: QualityWithhold,
 		},
 		{
 			name: "floor-met 8 visible 140 reasoning in under 1s withholds",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 8, ReasoningTokens: 140, EncryptedBytes: 2000, FirstVisible: true, VisibleFlushMS: 660},
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 8, ReasoningTokens: 140, EncryptedBytes: 2000, EncryptedFloor: 560, UsageReported: true, FirstVisible: true, VisibleFlushMS: 660, Terminal: true},
 			want: QualityWithhold,
 		},
 		{
 			name: "floor-met long visible fast flush delivers",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 80, ReasoningTokens: 140, EncryptedBytes: 2000, FirstVisible: true, VisibleFlushMS: 200},
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 80, ReasoningTokens: 140, EncryptedBytes: 2000, EncryptedFloor: 560, UsageReported: true, FirstVisible: true, VisibleFlushMS: 200, Terminal: true},
 			want: QualityDeliver,
 		},
 	}
@@ -1220,8 +1225,8 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 	if shouldHoldQualityStream(input, nil, route, audit.OperationImage, cfg) {
 		t.Fatal("image must not hold")
 	}
-	if !shouldHoldQualityStream(input, nil, route, audit.OperationCompaction, cfg) {
-		t.Fatal("compaction with no reasoning must hold")
+	if shouldHoldQualityStream(input, nil, route, audit.OperationCompaction, cfg) {
+		t.Fatal("compaction must not enter missing-thinking hold")
 	}
 	classified := input
 	classified.skipQualityHold = true
@@ -1230,8 +1235,8 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 	}
 	tui := input
 	tui.Body = []byte(`{"input":[{"role":"user","content":"` + tuiCompactionPrompt + `"}]}`)
-	if !shouldHoldQualityStream(tui, nil, route, audit.OperationResponses, cfg) {
-		t.Fatal("tui compaction prompt with no reasoning must hold")
+	if shouldHoldQualityStream(tui, nil, route, audit.OperationResponses, cfg) {
+		t.Fatal("tui compaction prompt must not enter missing-thinking hold")
 	}
 	for _, test := range []struct {
 		name string
@@ -1334,6 +1339,185 @@ func TestShouldHoldQualityStreamGates(t *testing.T) {
 	toolCache.AllowClientToolCacheRoute = true
 	if !shouldHoldQualityStream(toolCache, nil, route, audit.OperationChat, cfg) {
 		t.Fatal("client identity/cache compatibility alone must not disable the hold")
+	}
+}
+
+func TestCanReplayQualityHoldAcrossAccounts(t *testing.T) {
+	t.Parallel()
+	plain := Input{Body: []byte(`{"input":"hello"}`)}
+	if !canReplayQualityHoldAcrossAccounts(plain, nil) {
+		t.Fatal("stateless text request should allow account retry")
+	}
+	owned := inferencedomain.ResponseOwnership{ResponseID: "resp_1", AccountID: 1}
+	if canReplayQualityHoldAcrossAccounts(plain, &owned) {
+		t.Fatal("stored response must remain pinned to its owner account")
+	}
+	hosted := Input{Body: []byte(`{"tools":[{"type":"web_search"}],"input":"hello"}`)}
+	if canReplayQualityHoldAcrossAccounts(hosted, nil) {
+		t.Fatal("hosted tool must not be replayed across accounts")
+	}
+	clientTool := Input{Body: []byte(`{"tools":[{"type":"function","name":"read_file"}],"input":"hello"}`)}
+	if !canReplayQualityHoldAcrossAccounts(clientTool, nil) {
+		t.Fatal("client-executed tool declaration is safe to retry before delivery")
+	}
+}
+
+func TestAttemptLoopQualityHoldPreservesReplaySafety(t *testing.T) {
+	tests := []struct {
+		name        string
+		previous    bool
+		body        string
+		onExhausted string
+		wantError   bool
+		empty       bool
+		wantMissing bool
+	}{
+		{
+			name:        "previous response remains account bound",
+			previous:    true,
+			body:        `{"model":"grok-4.6","previous_response_id":"resp-root","input":"continue","stream":true}`,
+			onExhausted: qualityRetryFailClosed,
+			wantError:   true,
+			wantMissing: true,
+		},
+		{
+			name:        "hosted tool fail closed executes once",
+			body:        `{"model":"grok-4.6","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
+			onExhausted: qualityRetryFailClosed,
+			wantError:   true,
+			wantMissing: true,
+		},
+		{
+			name:        "hosted tool fail open delivers same attempt",
+			body:        `{"model":"grok-4.6","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
+			onExhausted: qualityRetryFailOpen,
+			wantMissing: true,
+		},
+		{
+			name:        "hosted tool empty stream executes once",
+			body:        `{"model":"grok-4.6","tools":[{"type":"web_search"}],"input":"search","stream":true}`,
+			onExhausted: qualityRetryFailClosed,
+			wantError:   true,
+			empty:       true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quality-replay-safety.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			if err := database.InitializeSchema(ctx); err != nil {
+				t.Fatal(err)
+			}
+			accountRepo := relational.NewAccountRepository(database)
+			modelRepo := relational.NewModelRepository(database)
+			auditRepo := relational.NewAuditRepository(database)
+			responseRepo := relational.NewResponseRepository(database)
+			keyRepo := relational.NewClientKeyRepository(database)
+
+			credentials := make([]accountdomain.Credential, 0, 2)
+			for index, name := range []string{"quality-safe-a", "quality-safe-b"} {
+				credential, _, createErr := accountRepo.UpsertByIdentity(ctx, accountdomain.Credential{
+					Provider: accountdomain.ProviderBuild, Name: name, SourceKey: name,
+					EncryptedAccessToken: name, EncryptedRefreshToken: "refresh-" + name,
+					ExpiresAt: time.Now().Add(time.Hour), Enabled: true,
+					AuthStatus: accountdomain.AuthStatusActive, Priority: 200 - index, MaxConcurrent: 1,
+				})
+				if createErr != nil {
+					t.Fatal(createErr)
+				}
+				credentials = append(credentials, credential)
+			}
+			if err := modelRepo.UpsertDiscovered(ctx, accountdomain.ProviderBuild, []string{"grok-4.6"}); err != nil {
+				t.Fatal(err)
+			}
+			for _, credential := range credentials {
+				if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-4.6"}, time.Now().UTC()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			key, err := keyRepo.Create(ctx, clientkey.Key{
+				Name: "quality-safe-key", Prefix: "qsafe", SecretHash: strings.Repeat("8", 64),
+				EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.previous {
+				now := time.Now().UTC()
+				if err := responseRepo.Save(ctx, inferencedomain.ResponseOwnership{
+					ResponseID: "resp-root", AccountID: credentials[0].ID, ClientKeyID: key.ID,
+					Provider: accountdomain.ProviderBuild, PromptCacheKey: "session-root",
+					CreatedAt: now, UpdatedAt: now, ExpiresAt: now.Add(time.Hour),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			noThinking := sse(
+				`data: {"type":"response.created","response":{"id":"resp-bad","model":"grok-4.6"}}`,
+				`data: {"type":"response.output_text.delta","delta":"`+strings.Repeat("bad ", 20)+`"}`,
+				`data: {"type":"response.completed","response":{"id":"resp-bad","model":"grok-4.6","usage":{"output_tokens":40,"output_tokens_details":{"reasoning_tokens":0}}}}`,
+			)
+			thinking := sse(
+				`data: {"type":"response.created","response":{"id":"resp-good","model":"grok-4.6"}}`,
+				`data: {"type":"response.reasoning_summary_text.delta","delta":"real reasoning"}`,
+				`data: {"type":"response.output_text.delta","delta":"good answer"}`,
+				`data: {"type":"response.completed","response":{"id":"resp-good","model":"grok-4.6","usage":{"output_tokens":40,"output_tokens_details":{"reasoning_tokens":20}}}}`,
+			)
+			firstBody := noThinking
+			if test.empty {
+				firstBody = ""
+			}
+			adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+				credentials[0].ID: {{status: http.StatusOK, body: firstBody}},
+				credentials[1].ID: {{status: http.StatusOK, body: thinking}},
+			}}
+			registry := provider.NewRegistry(adapter)
+			sticky := memory.NewStickyStore()
+			accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+			selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+			service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+			service.UpdateQualityRetry(QualityRetryRuntime{
+				Enabled: true, MaxAttempts: 2, MinOutputTokens: 8,
+				OnExhausted: test.onExhausted, HoldTimeout: time.Second,
+			})
+
+			input := Input{
+				RequestID: "req-quality-safe", ClientKey: key, PublicModel: "grok-4.6",
+				Streaming: true, Body: []byte(test.body),
+			}
+			if test.previous {
+				input.PreviousResponseID = "resp-root"
+			}
+			result, requestErr := service.CreateResponse(ctx, input)
+			var responseBody []byte
+			if result != nil {
+				responseBody, _ = io.ReadAll(result.Body)
+				result.Finalize(Usage{}, "", "")
+				_ = result.Body.Close()
+			}
+			if (requestErr != nil) != test.wantError {
+				t.Fatalf("request error = %v, wantError=%t", requestErr, test.wantError)
+			}
+			if !test.wantError && !strings.Contains(string(responseBody), "bad ") {
+				t.Fatalf("fail-open did not deliver the held first attempt: %s", responseBody)
+			}
+			attempts := adapter.Attempts()
+			if len(attempts) != 1 || attempts[0] != credentials[0].ID {
+				t.Fatalf("request crossed its replay-safety boundary, attempts=%v", attempts)
+			}
+			cooled, err := accountRepo.Get(ctx, credentials[0].ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cooled.CooldownUntil == nil || (test.wantMissing && cooled.LastError != lastErrorMissingThinking) {
+				t.Fatalf("degraded account was not penalized: %#v", cooled)
+			}
+		})
 	}
 }
 

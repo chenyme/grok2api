@@ -1020,7 +1020,8 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	// nor new evidence and can multiply a slow/failing probe.
 	holdCfg := s.qualityRetryConfig()
 	qualityHoldEnabled := shouldHoldQualityStream(input, ownership, route, operation, holdCfg)
-	attemptPolicy := newRequestRoutingAttemptPolicy(int(s.maxAttempts.Load()), input.ForcedAccountID != 0 || (ownership != nil && !qualityHoldEnabled))
+	qualityCrossAccountReplay := canReplayQualityHoldAcrossAccounts(input, ownership)
+	attemptPolicy := newRequestRoutingAttemptPolicy(int(s.maxAttempts.Load()), ownership != nil || input.ForcedAccountID != 0)
 	idempotencyID, _ := security.NewOpaqueToken(18)
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
 	if err := s.checkLedgerReady(); err != nil {
@@ -1244,7 +1245,7 @@ attemptLoop:
 					err = &SelectionUnavailableError{Reason: SelectionNoAccounts}
 				}
 			}
-		} else if ownership != nil && qualityAccountAttempts == 0 {
+		} else if ownership != nil {
 			lease, err = s.selector.AcquirePinnedForKey(ctx, route.Provider, ownership.AccountID, route.ID, route.UpstreamModel, quotaMode, true, accountScope)
 		} else if input.ForcedEgressNodeID != 0 {
 			lease, err = s.selector.AcquireForKeyOnEgressNode(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, affinityKey, excluded, !quotaProbeAttempted, accountScope, input.ForcedEgressNodeID)
@@ -1276,7 +1277,7 @@ attemptLoop:
 			// Stored Responses are pinned to one account. Return the cached 429
 			// immediately instead of spinning until the cooldown expires or
 			// replaying the request on the same account.
-			if input.ForcedAccountID != 0 || (ownership != nil && (!qualityHoldEnabled || qualityAccountAttempts == 0)) {
+			if ownership != nil || input.ForcedAccountID != 0 {
 				break attemptLoop
 			}
 			attempt--
@@ -1611,17 +1612,15 @@ attemptLoop:
 						}
 						writeCancel()
 					}
-					if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
+					if !qualityCrossAccountReplay || shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 						break
 					}
 					continue
 				}
 				response.Body = replay
-				hasNextAccount := attemptPolicy.hasNext(attempt) && qualityAccountAttempts < holdCfg.MaxAttempts
-				if selection != nil {
-					hasNextAccount = hasNextAccount && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
-				} else if ownership == nil {
-					hasNextAccount = false
+				hasNextAccount := qualityCrossAccountReplay && attemptPolicy.hasNext(attempt) && qualityAccountAttempts < holdCfg.MaxAttempts
+				if hasNextAccount {
+					hasNextAccount = selection != nil && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
 				}
 				commit := CommitQualityHold(verdict, qualityAccountAttempts-1, holdCfg.MaxAttempts, hasNextAccount, holdCfg.OnExhausted)
 				if verdict == QualityWithhold {
