@@ -95,6 +95,45 @@ func TestFailureAttemptRecorderCapturesStreamFailure(t *testing.T) {
 	}
 }
 
+func TestEnsureStreamFailureAttemptKeepsPrior429AndSkipsDuplicate(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	first := account.Credential{ID: 11, Name: "retry-a"}
+	second := account.Credential{ID: 12, Name: "retry-b"}
+	exhausted := &provider.Response{StatusCode: http.StatusTooManyRequests, Status: "Too Many Requests", Body: io.NopCloser(strings.NewReader(`{"code":"subscription:free-usage-exhausted"}`))}
+	if err := recorder.captureResponse(first, time.Now(), exhausted, nil); err != nil {
+		t.Fatal(err)
+	}
+	stream := &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"text/event-stream"}}, UpstreamURL: "https://cli-chat-proxy.grok.com/v1/responses"}
+	recorder.ensureStreamFailureAttempt(second, time.Now().Add(-time.Second), stream, "upstream_stream_interrupted")
+	stored := recorder.snapshot()
+	if len(stored) != 2 || stored[0].Stage != "upstream_response" || stored[1].Stage != "response_stream" {
+		t.Fatalf("attempts = %#v", stored)
+	}
+	if stored[1].AccountID == nil || *stored[1].AccountID != second.ID || stored[1].TransportError != "upstream_stream_interrupted" {
+		t.Fatalf("retry stream attempt = %#v", stored[1])
+	}
+	recorder.ensureStreamFailureAttempt(second, time.Now(), stream, "upstream_stream_interrupted")
+	if got := recorder.snapshot(); len(got) != 2 {
+		t.Fatalf("duplicate stream attempt = %#v", got)
+	}
+	inStream := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	inStream.captureStreamFailure(second, time.Now(), stream, StreamFailureDiagnostic{Body: []byte(`{"type":"response.failed"}`)})
+	inStream.ensureStreamFailureAttempt(second, time.Now(), stream, "upstream_stream_error")
+	if got := inStream.snapshot(); len(got) != 1 || got[0].Stage != "response_stream" {
+		t.Fatalf("ensure after in-stream capture = %#v", got)
+	}
+}
+
+func TestEnsureStreamFailureAttemptSkipsNon2xx(t *testing.T) {
+	recorder := newFailureAttemptRecorder(http.MethodPost, "/responses")
+	credential := account.Credential{ID: 12, Name: "retry-b"}
+	forbidden := &provider.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden"}
+	recorder.ensureStreamFailureAttempt(credential, time.Now(), forbidden, "upstream_forbidden")
+	if got := recorder.snapshot(); len(got) != 0 {
+		t.Fatalf("non-2xx stream attempt = %#v", got)
+	}
+}
+
 func TestFailureAttemptRecorderClassifiesTransportErrorChain(t *testing.T) {
 	dnsErr := &net.DNSError{Err: "no such host", Name: "api.example.test", IsNotFound: true}
 	requestErr := &url.Error{Op: "Post", URL: "https://user:password@api.example.test/v1/responses?token=secret", Err: dnsErr}

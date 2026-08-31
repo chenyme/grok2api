@@ -3064,6 +3064,17 @@ func TestGatewaySafetyRejectionDoesNotTouchAccountState(t *testing.T) {
 			}
 		}
 	}
+	logs, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || len(logs) != 1 {
+		t.Fatalf("audit list = %#v, total=%d, err=%v", logs, total, err)
+	}
+	detail, err := auditRepo.Get(ctx, logs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.AttemptCount != 1 || len(detail.Attempts) != 1 || detail.Attempts[0].Stage != "upstream_response" || detail.Attempts[0].UpstreamStatusCode == nil || *detail.Attempts[0].UpstreamStatusCode != http.StatusForbidden {
+		t.Fatalf("terminal 403 attempts = %#v", detail.Attempts)
+	}
 }
 
 func TestGatewayConsoleDPoPRequirementStopsAfterOneAccount(t *testing.T) {
@@ -3489,6 +3500,96 @@ func TestGatewayGeneric429CoolsAccountAndRotates(t *testing.T) {
 	}
 	if cooled.AuthStatus != account.AuthStatusActive || cooled.FailureCount != 1 || cooled.CooldownUntil == nil {
 		t.Fatalf("generic 429 must briefly cool account A without permanent invalidation: %#v", cooled)
+	}
+}
+
+func TestGatewayRetryStreamFailureRecordsPrior429AndRetryStream(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "retry-stream-failure.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"retry-a", "retry-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-retry-stream"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-retry-stream"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "retry-stream-key", Prefix: "retrystream", SecretHash: strings.Repeat("4", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exhausted := `{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage for model grok-4.6 for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 558975/500000."}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusTooManyRequests, body: exhausted}},
+		credentials[1].ID: {{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, body: "data: {\"type\":\"response.created\"}\n\n"}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-retry-stream", ClientKey: clientKey, PublicModel: "grok-retry-stream",
+		Body: []byte(`{"model":"grok-retry-stream","input":"hello"}`), Streaming: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{}, "", "upstream_stream_interrupted")
+	_ = result.Body.Close()
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+		t.Fatalf("429 must rotate before stream failure, attempts=%#v", attempts)
+	}
+
+	logs, _, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || len(logs) == 0 {
+		t.Fatalf("audits = %#v, err = %v", logs, err)
+	}
+	detail, err := auditRepo.Get(ctx, logs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.ErrorCode != "upstream_stream_interrupted" || detail.AccountID == nil || *detail.AccountID != credentials[1].ID {
+		t.Fatalf("audit = %#v", detail)
+	}
+	if detail.AttemptCount != 2 || len(detail.Attempts) != 2 {
+		t.Fatalf("attempt count = %d stored = %d, attempts=%#v", detail.AttemptCount, len(detail.Attempts), detail.Attempts)
+	}
+	first, second := detail.Attempts[0], detail.Attempts[1]
+	if first.Stage != "upstream_response" || first.UpstreamStatusCode == nil || *first.UpstreamStatusCode != http.StatusTooManyRequests || first.AccountID == nil || *first.AccountID != credentials[0].ID {
+		t.Fatalf("first attempt = %#v", first)
+	}
+	if second.Stage != "response_stream" || second.UpstreamStatusCode == nil || *second.UpstreamStatusCode != http.StatusOK || second.AccountID == nil || *second.AccountID != credentials[1].ID || second.TransportError != "upstream_stream_interrupted" {
+		t.Fatalf("retry stream attempt = %#v", second)
 	}
 }
 
