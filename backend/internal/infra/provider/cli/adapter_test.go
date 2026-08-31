@@ -58,16 +58,16 @@ func TestResponseRequestForcedEgressOverridesCredentialBinding(t *testing.T) {
 			Request:    request,
 		}, nil
 	})
-	response, _, err := adapter.doResponseRequest(context.Background(), provider.ResponseResourceRequest{
+	call := adapter.doResponseRequest(context.Background(), provider.ResponseResourceRequest{
 		Credential:         account.Credential{ID: 7, Provider: account.ProviderBuild, EgressNodeID: 11},
 		ForcedEgressNodeID: 22,
 		Method:             http.MethodPost,
 		Path:               "/responses",
 	}, "access-token", nil, "https://cli-chat-proxy.grok.com/v1")
-	if err != nil {
-		t.Fatal(err)
+	if call.err != nil {
+		t.Fatal(call.err)
 	}
-	_ = response.Body.Close()
+	_ = call.response.Body.Close()
 	if gotNodeID != 22 {
 		t.Fatalf("egress node=%d, want forced node=22", gotNodeID)
 	}
