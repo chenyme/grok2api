@@ -176,6 +176,13 @@ func TestClassifyUpstreamHTTPErrorInvalidArgument(t *testing.T) {
 	}
 }
 
+func TestClassifyUpstreamHTTPErrorKeepsOther4xxMessage(t *testing.T) {
+	code, message := ClassifyUpstreamHTTPError(http.StatusNotFound, []byte(`{"error":{"code":"not_found","message":"requested response is missing"}}`))
+	if code != "upstream_error" || message != "requested response is missing" {
+		t.Fatalf("code=%q message=%q", code, message)
+	}
+}
+
 func TestHTTPUpstreamFailureClassifiesDPoPRequirementAsSystemic(t *testing.T) {
 	failure := newHTTPUpstreamFailure(http.StatusForbidden, []byte(`{"code":"unauthorized:dpop-required","error":"DPoP proof required but was not verified."}`), 42, "console")
 	if failure.AccountScoped || failure.CredentialRejected || !failure.RequestScopedForbidden {

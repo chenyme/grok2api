@@ -320,7 +320,7 @@ func normalizeConsoleTools(payload map[string]any) (bool, error) {
 			for _, field := range []string{"description", "parameters", "strict"} {
 				if fieldValue, exists := tool[field]; exists {
 					if field == "parameters" {
-						normalized, _, err := cli.NormalizeBuildFunctionParametersRoot(fieldValue, "tools.parameters")
+						normalized, _, err := cli.NormalizeBuildFunctionParametersRoot(fieldValue, "tools.parameters", strings.TrimSpace(name))
 						if err != nil {
 							return false, err
 						}

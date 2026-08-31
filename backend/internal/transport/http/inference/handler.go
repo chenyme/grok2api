@@ -1297,14 +1297,18 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 		if stream && !isEventStreamContentType(result.Header.Get("Content-Type")) {
 			raw, readErr := io.ReadAll(io.LimitReader(result.Body, maxJSONResponseTransferBytes+1))
 			if readErr != nil {
-				writeOpenAIError(c, http.StatusBadGateway, "upstream_error", "读取上游错误响应失败")
+				if anthropic {
+					writeAnthropicError(c, http.StatusBadGateway, "api_error", "读取上游错误响应失败", "upstream_error")
+				} else {
+					writeOpenAIError(c, http.StatusBadGateway, "upstream_error", "读取上游错误响应失败")
+				}
 				return
 			}
 			c.Writer.Header().Del("Content-Length")
 			code, message := gateway.ClassifyUpstreamHTTPError(result.StatusCode, raw)
 			errorCode = code
 			if anthropic {
-				writeAnthropicError(c, result.StatusCode, "invalid_request_error", message, errorCode)
+				writeAnthropicError(c, result.StatusCode, anthropicUpstreamHTTPErrorType(result.StatusCode), message, errorCode)
 			} else {
 				writeOpenAIError(c, result.StatusCode, errorCode, message)
 			}
@@ -1325,6 +1329,21 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	}
 	if err != nil {
 		errorCode = classifyCopyError(c.Request.Context(), err)
+	}
+}
+
+func anthropicUpstreamHTTPErrorType(status int) string {
+	switch status {
+	case http.StatusBadRequest, http.StatusConflict, http.StatusUnprocessableEntity:
+		return "invalid_request_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		return "timeout_error"
+	default:
+		return "api_error"
 	}
 }
 

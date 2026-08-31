@@ -92,9 +92,17 @@ func TestNormalizeBuildFunctionParametersRootKeepsNestedPropertyUnion(t *testing
 func TestNormalizeBuildFunctionParametersRootLiftsOneOfNestedAnyOf(t *testing.T) {
 	schema := map[string]any{
 		"oneOf": []any{
-			map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}},
+			map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"kind": map[string]any{"const": "a"}},
+				"required":   []any{"kind"},
+			},
 			map[string]any{"anyOf": []any{
-				map[string]any{"type": "object", "properties": map[string]any{"b": map[string]any{"type": "string"}}},
+				map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"kind": map[string]any{"const": "b"}},
+					"required":   []any{"kind"},
+				},
 				map[string]any{"type": "null"},
 			}},
 		},
@@ -112,6 +120,160 @@ func TestNormalizeBuildFunctionParametersRootLiftsOneOfNestedAnyOf(t *testing.T)
 		if raw.(map[string]any)["type"] != "object" {
 			t.Fatalf("branch[%d]=%#v", i, raw)
 		}
+	}
+}
+
+func TestNormalizeBuildFunctionParametersRootFollowsBareRootRef(t *testing.T) {
+	schema := map[string]any{
+		"$defs": map[string]any{
+			"Args": map[string]any{"oneOf": []any{
+				map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "view"}}, "required": []any{"mode"}},
+				map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "create"}}, "required": []any{"mode"}},
+			}},
+		},
+		"$ref": "#/$defs/Args",
+	}
+
+	normalized, changed, err := normalizeBuildFunctionParametersRoot(schema, "tools[0].parameters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := normalized.(map[string]any)
+	branches, _ := out["oneOf"].([]any)
+	if !changed || len(branches) != 2 || out["$ref"] != nil {
+		t.Fatalf("normalized=%#v changed=%v", out, changed)
+	}
+	for index, raw := range branches {
+		branch, _ := raw.(map[string]any)
+		if branch["type"] != "object" || branch["$ref"] != nil {
+			t.Fatalf("branch[%d]=%#v", index, branch)
+		}
+	}
+}
+
+func TestNormalizeBuildFunctionParametersRootPreservesUnionSiblingConstraints(t *testing.T) {
+	schema := map[string]any{
+		"$defs": map[string]any{
+			"Read":  map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "read"}}, "required": []any{"mode"}},
+			"Write": map[string]any{"type": "object", "properties": map[string]any{"mode": map[string]any{"const": "write"}}, "required": []any{"mode"}},
+		},
+		"type":                 "object",
+		"properties":           map[string]any{"tenant": map[string]any{"type": "string"}},
+		"required":             []any{"tenant"},
+		"additionalProperties": false,
+		"oneOf": []any{
+			map[string]any{"$ref": "#/$defs/Read"},
+			map[string]any{"$ref": "#/$defs/Write"},
+		},
+	}
+
+	normalized, changed, err := normalizeBuildFunctionParametersRoot(schema, "tools[0].parameters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := normalized.(map[string]any)
+	branches, _ := out["oneOf"].([]any)
+	if !changed || len(branches) != 2 {
+		t.Fatalf("normalized=%#v changed=%v", out, changed)
+	}
+	for index, raw := range branches {
+		branch := raw.(map[string]any)
+		allOf, _ := branch["allOf"].([]any)
+		if branch["type"] != "object" || len(allOf) != 2 {
+			t.Fatalf("branch[%d]=%#v", index, branch)
+		}
+		common := allOf[0].(map[string]any)
+		if common["additionalProperties"] != false || len(common["required"].([]any)) != 1 {
+			t.Fatalf("branch[%d] lost common constraints: %#v", index, branch)
+		}
+		if _, ok := common["properties"].(map[string]any)["tenant"]; !ok {
+			t.Fatalf("branch[%d] lost tenant property: %#v", index, branch)
+		}
+	}
+}
+
+func TestNormalizeBuildFunctionParametersRootPreservesAnyOf(t *testing.T) {
+	schema := map[string]any{
+		"$defs": map[string]any{
+			"A": map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}},
+			"B": map[string]any{"type": "object", "properties": map[string]any{"b": map[string]any{"type": "string"}}},
+		},
+		"anyOf": []any{
+			map[string]any{"$ref": "#/$defs/A"},
+			map[string]any{"$ref": "#/$defs/B"},
+		},
+	}
+
+	normalized, changed, err := normalizeBuildFunctionParametersRoot(schema, "tools[0].parameters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := normalized.(map[string]any)
+	if !changed || len(out["anyOf"].([]any)) != 2 || out["oneOf"] != nil {
+		t.Fatalf("normalized=%#v changed=%v", out, changed)
+	}
+}
+
+func TestNormalizeBuildFunctionParametersRootRejectsUnsafeNestedUnionFlatten(t *testing.T) {
+	schema := map[string]any{
+		"oneOf": []any{
+			map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}},
+			map[string]any{"oneOf": []any{
+				map[string]any{"type": "object", "properties": map[string]any{"b": map[string]any{"type": "string"}}},
+				map[string]any{"type": "object", "properties": map[string]any{"c": map[string]any{"type": "string"}}},
+			}},
+		},
+	}
+
+	if _, _, err := normalizeBuildFunctionParametersRoot(schema, "tools[0].parameters"); err == nil {
+		t.Fatal("overlapping nested oneOf should fail locally instead of changing semantics")
+	}
+}
+
+func TestNormalizeBuildFunctionParametersRootKeepsDefinitionForSubpathRef(t *testing.T) {
+	schema := map[string]any{
+		"$defs": map[string]any{
+			"Config": map[string]any{"type": "object", "properties": map[string]any{"id": map[string]any{"type": "string"}}},
+			"Args": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"id": map[string]any{"$ref": "#/$defs/Config/properties/id"}},
+			},
+		},
+		"$ref": "#/$defs/Args",
+	}
+
+	normalized, changed, err := normalizeBuildFunctionParametersRoot(schema, "tools[0].parameters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := normalized.(map[string]any)
+	defs, _ := out["$defs"].(map[string]any)
+	if !changed || defs["Config"] == nil || defs["Config/properties/id"] != nil {
+		t.Fatalf("normalized=%#v changed=%v", out, changed)
+	}
+}
+
+func TestNormalizeBuildFunctionParametersRootRejectsIllegalRootWithToolName(t *testing.T) {
+	_, _, err := normalizeBuildFunctionParametersRootForTool(
+		map[string]any{"type": "string"},
+		"tools[0].parameters",
+		"mcp__codex_app__automation_update",
+	)
+	requestErr, ok := err.(*responsesRequestError)
+	if !ok || !strings.Contains(requestErr.Message, "mcp__codex_app__automation_update") {
+		t.Fatalf("error=%#v", err)
+	}
+}
+
+func TestNormalizeResponsesRequestIllegalFunctionRootNamesTool(t *testing.T) {
+	_, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"public",
+		"input":"hello",
+		"tools":[{"type":"function","name":"mcp__codex_app__automation_update","parameters":{"type":"string"}}]
+	}`), "grok-4.5")
+	requestErr, ok := err.(*responsesRequestError)
+	if !ok || requestErr.Param != "tools[0].parameters" || !strings.Contains(requestErr.Message, "mcp__codex_app__automation_update") {
+		t.Fatalf("error=%#v", err)
 	}
 }
 

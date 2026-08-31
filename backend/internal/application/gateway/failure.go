@@ -178,8 +178,16 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
 	default:
-		failure.Code = "upstream_server_error"
-		failure.PublicMessage = "上游服务暂时异常"
+		if status >= 400 && status < 500 {
+			failure.Code = "upstream_error"
+			failure.PublicMessage = "上游拒绝了该请求"
+			if upstreamMessage != "" {
+				failure.PublicMessage = upstreamMessage
+			}
+		} else {
+			failure.Code = "upstream_server_error"
+			failure.PublicMessage = "上游服务暂时异常"
+		}
 	}
 	fingerprintPart := normalizeFailureCode(firstNonEmptyFailure(upstreamCode, upstreamType, upstreamMessage))
 	if fingerprintPart == "" {

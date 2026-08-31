@@ -382,6 +382,15 @@ func TestNormalizeBuildFunctionParametersRootVariants(t *testing.T) {
 			},
 		},
 		{
+			name:   "single object type array",
+			schema: map[string]any{"type": []any{"object"}, "properties": map[string]any{}},
+			check: func(t *testing.T, normalized map[string]any, changed bool) {
+				if !changed || normalized["type"] != "object" {
+					t.Fatalf("normalized=%#v changed=%v", normalized, changed)
+				}
+			},
+		},
+		{
 			name: "oneOf",
 			schema: map[string]any{"oneOf": []any{
 				map[string]any{"type": "object", "additionalProperties": false},

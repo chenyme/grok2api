@@ -374,6 +374,21 @@ func TestNormalizeRequestLiftsFunctionParameterUnion(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestIllegalFunctionRootNamesTool(t *testing.T) {
+	spec, ok := Resolve("grok-4.3")
+	if !ok {
+		t.Fatal("grok-4.3 missing")
+	}
+	_, err := normalizeRequest([]byte(`{
+		"model":"grok-4.3",
+		"input":"hello",
+		"tools":[{"type":"function","name":"automation_update","parameters":{"type":"string"}}]
+	}`), spec)
+	if err == nil || !strings.Contains(err.Error(), "automation_update") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 	spec, ok := Resolve("grok-4.3")
 	if !ok {
