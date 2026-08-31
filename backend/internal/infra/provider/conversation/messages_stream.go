@@ -72,13 +72,8 @@ func (c *streamConverter) thinkingDone(item responseItem) error {
 	if c.operation != OperationMessages || !c.options.AnthropicThinking || !c.thinkingStarted || c.thinkingClosed {
 		return nil
 	}
-	if item.Encrypted != "" {
-		if err := c.writeEvent("content_block_delta", map[string]any{
-			"type": "content_block_delta", "index": c.thinkingIndex,
-			"delta": map[string]any{"type": "signature_delta", "signature": item.Encrypted},
-		}); err != nil {
-			return err
-		}
+	if err := c.emitEncrypted(item); err != nil {
+		return err
 	}
 	c.thinkingClosed = true
 	return c.writeEvent("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.thinkingIndex})

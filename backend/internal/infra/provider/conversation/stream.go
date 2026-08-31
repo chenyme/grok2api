@@ -12,8 +12,7 @@ import (
 )
 
 const (
-	maxDeferredSearchTextBytes       = 8 << 20
-	maxDeferredReasoningSummaryBytes = 8 << 20
+	maxDeferredSearchTextBytes = 8 << 20
 
 	// contentDoomLoopThreshold 连续重复同一可见内容增量时终止流。真正的
 	// 内容循环会消耗配额和客户端上下文，因此远低于推理上限；但仍需容纳
@@ -132,10 +131,10 @@ type streamTool struct {
 }
 
 type reasoningStreamState struct {
-	summary   strings.Builder
-	rawSeen   bool
-	done      bool
-	anonymous bool
+	chosen           string // "summary" or "raw"; first source wins
+	done             bool
+	anonymous        bool
+	signatureEmitted bool
 }
 
 func newStreamConverter(writer io.Writer, operation string, options ResponseOptions) *streamConverter {
@@ -342,10 +341,16 @@ func (c *streamConverter) handle(event string, data []byte) error {
 			c.ensureReasoningState(item.ID)
 		}
 		if item.Type == "reasoning" && c.operation == OperationMessages && c.options.AnthropicThinking {
-			return c.thinkingStart(item.ID)
+			if err := c.thinkingStart(item.ID); err != nil {
+				return err
+			}
+			return c.emitEncrypted(item)
 		}
 		if item.Type == "reasoning" && item.ID != "" && c.operation == OperationChat {
-			return c.markChatReasoningStart()
+			if err := c.markChatReasoningStart(); err != nil {
+				return err
+			}
+			return c.emitEncrypted(item)
 		}
 		if item.Type == "web_search_call" && c.operation == OperationMessages && c.options.AnthropicWebSearch {
 			if call, ok := parseWebSearchCallItem(item); ok {
@@ -381,10 +386,8 @@ func (c *streamConverter) handle(event string, data []byte) error {
 					return err
 				}
 			}
-			if strings.TrimSpace(item.Encrypted) != "" {
-				if err := c.markReasoningEvidence(item.Encrypted); err != nil {
-					return err
-				}
+			if err := c.emitEncrypted(item); err != nil {
+				return err
 			}
 			return c.thinkingDone(item)
 		}
@@ -398,8 +401,8 @@ func (c *streamConverter) handle(event string, data []byte) error {
 		_ = json.Unmarshal(root["response"], &response)
 		c.setResponse(response)
 		for _, item := range response.Output {
-			if item.Type == "reasoning" && strings.TrimSpace(item.Encrypted) != "" {
-				if err := c.markReasoningEvidence(item.Encrypted); err != nil {
+			if item.Type == "reasoning" {
+				if err := c.emitEncrypted(item); err != nil {
 					return err
 				}
 			}
@@ -436,7 +439,7 @@ func (c *streamConverter) ensureReasoningState(itemID string) (string, *reasonin
 		}
 		// Some compatible upstreams omit item_id on the first delta. Once the
 		// real item arrives, attach that anonymous state instead of creating a
-		// second source that could later replay the buffered summary.
+		// second source that could later replay the first-wins choice.
 		if anonymous := c.activeReasoningID; anonymous != "" {
 			if state := c.reasoningItems[anonymous]; state != nil && state.anonymous && !state.done {
 				delete(c.reasoningItems, anonymous)
@@ -472,25 +475,16 @@ func (c *streamConverter) ensureReasoningState(itemID string) (string, *reasonin
 }
 
 func (c *streamConverter) reasoningSummaryDelta(itemID, delta string) error {
-	if delta == "" || !c.reasoningOutputEnabled() {
-		return nil
-	}
-	_, state := c.ensureReasoningState(itemID)
-	if state.done || state.rawSeen {
-		return nil
-	}
-	// Console can publish the same client-facing thought through summary and
-	// raw reasoning events. Defer summary until item completion so raw can take
-	// precedence without relying on chunk boundaries or text equality.
-	pending := state.summary.Len()
-	if pending >= maxDeferredReasoningSummaryBytes || len(delta) > maxDeferredReasoningSummaryBytes-pending {
-		return fmt.Errorf("reasoning summary 延迟缓冲超过 %d MiB", maxDeferredReasoningSummaryBytes>>20)
-	}
-	state.summary.WriteString(delta)
-	return nil
+	return c.reasoningLiveDelta(itemID, delta, "summary")
 }
 
 func (c *streamConverter) reasoningTextDelta(itemID, delta string) error {
+	return c.reasoningLiveDelta(itemID, delta, "raw")
+}
+
+// reasoningLiveDelta emits the first reasoning source in real time and drops
+// the other. Build currently streams summary only; Console may also send raw.
+func (c *streamConverter) reasoningLiveDelta(itemID, delta, source string) error {
 	if delta == "" || !c.reasoningOutputEnabled() {
 		return nil
 	}
@@ -498,9 +492,11 @@ func (c *streamConverter) reasoningTextDelta(itemID, delta string) error {
 	if state.done {
 		return nil
 	}
-	if !state.rawSeen {
-		state.rawSeen = true
-		state.summary.Reset()
+	if state.chosen == "" {
+		state.chosen = source
+	}
+	if state.chosen != source {
+		return nil
 	}
 	return c.emitReasoningDelta(delta)
 }
@@ -515,13 +511,42 @@ func (c *streamConverter) emitReasoningDelta(delta string) error {
 	return nil
 }
 
+func (c *streamConverter) emitEncrypted(item responseItem) error {
+	if strings.TrimSpace(item.Encrypted) == "" {
+		return nil
+	}
+	// Record richer late payloads for the quality scanner even after the public
+	// signature delta has already been emitted for this reasoning item.
+	if err := c.markReasoningEvidence(item.Encrypted); err != nil {
+		return err
+	}
+	if c.operation != OperationMessages || !c.options.AnthropicThinking {
+		return nil
+	}
+	_, state := c.ensureReasoningState(item.ID)
+	if state.signatureEmitted {
+		return nil
+	}
+	if err := c.thinkingStart(item.ID); err != nil {
+		return err
+	}
+	if c.thinkingClosed {
+		return nil
+	}
+	if err := c.writeEvent("content_block_delta", map[string]any{
+		"type": "content_block_delta", "index": c.thinkingIndex,
+		"delta": map[string]any{"type": "signature_delta", "signature": item.Encrypted},
+	}); err != nil {
+		return err
+	}
+	state.signatureEmitted = true
+	return nil
+}
+
 func (c *streamConverter) reasoningDone(item responseItem) error {
 	key, state := c.ensureReasoningState(item.ID)
 	if state.done {
 		return nil
-	}
-	if err := c.flushReasoningSummary(state); err != nil {
-		return err
 	}
 	state.done = true
 	if c.activeReasoningID == key {
@@ -530,23 +555,11 @@ func (c *streamConverter) reasoningDone(item responseItem) error {
 	return nil
 }
 
-func (c *streamConverter) flushReasoningSummary(state *reasoningStreamState) error {
-	if state == nil || state.rawSeen || state.summary.Len() == 0 {
-		return nil
-	}
-	value := state.summary.String()
-	state.summary.Reset()
-	return c.emitReasoningDelta(value)
-}
-
 func (c *streamConverter) flushPendingReasoning() error {
 	for _, key := range c.reasoningOrder {
 		state := c.reasoningItems[key]
 		if state.done {
 			continue
-		}
-		if err := c.flushReasoningSummary(state); err != nil {
-			return err
 		}
 		state.done = true
 	}
