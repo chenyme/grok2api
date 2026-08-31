@@ -74,6 +74,20 @@ func (r *semanticIdleReadCloser) timeout() {
 		r.mu.Unlock()
 		return
 	}
+	// Reset on an expired AfterFunc timer schedules a new callback without
+	// waiting for the old callback to finish. If that old callback reaches this
+	// lock after useful output reset the clock, keep the refreshed deadline
+	// instead of timing out the next Read.
+	if !r.clockStart.IsZero() {
+		elapsed := time.Since(r.clockStart)
+		if elapsed < r.remaining {
+			if r.timer != nil {
+				r.timer.Reset(r.remaining - elapsed)
+			}
+			r.mu.Unlock()
+			return
+		}
+	}
 	r.finished = true
 	r.timedOut = true
 	r.clockStart = time.Time{}

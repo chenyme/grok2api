@@ -234,6 +234,36 @@ func TestBuildSemanticIdleKeepalivesStillTimeoutWhileReading(t *testing.T) {
 	}
 }
 
+func TestBuildSemanticIdleIgnoresStaleTimerCallbackAfterActivityReset(t *testing.T) {
+	inner := &countingReadCloser{Reader: strings.NewReader("")}
+	body := wrapBuildSemanticIdle(inner, time.Second).(*semanticIdleReadCloser)
+
+	body.mu.Lock()
+	body.readers = 1
+	body.remaining = time.Second
+	body.clockStart = time.Now()
+	body.timer = time.AfterFunc(time.Hour, body.timeout)
+	body.mu.Unlock()
+
+	// Simulate an expired AfterFunc callback from the previous deadline arriving
+	// after useful output has already refreshed clockStart and remaining.
+	body.timeout()
+	if body.TimedOut() {
+		t.Fatal("stale timer callback timed out the refreshed read deadline")
+	}
+
+	body.mu.Lock()
+	body.readers = 0
+	body.stopClockLocked()
+	body.mu.Unlock()
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := inner.closes.Load(); got != 1 {
+		t.Fatalf("inner Close calls = %d, want 1", got)
+	}
+}
+
 func TestBuildSemanticIdleStopsAfterEOFOrClose(t *testing.T) {
 	t.Run("EOF", func(t *testing.T) {
 		inner := &countingReadCloser{Reader: strings.NewReader("done")}
