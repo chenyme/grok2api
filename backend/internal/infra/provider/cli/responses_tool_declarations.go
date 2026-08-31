@@ -508,7 +508,7 @@ func applyRootConstraints(leaf map[string]any, constraints []map[string]any) map
 	if len(constraints) == 0 {
 		return leaf
 	}
-	allOf := make([]any, 0, len(constraints)+1)
+	allOf := make([]any, 0, len(constraints))
 	for _, constraint := range constraints {
 		if len(constraint) > 0 {
 			allOf = append(allOf, cloneJSONObject(constraint))
@@ -519,7 +519,7 @@ func applyRootConstraints(leaf map[string]any, constraints []map[string]any) map
 }
 
 func cloneRefSeen(seen map[string]struct{}) map[string]struct{} {
-	out := make(map[string]struct{}, len(seen)+1)
+	out := make(map[string]struct{}, len(seen))
 	for key, value := range seen {
 		out[key] = value
 	}
