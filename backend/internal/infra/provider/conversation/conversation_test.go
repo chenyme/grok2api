@@ -1,11 +1,13 @@
 package conversation
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConvertChatRequestToResponses(t *testing.T) {
@@ -944,7 +946,7 @@ func TestConvertResponsesStreamMarksEncryptedChatReasoningEvidence(t *testing.T)
 		t.Fatal(err)
 	}
 	text := string(converted)
-	if strings.Count(text, ": grok2api-reasoning-start\n\n") != 1 || strings.Count(text, ": grok2api-reasoning-evidence\n\n") != 1 {
+	if strings.Count(text, ": grok2api-reasoning-start\n\n") != 1 || strings.Count(text, ": grok2api-reasoning-evidence 9\n\n") != 1 {
 		t.Fatalf("encrypted reasoning markers missing or duplicated: %s", text)
 	}
 	if strings.Contains(text, "signature") || strings.Contains(text, "encrypted_content") {
@@ -964,7 +966,7 @@ func TestConvertResponsesStreamMarksFinalEnvelopeReasoningEvidence(t *testing.T)
 		t.Fatal(err)
 	}
 	text := string(converted)
-	if strings.Count(text, ": grok2api-reasoning-evidence\n\n") != 1 {
+	if strings.Count(text, ": grok2api-reasoning-evidence 9\n\n") != 1 {
 		t.Fatalf("final-envelope reasoning evidence missing or duplicated: %s", text)
 	}
 	if strings.Contains(text, "signature") || strings.Contains(text, "encrypted_content") {
@@ -1002,19 +1004,14 @@ func TestConvertResponsesStreamChatFirstWinsSummaryDropsRaw(t *testing.T) {
 	}
 }
 
-func TestConvertResponsesStreamChatEmitsSummaryLiveAtEOF(t *testing.T) {
-	stream := strings.Join([]string{
+func TestConvertResponsesStreamChatEmitsSummaryBeforeEOF(t *testing.T) {
+	streamPrefix := strings.Join([]string{
 		`event: response.reasoning_summary_text.delta`,
 		`data: {"type":"response.reasoning_summary_text.delta","delta":"summary only"}`, "", "",
 	}, "\n")
-	converted, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(converted)
-	if strings.Count(text, `"reasoning_content":"summary only"`) != 1 || !strings.Contains(text, "data: [DONE]") {
-		t.Fatalf("summary was not emitted live: %s", text)
-	}
+	assertConvertedStreamContainsBeforeUpstreamClose(
+		t, OperationChat, ResponseOptions{}, streamPrefix, `"reasoning_content":"summary only"`,
+	)
 }
 
 func TestConvertResponsesStreamChatAdoptsLateReasoningItemID(t *testing.T) {
@@ -1074,22 +1071,15 @@ func TestConvertResponsesStreamMessagesFirstWinsSummaryDropsRaw(t *testing.T) {
 }
 
 func TestConvertResponsesStreamMessagesEmitsSummaryBeforeItemDone(t *testing.T) {
-	stream := strings.Join([]string{
+	streamPrefix := strings.Join([]string{
 		`event: response.output_item.added`,
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning"}}`, "",
 		`event: response.reasoning_summary_text.delta`,
 		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"live thought"}`, "", "",
 	}, "\n")
-	converted, err := io.ReadAll(ConvertResponseStreamWithOptions(
-		io.NopCloser(strings.NewReader(stream)), OperationMessages, ResponseOptions{AnthropicThinking: true},
-	))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(converted)
-	if !strings.Contains(text, `"thinking":"live thought"`) {
-		t.Fatalf("summary must reach Anthropic before item done: %s", text)
-	}
+	assertConvertedStreamContainsBeforeUpstreamClose(
+		t, OperationMessages, ResponseOptions{AnthropicThinking: true}, streamPrefix, `"thinking":"live thought"`,
+	)
 }
 
 func TestConvertResponsesStreamMessagesRawFirstDropsSummary(t *testing.T) {
@@ -1118,11 +1108,19 @@ func TestConvertResponsesStreamMessagesRawFirstDropsSummary(t *testing.T) {
 }
 
 func TestConvertResponsesStreamMessagesEmitsSignatureWhenEncryptedArrives(t *testing.T) {
+	streamPrefix := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning","encrypted_content":"  early-sig  "}}`, "", "",
+	}, "\n")
+	assertConvertedStreamContainsBeforeUpstreamClose(
+		t, OperationMessages, ResponseOptions{AnthropicThinking: true}, streamPrefix, `"signature":"  early-sig  "`,
+	)
+}
+
+func TestConvertResponsesStreamMessagesDoesNotDuplicateEarlySignature(t *testing.T) {
 	stream := strings.Join([]string{
 		`event: response.output_item.added`,
 		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning","encrypted_content":"early-sig"}}`, "",
-		`event: response.reasoning_summary_text.delta`,
-		`data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"thought"}`, "",
 		`event: response.output_item.done`,
 		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"early-sig"}}`, "",
 		`event: response.completed`,
@@ -1136,7 +1134,83 @@ func TestConvertResponsesStreamMessagesEmitsSignatureWhenEncryptedArrives(t *tes
 	}
 	text := string(converted)
 	if strings.Count(text, `"signature":"early-sig"`) != 1 {
-		t.Fatalf("encrypted must emit once when it arrives: %s", text)
+		t.Fatalf("early encrypted_content must emit exactly once: %s", text)
+	}
+}
+
+func TestConvertResponsesStreamMessagesKeepsRicherLateReasoningEvidence(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_item.added`,
+		`data: {"type":"response.output_item.added","item":{"id":"rs_1","type":"reasoning","encrypted_content":"early"}}`, "",
+		`event: response.output_item.done`,
+		`data: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"later-signature"}}`, "",
+		`event: response.completed`,
+		`data: {"type":"response.completed","response":{"status":"completed"}}`, "", "",
+	}, "\n")
+	converted, err := io.ReadAll(ConvertResponseStreamWithOptions(
+		io.NopCloser(strings.NewReader(stream)), OperationMessages, ResponseOptions{AnthropicThinking: true},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(converted)
+	if strings.Count(text, ": grok2api-reasoning-evidence 5\n\n") != 1 ||
+		strings.Count(text, ": grok2api-reasoning-evidence 15\n\n") != 1 {
+		t.Fatalf("late encrypted_content length must update reasoning evidence: %s", text)
+	}
+	if strings.Count(text, `"signature":"early"`) != 1 || strings.Contains(text, `"signature":"later-signature"`) {
+		t.Fatalf("only the first encrypted_content must be emitted publicly: %s", text)
+	}
+}
+
+func assertConvertedStreamContainsBeforeUpstreamClose(
+	t *testing.T,
+	operation string,
+	options ResponseOptions,
+	streamPrefix string,
+	want string,
+) {
+	t.Helper()
+	upstreamReader, upstreamWriter := io.Pipe()
+	converted := ConvertResponseStreamWithOptions(upstreamReader, operation, options)
+	t.Cleanup(func() {
+		_ = converted.Close()
+		_ = upstreamWriter.Close()
+	})
+
+	go func() {
+		_, _ = io.WriteString(upstreamWriter, streamPrefix)
+	}()
+
+	type readResult struct {
+		output string
+		err    error
+	}
+	results := make(chan readResult, 1)
+	go func() {
+		reader := bufio.NewReader(converted)
+		var output strings.Builder
+		for {
+			line, err := reader.ReadString('\n')
+			output.WriteString(line)
+			if strings.Contains(output.String(), want) {
+				results <- readResult{output: output.String()}
+				return
+			}
+			if err != nil {
+				results <- readResult{output: output.String(), err: err}
+				return
+			}
+		}
+	}()
+
+	select {
+	case result := <-results:
+		if result.err != nil {
+			t.Fatalf("converted stream closed before %q arrived: %v; output=%s", want, result.err, result.output)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("converted stream did not emit %q while upstream remained open", want)
 	}
 }
 

@@ -3,6 +3,7 @@ package inference
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1307,22 +1308,32 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
 	}
 	if err != nil {
-		switch {
-		case errors.Is(err, errResponseTransferLimit):
-			errorCode = "response_too_large"
-		case errors.Is(err, errUpstreamStreamFailed):
-			errorCode = "upstream_stream_error"
-		case errors.Is(err, errUpstreamStreamIncomplete):
-			errorCode = "upstream_stream_incomplete"
-		case errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout):
-			errorCode = "upstream_stream_idle_timeout"
-		case errors.Is(err, neterror.ErrUpstreamResponseEmpty):
-			errorCode = "upstream_response_empty"
-		case errors.Is(err, errUpstreamStreamRead):
-			errorCode = "upstream_stream_interrupted"
-		default:
-			errorCode = "stream_interrupted"
-		}
+		errorCode = classifyCopyError(c.Request.Context(), err)
+	}
+}
+
+func classifyCopyError(ctx context.Context, err error) string {
+	if err == nil {
+		return ""
+	}
+	if neterror.IsClientRequestCancel(ctx, err) {
+		return "client_stream_interrupted"
+	}
+	switch {
+	case errors.Is(err, errResponseTransferLimit):
+		return "response_too_large"
+	case errors.Is(err, errUpstreamStreamFailed):
+		return "upstream_stream_error"
+	case errors.Is(err, errUpstreamStreamIncomplete):
+		return "upstream_stream_incomplete"
+	case errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout):
+		return "upstream_stream_idle_timeout"
+	case errors.Is(err, neterror.ErrUpstreamResponseEmpty):
+		return "upstream_response_empty"
+	case errors.Is(err, errUpstreamStreamRead):
+		return "upstream_stream_interrupted"
+	default:
+		return "stream_interrupted"
 	}
 }
 
@@ -2369,6 +2380,8 @@ func selectionErrorResponse(c *gin.Context, failure *gateway.SelectionUnavailabl
 			message = "上游账号当前均达到并发上限"
 		case gateway.SelectionUnsupportedModel:
 			message = "当前账号池不支持该模型"
+		case gateway.SelectionPinnedUnavailable:
+			message = "绑定的上游账号当前不可用"
 		}
 	}
 	if failure.RetryAfter > 0 {
