@@ -169,6 +169,101 @@ func TestBuildSSEActivityDetectorRecognizesGeneratedOutputItems(t *testing.T) {
 	}
 }
 
+func TestBuildSemanticIdlePausesWhileNotReading(t *testing.T) {
+	reader, writer := io.Pipe()
+	body := wrapBuildSemanticIdle(reader, 60*time.Millisecond)
+	chunk := "event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"x\"}\n\n"
+	writeErr := make(chan error, 2)
+	go func() {
+		_, err := io.WriteString(writer, chunk)
+		writeErr <- err
+	}()
+	buf := make([]byte, len(chunk))
+	n, err := body.Read(buf)
+	if err != nil || n != len(chunk) {
+		t.Fatalf("first read n=%d err=%v", n, err)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	if body.(*semanticIdleReadCloser).TimedOut() {
+		t.Fatal("idle timer fired while nobody was reading upstream")
+	}
+	go func() {
+		_, err := io.WriteString(writer, chunk)
+		writeErr <- err
+		_ = writer.Close()
+	}()
+	n, err = body.Read(buf)
+	if err != nil || n != len(chunk) {
+		t.Fatalf("resume read n=%d err=%v", n, err)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, body); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildSemanticIdleKeepalivesStillTimeoutWhileReading(t *testing.T) {
+	reader, writer := io.Pipe()
+	body := wrapBuildSemanticIdle(reader, 60*time.Millisecond)
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, body)
+		readDone <- err
+	}()
+	go func() {
+		defer writer.Close()
+		for {
+			if _, err := io.WriteString(writer, ": keep-alive\n\n"); err != nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) {
+			t.Fatalf("body read error = %v, want ErrUpstreamStreamIdleTimeout", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("keepalives while reading did not idle-timeout")
+	}
+}
+
+func TestBuildSemanticIdleIgnoresStaleTimerCallbackAfterActivityReset(t *testing.T) {
+	inner := &countingReadCloser{Reader: strings.NewReader("")}
+	body := wrapBuildSemanticIdle(inner, time.Second).(*semanticIdleReadCloser)
+
+	body.mu.Lock()
+	body.readers = 1
+	body.remaining = time.Second
+	body.clockStart = time.Now()
+	body.timer = time.AfterFunc(time.Hour, body.timeout)
+	body.mu.Unlock()
+
+	// Simulate an expired AfterFunc callback from the previous deadline arriving
+	// after useful output has already refreshed clockStart and remaining.
+	body.timeout()
+	if body.TimedOut() {
+		t.Fatal("stale timer callback timed out the refreshed read deadline")
+	}
+
+	body.mu.Lock()
+	body.readers = 0
+	body.stopClockLocked()
+	body.mu.Unlock()
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := inner.closes.Load(); got != 1 {
+		t.Fatalf("inner Close calls = %d, want 1", got)
+	}
+}
+
 func TestBuildSemanticIdleStopsAfterEOFOrClose(t *testing.T) {
 	t.Run("EOF", func(t *testing.T) {
 		inner := &countingReadCloser{Reader: strings.NewReader("done")}
