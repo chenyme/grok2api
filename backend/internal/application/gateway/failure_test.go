@@ -243,16 +243,29 @@ func TestHTTPUpstreamFailureLeavesPaymentRecoveryKindToBilling(t *testing.T) {
 	}
 }
 
-func TestRetryableResponseRotatesOnlyOnReasoningRecoveryFailedWarning(t *testing.T) {
+func TestRetryableResponseRotatesOnlyOnInternalBuildReasoningRecoveryFailure(t *testing.T) {
 	failedHeader := make(http.Header)
 	failedHeader.Set("X-Grok2API-Compatibility-Warnings", "reasoning_encrypted_content_downgraded,reasoning_recovery_failed")
 	failed := &provider.Response{
-		StatusCode: http.StatusBadRequest,
-		Header:     failedHeader,
-		Body:       io.NopCloser(strings.NewReader(`{"error":"Could not decode the compaction blob"}`)),
+		StatusCode:              http.StatusBadRequest,
+		Header:                  failedHeader,
+		Body:                    io.NopCloser(strings.NewReader(`{"error":"Could not decode the compaction blob"}`)),
+		ReasoningRecoveryFailed: true,
 	}
 	if !isRetryableResponse(failed, accountdomain.ProviderBuild) {
 		t.Fatal("reasoning_recovery_failed 400 must rotate accounts")
+	}
+	if isRetryableResponse(failed, accountdomain.ProviderWeb) {
+		t.Fatal("reasoning recovery failover must remain Build-specific")
+	}
+
+	spoofed := &provider.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     failedHeader,
+		Body:       io.NopCloser(strings.NewReader(`{"error":"unrelated bad request"}`)),
+	}
+	if isRetryableResponse(spoofed, accountdomain.ProviderBuild) {
+		t.Fatal("an upstream-controlled compatibility warning must not trigger account rotation")
 	}
 
 	plain := &provider.Response{

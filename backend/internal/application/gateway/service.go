@@ -2092,23 +2092,15 @@ func isRetryable(status int) bool {
 	return status == 402 || status == 403 || status == 429 || status >= 500
 }
 
-func isReasoningRecoveryFailedResponse(response *provider.Response) bool {
-	if response == nil {
-		return false
-	}
-	for _, value := range strings.Split(response.Header.Get("X-Grok2API-Compatibility-Warnings"), ",") {
-		if strings.TrimSpace(value) == "reasoning_recovery_failed" {
-			return true
-		}
-	}
-	return false
+func isReasoningRecoveryFailedResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
+	return upstreamProvider == accountdomain.ProviderBuild && response != nil && response.ReasoningRecoveryFailed
 }
 
 func isRetryableResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
 	if response == nil {
 		return false
 	}
-	if response.StatusCode == http.StatusBadRequest && isReasoningRecoveryFailedResponse(response) {
+	if response.StatusCode == http.StatusBadRequest && isReasoningRecoveryFailedResponse(response, upstreamProvider) {
 		return true
 	}
 	if !isRetryable(response.StatusCode) {

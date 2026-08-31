@@ -421,10 +421,10 @@ func TestReasoningWithoutEncryptedContentBecomesPortableSummary(t *testing.T) {
 	}
 	items := request["input"].([]any)
 	first := items[0].(map[string]any)
-	if first["type"] != "message" || first["role"] != "developer" {
+	if first["type"] != "message" || first["role"] != "assistant" {
 		t.Fatalf("unencrypted reasoning should become portable summary, got %#v", first)
 	}
-	text := first["content"].([]any)[0].(map[string]any)["text"].(string)
+	text := first["content"].(string)
 	if !strings.Contains(text, "who am I") || strings.Contains(text, "omitted") {
 		t.Fatalf("portable reasoning text = %q", text)
 	}

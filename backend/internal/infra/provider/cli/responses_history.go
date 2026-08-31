@@ -260,7 +260,7 @@ func (c *responsesToolCompatibility) normalizeCustomToolCallInput(item map[strin
 
 func sanitizeReasoningInput(item map[string]any) map[string]any {
 	// Keep ciphertext-backed reasoning native. Summary-only items are rewritten
-	// as developer messages so the readable plan survives without sending a
+	// as assistant messages so the readable plan survives without sending a
 	// bare type=reasoning item that Grok Build may reject.
 	converted := copyNonNullHistoryFields(item, "id", "summary", "content", "encrypted_content")
 	converted["type"] = "reasoning"
