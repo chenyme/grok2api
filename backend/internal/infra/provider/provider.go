@@ -391,8 +391,7 @@ type Response struct {
 	ReasoningRecoveryFailed bool
 	// RecoveredPrimaryFailure records a primary-plane failure hidden by a successful Provider fallback.
 	RecoveredPrimaryFailure *DiagnosticResponse
-	// RecoveredAttempts are hidden upstream calls (reasoning-decode recovery,
-	// plane fallback) that must still appear in request audit diagnostics.
+	// RecoveredAttempts 保存被 adapter 内部恢复流程隐藏、但仍需进入请求审计的上游调用。
 	RecoveredAttempts []RecoveredAttempt
 	RateLimit         *RateLimitMetadata
 	// ModelCatalogChanged indicates that the model catalog ETag in an inference response differs from
@@ -426,11 +425,15 @@ type DiagnosticResponse struct {
 	BodyTruncated bool
 }
 
-// RecoveredAttempt is one hidden upstream call that a later retry replaced.
+// RecoveredAttempt 表示一次被后续恢复结果替代的真实上游调用。
 type RecoveredAttempt struct {
-	Stage      string
-	Result     string
-	Diagnostic DiagnosticResponse
+	Stage       string
+	Result      string
+	UpstreamURL string
+	StartedAt   time.Time
+	DurationMS  int64
+	Diagnostic  DiagnosticResponse
+	Failure     error
 }
 
 // ReadDiagnosticBody reads up to the diagnostic body limit and reports whether upstream content was truncated.

@@ -110,6 +110,12 @@ func TestRecoverReasoningDecodeFailureRetriesSameUpstreamOnce(t *testing.T) {
 	if calls.Load() != 2 || response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "reasoning_encrypted_content_downgraded") {
 		t.Fatalf("calls=%d status=%d headers=%#v", calls.Load(), response.StatusCode, response.Header)
 	}
+	if len(response.RecoveredAttempts) != 1 || response.RecoveredAttempts[0].Stage != "reasoning_decode_rejected" {
+		t.Fatalf("recovered attempts = %#v", response.RecoveredAttempts)
+	}
+	if attempt := response.RecoveredAttempts[0]; attempt.UpstreamURL != "https://build.test/v1/responses" || attempt.StartedAt.IsZero() {
+		t.Fatalf("recovered provenance = %#v", attempt)
+	}
 	data, _ := io.ReadAll(response.Body)
 	if !strings.Contains(string(data), `"type":"message"`) {
 		t.Fatalf("converted response = %s", data)
@@ -194,6 +200,19 @@ func TestRecoverReasoningDecodeFailureStaysOnXAIFallbackPlane(t *testing.T) {
 	}
 	if decode.Diagnostic.StatusCode != http.StatusBadRequest || !strings.Contains(string(decode.Diagnostic.Body), "compaction blob") {
 		t.Fatalf("hidden 400 = %#v", decode.Diagnostic)
+	}
+	if decode.UpstreamURL != "https://xai.test/v1/responses" || decode.StartedAt.IsZero() {
+		t.Fatalf("hidden recovery provenance = %#v", decode)
+	}
+	var primary *provider.RecoveredAttempt
+	for i := range response.RecoveredAttempts {
+		if response.RecoveredAttempts[i].Stage == "primary_plane_response" {
+			primary = &response.RecoveredAttempts[i]
+			break
+		}
+	}
+	if primary == nil || primary.UpstreamURL != "https://build.test/v1/responses" || primary.Diagnostic.StatusCode != http.StatusForbidden {
+		t.Fatalf("primary fallback provenance = %#v", response.RecoveredAttempts)
 	}
 }
 
@@ -520,6 +539,9 @@ func TestRecoverReasoningDecodeFailureDoesNotResetStoredResponseChain(t *testing
 	if !response.ReasoningRecoveryFailed {
 		t.Fatal("exhausted same-account recovery must set the internal gateway retry hint")
 	}
+	if len(response.RecoveredAttempts) != 0 {
+		t.Fatalf("unattempted recovery must not duplicate the final 400: %#v", response.RecoveredAttempts)
+	}
 }
 
 func TestRecoverReasoningDecodeFailureReturnsNon400RetryResponse(t *testing.T) {
@@ -548,6 +570,13 @@ func TestRecoverReasoningDecodeFailureReturnsNon400RetryResponse(t *testing.T) {
 			}
 			if response.ReasoningRecoveryFailed || strings.Contains(response.Header.Get("X-Grok2API-Compatibility-Warnings"), "reasoning_recovery_failed") {
 				t.Fatalf("non-400 retry was mislabeled as recovery failure: %#v", response)
+			}
+			if len(response.RecoveredAttempts) != 1 {
+				t.Fatalf("recovered attempts = %#v", response.RecoveredAttempts)
+			}
+			attempt := response.RecoveredAttempts[0]
+			if attempt.Stage != "reasoning_decode_rejected" || attempt.Result != "replaced_by_retry_response" || attempt.Diagnostic.StatusCode != http.StatusBadRequest || attempt.UpstreamURL != "https://build.test/v1/responses" || attempt.StartedAt.IsZero() {
+				t.Fatalf("hidden initial 400 = %#v", attempt)
 			}
 		})
 	}
