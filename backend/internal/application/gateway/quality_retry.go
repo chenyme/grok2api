@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -60,7 +61,8 @@ type QualityRetryRuntime struct {
 // QualityStreamSignals is the hold classifier input. Tests drive this
 // directly and via ObserveQualityChunk on SSE fixtures.
 type QualityStreamSignals struct {
-	HasThinking bool
+	HasThinking       bool
+	HasReasoningDelta bool
 	// ReasoningStarted is an empty reasoning item or the Chat SSE stub
 	// `: grok2api-reasoning-start`. That is not proof of thinking: 降智
 	// still emits the stub, then dumps visible tokens with usage 0.
@@ -69,6 +71,8 @@ type QualityStreamSignals struct {
 	ReasoningTokens  int64
 	OutputTokens     int64
 	EncryptedBytes   int
+	EncryptedFloor   int64
+	UsageReported    bool
 	FirstVisible     bool
 	VisibleFlushMS   int64
 	Terminal         bool
@@ -137,16 +141,19 @@ func (s *Service) qualityRetryConfig() QualityRetryRuntime {
 
 // encryptedThinkingFloor is max(minBytes, reasoningTokens*bytesPerToken).
 // A non-empty stub such as "gAAAA-cipher" is not thinking.
-func encryptedThinkingFloor(minBytes, bytesPerToken int, reasoningTokens int64) int {
+func encryptedThinkingFloor(minBytes, bytesPerToken int, reasoningTokens int64) int64 {
 	if minBytes <= 0 {
 		minBytes = defaultMinEncryptedBytes
 	}
 	if bytesPerToken <= 0 {
 		bytesPerToken = defaultEncryptedBytesPerReasoningToken
 	}
-	floor := minBytes
+	floor := int64(minBytes)
 	if reasoningTokens > 0 {
-		need := int(reasoningTokens) * bytesPerToken
+		if reasoningTokens > math.MaxInt64/int64(bytesPerToken) {
+			return math.MaxInt64
+		}
+		need := reasoningTokens * int64(bytesPerToken)
 		if need > floor {
 			floor = need
 		}
@@ -156,8 +163,15 @@ func encryptedThinkingFloor(minBytes, bytesPerToken int, reasoningTokens int64) 
 
 func qualityIsBurstDump(sig QualityStreamSignals, minOutput int64) bool {
 	visible := sig.VisibleTokens
-	floor := encryptedThinkingFloor(0, 0, sig.ReasoningTokens)
-	barelyCipher := sig.EncryptedBytes > 0 && sig.EncryptedBytes < floor*2
+	floor := sig.EncryptedFloor
+	if floor <= 0 {
+		floor = encryptedThinkingFloor(0, 0, sig.ReasoningTokens)
+	}
+	barelyCeiling := int64(math.MaxInt64)
+	if floor <= math.MaxInt64/2 {
+		barelyCeiling = floor * 2
+	}
+	barelyCipher := sig.EncryptedBytes > 0 && int64(sig.EncryptedBytes) < barelyCeiling
 	flushed := sig.FirstVisible && sig.VisibleFlushMS >= 0 && sig.VisibleFlushMS < defaultBurstFlushMS
 	heavyReasoning := sig.ReasoningTokens >= defaultBurstMinReasoning
 	shortVisible := visible > 0 && visible < defaultBurstMaxVisible
@@ -197,9 +211,27 @@ func ClassifyQualityHold(sig QualityStreamSignals, minOutput int64) QualityVerdi
 	if minOutput <= 0 {
 		minOutput = defaultQualityMinOutput
 	}
+	// Readable reasoning deltas are direct proof and can preserve the original
+	// low-latency release path. Ciphertext-only evidence remains provisional so
+	// the classifier can observe visible output and terminal usage regardless of
+	// how the SSE events were split across transport reads.
+	if sig.HasReasoningDelta {
+		return QualityDeliver
+	}
 	if sig.HasThinking {
+		if !sig.FirstVisible && !sig.Terminal {
+			return QualityWait
+		}
 		if qualityIsBurstDump(sig, minOutput) {
-			return QualityWithhold
+			if sig.Terminal {
+				return QualityWithhold
+			}
+			return QualityWait
+		}
+		// The token-relative floor cannot be final until usage arrives. Preserve
+		// HoldTimeout as the fail-open latency bound for still-open streams.
+		if !sig.Terminal && !sig.HoldExpired && !sig.UsageReported {
+			return QualityWait
 		}
 		return QualityDeliver
 	}

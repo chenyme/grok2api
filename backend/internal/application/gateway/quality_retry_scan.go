@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -153,23 +154,26 @@ func (s *qualityScanState) signals() QualityStreamSignals {
 	// the ciphertext floor (default 256 bytes, or 4 bytes per reasoning token).
 	reasoningTokens := max(s.reasoningTokens, s.usage.ReasoningTokens)
 	floor := encryptedThinkingFloor(s.minEncryptedBytes, s.encryptedBytesPerReasoningToken, reasoningTokens)
-	hasThinking := s.hasThinking || s.encryptedBytes >= floor
+	hasThinking := s.hasThinking || int64(s.encryptedBytes) >= floor
 	firstVisible := !s.firstVisibleAt.IsZero()
 	var flushMS int64
 	if firstVisible {
 		flushMS = time.Since(s.firstVisibleAt).Milliseconds()
 	}
 	return QualityStreamSignals{
-		HasThinking:      hasThinking,
-		ReasoningStarted: s.reasoningStarted || hasThinking,
-		VisibleTokens:    visible,
-		ReasoningTokens:  reasoningTokens,
-		OutputTokens:     output,
-		EncryptedBytes:   s.encryptedBytes,
-		FirstVisible:     firstVisible,
-		VisibleFlushMS:   flushMS,
-		Terminal:         s.terminal,
-		HoldExpired:      s.holdExpired,
+		HasThinking:       hasThinking,
+		HasReasoningDelta: s.hasThinking,
+		ReasoningStarted:  s.reasoningStarted || hasThinking,
+		VisibleTokens:     visible,
+		ReasoningTokens:   reasoningTokens,
+		OutputTokens:      output,
+		EncryptedBytes:    s.encryptedBytes,
+		EncryptedFloor:    floor,
+		UsageReported:     s.usage.Reported,
+		FirstVisible:      firstVisible,
+		VisibleFlushMS:    flushMS,
+		Terminal:          s.terminal,
+		HoldExpired:       s.holdExpired,
 	}
 }
 
@@ -198,11 +202,15 @@ func ObserveQualityChunk(state *qualityScanState, chunk []byte) {
 			state.reasoningStarted = true
 			continue
 		}
-		if bytes.Equal(line, []byte(qualityReasoningEvidenceSSEComment)) {
+		if bytes.HasPrefix(line, []byte(qualityReasoningEvidenceSSEComment)) {
 			// Protocol converters cannot expose encrypted_content in every public
-			// JSON contract. This internal SSE comment preserves that evidence.
+			// JSON contract. This internal SSE comment preserves its byte length so
+			// short stubs cannot bypass the ciphertext floor.
 			state.reasoningStarted = true
-			state.hasThinking = true
+			value := strings.TrimSpace(strings.TrimPrefix(string(line), qualityReasoningEvidenceSSEComment))
+			if count, err := strconv.Atoi(value); err == nil && count > state.encryptedBytes {
+				state.encryptedBytes = count
+			}
 			continue
 		}
 		if !bytes.HasPrefix(line, []byte("data:")) {

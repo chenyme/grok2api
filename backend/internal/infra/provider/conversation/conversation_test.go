@@ -944,7 +944,7 @@ func TestConvertResponsesStreamMarksEncryptedChatReasoningEvidence(t *testing.T)
 		t.Fatal(err)
 	}
 	text := string(converted)
-	if strings.Count(text, ": grok2api-reasoning-start\n\n") != 1 || strings.Count(text, ": grok2api-reasoning-evidence\n\n") != 1 {
+	if strings.Count(text, ": grok2api-reasoning-start\n\n") != 1 || strings.Count(text, ": grok2api-reasoning-evidence 9\n\n") != 1 {
 		t.Fatalf("encrypted reasoning markers missing or duplicated: %s", text)
 	}
 	if strings.Contains(text, "signature") || strings.Contains(text, "encrypted_content") {
@@ -964,7 +964,7 @@ func TestConvertResponsesStreamMarksFinalEnvelopeReasoningEvidence(t *testing.T)
 		t.Fatal(err)
 	}
 	text := string(converted)
-	if strings.Count(text, ": grok2api-reasoning-evidence\n\n") != 1 {
+	if strings.Count(text, ": grok2api-reasoning-evidence 9\n\n") != 1 {
 		t.Fatalf("final-envelope reasoning evidence missing or duplicated: %s", text)
 	}
 	if strings.Contains(text, "signature") || strings.Contains(text, "encrypted_content") {

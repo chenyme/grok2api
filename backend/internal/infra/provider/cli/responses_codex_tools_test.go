@@ -404,7 +404,7 @@ func TestNativeBuildHistoryItemsArePreservedAndSanitized(t *testing.T) {
 	}
 }
 
-func TestReasoningWithoutEncryptedContentRemainsNative(t *testing.T) {
+func TestReasoningWithoutEncryptedContentBecomesPortableSummary(t *testing.T) {
 	normalized, _, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":[
 			{"type":"reasoning","id":"rs_1","status":"completed","summary":[{"type":"summary_text","text":"who am I"}],"content":null,"encrypted_content":null,"internal_chat_message_metadata_passthrough":{"turn_id":"t1"}},
@@ -421,12 +421,12 @@ func TestReasoningWithoutEncryptedContentRemainsNative(t *testing.T) {
 	}
 	items := request["input"].([]any)
 	first := items[0].(map[string]any)
-	if first["type"] != "reasoning" || first["status"] != nil || first["encrypted_content"] != nil || first["content"] != nil {
-		t.Fatalf("reasoning history = %#v", first)
+	if first["type"] != "message" || first["role"] != "assistant" {
+		t.Fatalf("unencrypted reasoning should become portable summary, got %#v", first)
 	}
-	summary := first["summary"].([]any)[0].(map[string]any)
-	if summary["text"] != "who am I" {
-		t.Fatalf("reasoning summary = %#v", first["summary"])
+	text := first["content"].(string)
+	if !strings.Contains(text, "who am I") || strings.Contains(text, "omitted") {
+		t.Fatalf("portable reasoning text = %q", text)
 	}
 	if items[1].(map[string]any)["content"] != "hi" {
 		t.Fatalf("assistant history = %#v", items[1])
