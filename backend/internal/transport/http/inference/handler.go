@@ -1536,9 +1536,13 @@ func streamAbortTrailer(protocol streamProtocol, cause error, meta responseMetad
 		}
 		return []byte("event: response.failed\ndata: " + string(payload) + "\n\n")
 	case streamProtocolAnthropic:
+		anthropicMessage := message
+		if code == "upstream_output_loop" {
+			anthropicMessage = code + ": " + message
+		}
 		payload, err := json.Marshal(map[string]any{
 			"type":  "error",
-			"error": map[string]any{"type": "api_error", "message": message},
+			"error": map[string]any{"type": "api_error", "message": anthropicMessage},
 		})
 		if err != nil {
 			return nil
