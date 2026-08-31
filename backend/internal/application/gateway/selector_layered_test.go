@@ -748,8 +748,8 @@ func TestSelectorPinnedCredentialDoesNotSwitchWhenMaterialIsStale(t *testing.T) 
 
 	_, err := selector.AcquirePinned(context.Background(), account.ProviderBuild, 1, 0, "model-a", "", true)
 	var unavailable *SelectionUnavailableError
-	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionNoAccounts {
-		t.Fatalf("error = %v, want no accounts", err)
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionPinnedUnavailable {
+		t.Fatalf("error = %v, want pinned unavailable", err)
 	}
 	if !reflect.DeepEqual(repo.materialCalls, []uint64{1}) {
 		t.Fatalf("material calls = %v, want pinned account only", repo.materialCalls)

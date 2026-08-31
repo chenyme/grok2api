@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -46,6 +47,7 @@ var (
 	diagnosticAuthorizationPattern = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+`)
 	diagnosticCookiePattern        = regexp.MustCompile(`(?i)\b(cookie|set-cookie)\b\s*[:=]\s*[^\r\n]+`)
 	diagnosticSecretPattern        = regexp.MustCompile(`(?i)(["']?(?:authorization|proxy-authorization|x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token)["']?\s*[:=]\s*["']?)[^"'\s,;}]+`)
+	diagnosticOpaqueFieldPattern   = regexp.MustCompile(`(?i)(["'](?:encrypted[_-]?content|compaction[_-]?(?:blob|state)|opaque[_-]?(?:state|data))["']\s*[:=]\s*["'])((?:\\.|[^"'\\])*)(["']|$)`)
 	diagnosticURLPattern           = regexp.MustCompile(`https?://[^\s"'<>]+`)
 )
 
@@ -70,6 +72,9 @@ func (r *failureAttemptRecorder) captureCredentialFailure(credential accountdoma
 }
 
 func (r *failureAttemptRecorder) captureResponse(credential accountdomain.Credential, startedAt time.Time, response *provider.Response, requestErr error) error {
+	if response != nil {
+		r.captureRecoveredAttempts(credential, startedAt, response)
+	}
 	if requestErr != nil {
 		r.append(audit.Attempt{
 			Source:         audit.AttemptSourceTransport,
@@ -86,7 +91,7 @@ func (r *failureAttemptRecorder) captureResponse(credential accountdomain.Creden
 		})
 		return requestErr
 	}
-	if response.StatusCode >= 200 && response.StatusCode < 300 {
+	if response == nil || (response.StatusCode >= 200 && response.StatusCode < 300) {
 		return nil
 	}
 
@@ -171,6 +176,140 @@ func (r *failureAttemptRecorder) captureStreamFailure(credential accountdomain.C
 	})
 }
 
+func (r *failureAttemptRecorder) captureRecoveredAttempts(credential accountdomain.Credential, startedAt time.Time, response *provider.Response) {
+	if response == nil {
+		return
+	}
+	for _, recovered := range response.RecoveredAttempts {
+		diagnostic := recovered.Diagnostic
+		body, truncated := r.captureBody(diagnostic.Body, diagnostic.BodyTruncated)
+		stage := recovered.Stage
+		if stage == "" {
+			stage = "recovered_upstream"
+		}
+		source := audit.AttemptSourceUpstreamHTTP
+		var statusCode *int
+		if diagnostic.StatusCode != 0 {
+			value := diagnostic.StatusCode
+			statusCode = &value
+		} else {
+			source = audit.AttemptSourceTransport
+		}
+		upstreamURL := recovered.UpstreamURL
+		if upstreamURL == "" {
+			upstreamURL = response.UpstreamURL
+		}
+		attemptStartedAt := recovered.StartedAt
+		durationMS := recovered.DurationMS
+		if attemptStartedAt.IsZero() {
+			attemptStartedAt = startedAt
+			durationMS = time.Since(startedAt).Milliseconds()
+		}
+		if durationMS < 0 {
+			durationMS = 0
+		}
+		transportError := recovered.Result
+		errorChain := make([]audit.ErrorFrame, 0, 1)
+		if recovered.Result != "" {
+			errorChain = append(errorChain, audit.ErrorFrame{Type: stage, Message: sanitizeDiagnosticText(recovered.Result, 512)})
+		}
+		if recovered.Failure != nil {
+			failureText := sanitizeDiagnosticText(recovered.Failure.Error(), diagnosticTextLimit)
+			if transportError == "" {
+				transportError = failureText
+			} else {
+				transportError = sanitizeDiagnosticText(transportError+": "+failureText, diagnosticTextLimit)
+			}
+			errorChain = append(errorChain, errorFrames(recovered.Failure)...)
+			if len(errorChain) > diagnosticErrorFrameLimit {
+				errorChain = errorChain[:diagnosticErrorFrameLimit]
+			}
+		}
+		r.append(audit.Attempt{
+			Source:                source,
+			Stage:                 stage,
+			AccountID:             auditAccountID(credential.ID),
+			AccountName:           credential.Name,
+			Method:                r.method,
+			RequestPath:           r.path,
+			UpstreamURL:           sanitizeUpstreamURL(upstreamURL),
+			StartedAt:             attemptStartedAt.UTC(),
+			DurationMS:            durationMS,
+			UpstreamStatusCode:    statusCode,
+			UpstreamStatus:        diagnostic.Status,
+			ResponseHeaders:       sanitizeDiagnosticHeaders(diagnostic.Header),
+			ResponseBody:          body,
+			ResponseBodyTruncated: truncated,
+			TransportError:        sanitizeDiagnosticText(transportError, diagnosticTextLimit),
+			ErrorChain:            errorChain,
+		})
+	}
+}
+
+func (r *failureAttemptRecorder) captureSelectionFailure(accountID uint64, accountName string, err error) {
+	if err == nil {
+		return
+	}
+	stage := "account_selection"
+	id := accountID
+	name := accountName
+	var unavailable *SelectionUnavailableError
+	if errors.As(err, &unavailable) && unavailable != nil {
+		stage = string(unavailable.Reason)
+		if unavailable.AccountID != 0 {
+			id = unavailable.AccountID
+		}
+		if unavailable.AccountName != "" {
+			name = unavailable.AccountName
+		}
+	}
+	r.append(audit.Attempt{
+		Source:         audit.AttemptSourceCredential,
+		Stage:          stage,
+		AccountID:      auditAccountID(id),
+		AccountName:    name,
+		Method:         r.method,
+		RequestPath:    r.path,
+		StartedAt:      time.Now().UTC(),
+		TransportError: sanitizeDiagnosticText(err.Error(), diagnosticTextLimit),
+		ErrorChain:     errorFrames(err),
+	})
+}
+
+func (r *failureAttemptRecorder) hasStreamFailureFor(accountID uint64) bool {
+	for _, attempt := range r.attempts {
+		if attempt.Stage != "response_stream" || attempt.AccountID == nil || *attempt.AccountID != accountID {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// ensureStreamFailureAttempt 补记已完成 2xx 响应头握手、但随后失败的流式尝试。
+// 既有 4xx 或传输失败记录不能屏蔽该尝试；同一账号已有 response_stream 时不重复追加。
+func (r *failureAttemptRecorder) ensureStreamFailureAttempt(credential accountdomain.Credential, startedAt time.Time, response *provider.Response, errorCode string) {
+	if response == nil || response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices || r.hasStreamFailureFor(credential.ID) {
+		return
+	}
+	statusCode := response.StatusCode
+	r.append(audit.Attempt{
+		Source:             audit.AttemptSourceUpstreamHTTP,
+		Stage:              "response_stream",
+		AccountID:          auditAccountID(credential.ID),
+		AccountName:        credential.Name,
+		Method:             r.method,
+		RequestPath:        r.path,
+		UpstreamURL:        sanitizeUpstreamURL(response.UpstreamURL),
+		StartedAt:          startedAt.UTC(),
+		DurationMS:         time.Since(startedAt).Milliseconds(),
+		UpstreamStatusCode: &statusCode,
+		UpstreamStatus:     response.Status,
+		ResponseHeaders:    sanitizeDiagnosticHeaders(response.Header),
+		TransportError:     errorCode,
+	})
+}
+
 func (r *failureAttemptRecorder) captureQualityDegraded(credential accountdomain.Credential, startedAt time.Time) {
 	status := http.StatusOK
 	r.append(audit.Attempt{
@@ -201,6 +340,7 @@ func (r *failureAttemptRecorder) captureBody(body []byte, alreadyTruncated bool)
 	if !utf8.Valid(body) {
 		return nil, true
 	}
+	body = redactSensitiveDiagnosticJSON(body)
 	limit := min(diagnosticBodyLimit, r.remainingBodyBudget)
 	if limit <= 0 {
 		return nil, true
@@ -212,6 +352,52 @@ func (r *failureAttemptRecorder) captureBody(body []byte, alreadyTruncated bool)
 	result := []byte(sanitizeDiagnosticText(string(body), limit))
 	r.remainingBodyBudget -= len(result)
 	return result, truncated
+}
+
+// redactSensitiveDiagnosticJSON 递归替换诊断 JSON 中的密文与 opaque 会话状态。
+func redactSensitiveDiagnosticJSON(body []byte) []byte {
+	var payload any
+	if json.Unmarshal(body, &payload) != nil || !redactSensitiveDiagnosticValue(payload) {
+		return body
+	}
+	redacted, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return redacted
+}
+
+// redactSensitiveDiagnosticValue 遍历 JSON 容器，避免嵌套敏感字段绕过顶层脱敏。
+func redactSensitiveDiagnosticValue(value any) bool {
+	changed := false
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if isSensitiveDiagnosticField(key) {
+				typed[key] = "[REDACTED]"
+				changed = true
+				continue
+			}
+			changed = redactSensitiveDiagnosticValue(nested) || changed
+		}
+	case []any:
+		for _, nested := range typed {
+			changed = redactSensitiveDiagnosticValue(nested) || changed
+		}
+	}
+	return changed
+}
+
+// isSensitiveDiagnosticField 统一识别上游可能使用的密文与压缩状态字段名。
+func isSensitiveDiagnosticField(value string) bool {
+	value = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(value)), "-", "_")
+	value = strings.ReplaceAll(value, "_", "")
+	switch value {
+	case "encryptedcontent", "compactionblob", "compactionstate", "opaquestate", "opaquedata":
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *failureAttemptRecorder) snapshot() []audit.Attempt {
@@ -314,6 +500,7 @@ func sanitizeDiagnosticText(value string, limit int) string {
 	value = diagnosticCookiePattern.ReplaceAllString(value, "$1: [REDACTED]")
 	value = diagnosticAuthorizationPattern.ReplaceAllString(value, "$1 [REDACTED]")
 	value = diagnosticSecretPattern.ReplaceAllString(value, "$1[REDACTED]")
+	value = diagnosticOpaqueFieldPattern.ReplaceAllString(value, "$1[REDACTED]$3")
 	value = diagnosticURLPattern.ReplaceAllStringFunc(value, sanitizeUpstreamURL)
 	return truncateDiagnosticText(value, limit)
 }

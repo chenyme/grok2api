@@ -173,10 +173,11 @@ func newCandidateSnapshot(values []account.RoutingCandidate, expiresAt time.Time
 }
 
 type candidateCacheKey struct {
-	provider      account.Provider
-	modelRouteID  uint64
-	upstreamModel string
-	quotaMode     string
+	provider          account.Provider
+	modelRouteID      uint64
+	upstreamModel     string
+	quotaMode         string
+	includeBotFlagged bool
 }
 
 type routingBaseCacheKey struct {
@@ -214,19 +215,22 @@ type routingOverlaySnapshot struct {
 type SelectionUnavailableReason string
 
 const (
-	SelectionNoAccounts       SelectionUnavailableReason = "no_accounts"
-	SelectionUnsupportedModel SelectionUnavailableReason = "unsupported_model"
-	SelectionCooling          SelectionUnavailableReason = "cooling"
-	SelectionModelCooling     SelectionUnavailableReason = "model_cooling"
-	SelectionQuotaExhausted   SelectionUnavailableReason = "quota_exhausted"
-	SelectionSaturated        SelectionUnavailableReason = "saturated"
+	SelectionNoAccounts        SelectionUnavailableReason = "no_accounts"
+	SelectionUnsupportedModel  SelectionUnavailableReason = "unsupported_model"
+	SelectionCooling           SelectionUnavailableReason = "cooling"
+	SelectionModelCooling      SelectionUnavailableReason = "model_cooling"
+	SelectionQuotaExhausted    SelectionUnavailableReason = "quota_exhausted"
+	SelectionSaturated         SelectionUnavailableReason = "saturated"
+	SelectionPinnedUnavailable SelectionUnavailableReason = "pinned_unavailable"
 )
 
 // SelectionUnavailableError 保留选号失败的真实原因，避免所有情况都退化成模糊的 503。
 type SelectionUnavailableError struct {
-	Reason     SelectionUnavailableReason
-	RetryAfter time.Duration
-	Scope      clientkeydomain.AccountScope
+	Reason      SelectionUnavailableReason
+	RetryAfter  time.Duration
+	Scope       clientkeydomain.AccountScope
+	AccountID   uint64
+	AccountName string
 }
 
 func (e *SelectionUnavailableError) Error() string {
@@ -263,6 +267,11 @@ func (e *SelectionUnavailableError) Error() string {
 			return prefix + "中的可用账号均达到并发上限"
 		}
 		return "可用上游账号均达到并发上限"
+	case SelectionPinnedUnavailable:
+		if prefix != "" {
+			return prefix + "中绑定的上游账号当前不可用"
+		}
+		return "绑定的上游账号当前不可用"
 	default:
 		if prefix != "" {
 			return prefix + "当前没有可用上游账号"
@@ -296,6 +305,8 @@ func (e *SelectionUnavailableError) Code() string {
 			return "upstream_saturated"
 		case SelectionUnsupportedModel:
 			return "upstream_model_unavailable"
+		case SelectionPinnedUnavailable:
+			return "upstream_pinned_account_unavailable"
 		case SelectionNoAccounts:
 			if e.Scope.IsRestricted() {
 				return "client_key_account_scope_unavailable"
@@ -463,6 +474,13 @@ func (s *Selector) invalidateProviderCandidateCache(provider account.Provider) {
 	}
 }
 
+func (s *Selector) maybeFilterBotFlagged(ctx context.Context, provider account.Provider, values []account.RoutingCandidate, includeBotFlagged bool) ([]account.RoutingCandidate, error) {
+	if includeBotFlagged {
+		return values, nil
+	}
+	return s.applyBuildBotFlaggedFilter(ctx, provider, values)
+}
+
 func (s *Selector) applyBuildBotFlaggedFilter(_ context.Context, provider account.Provider, values []account.RoutingCandidate) ([]account.RoutingCandidate, error) {
 	if provider != account.ProviderBuild || len(values) == 0 {
 		return values, nil
@@ -516,7 +534,7 @@ func (s *Selector) acquire(ctx context.Context, provider account.Provider, model
 	}
 	now := time.Now().UTC()
 	stickyKey := stickySessionKey(affinityKey)
-	values, err := s.loadCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now)
+	values, err := s.loadCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now, false)
 	if err != nil {
 		return nil, err
 	}
@@ -839,7 +857,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 		return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts, Scope: accountScope}
 	}
 	now := time.Now().UTC()
-	values, err := s.loadCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now)
+	values, err := s.loadCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now, true)
 	if err != nil {
 		return nil, err
 	}
@@ -851,10 +869,13 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 			continue
 		}
 		if !accountScopeAllowsCandidate(provider, accountScope, candidate) {
-			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+			if accountScope.IsRestricted() {
+				return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts, Scope: accountScope, AccountID: accountID, AccountName: value.Name}
+			}
+			return nil, pinnedUnavailableError(accountID, value.Name)
 		}
 		if !value.Enabled || value.AuthStatus != account.AuthStatusActive {
-			return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+			return nil, pinnedUnavailableError(accountID, value.Name)
 		}
 		if inference {
 			if !s.candidateSupportsModel(provider, upstreamModel, quotaMode, candidate) {
@@ -880,7 +901,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 				lease, err := s.acquirePinnedCapacity(ctx, value, nil)
 				if err != nil {
 					if errors.Is(err, errRoutingCredentialStale) {
-						return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+						return nil, pinnedUnavailableError(accountID, value.Name)
 					}
 					return nil, err
 				}
@@ -911,7 +932,7 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 		lease, err := s.acquirePinnedCapacity(ctx, value, nil)
 		if err != nil {
 			if errors.Is(err, errRoutingCredentialStale) {
-				return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+				return nil, pinnedUnavailableError(accountID, value.Name)
 			}
 			return nil, err
 		}
@@ -919,7 +940,11 @@ func (s *Selector) acquirePinned(ctx context.Context, provider account.Provider,
 		lease.QuotaMode = effectiveQuotaMode(candidate, quotaMode)
 		return lease, nil
 	}
-	return nil, &SelectionUnavailableError{Reason: SelectionNoAccounts}
+	return nil, pinnedUnavailableError(accountID, "")
+}
+
+func pinnedUnavailableError(accountID uint64, name string) *SelectionUnavailableError {
+	return &SelectionUnavailableError{Reason: SelectionPinnedUnavailable, AccountID: accountID, AccountName: name}
 }
 
 func accountScopeAllowsCandidate(provider account.Provider, scope clientkeydomain.AccountScope, candidate account.RoutingCandidate) bool {
@@ -1302,15 +1327,19 @@ func (s *Selector) markFailure(ctx context.Context, credential account.Credentia
 	return healthErr
 }
 
-func (s *Selector) loadCandidates(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
-	if _, ok := s.accounts.(repository.RoutingLayerRepository); ok {
-		return s.loadLayeredCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now)
+func (s *Selector) loadCandidates(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode string, now time.Time, includeBotFlagged ...bool) ([]account.RoutingCandidate, error) {
+	include := false
+	if len(includeBotFlagged) > 0 {
+		include = includeBotFlagged[0]
 	}
-	return s.loadCombinedCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now)
+	if _, ok := s.accounts.(repository.RoutingLayerRepository); ok {
+		return s.loadLayeredCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now, include)
+	}
+	return s.loadCombinedCandidates(ctx, provider, modelRouteID, upstreamModel, quotaMode, now, include)
 }
 
-func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
-	key := candidateCacheKey{provider: provider, modelRouteID: modelRouteID, upstreamModel: upstreamModel, quotaMode: quotaMode}
+func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode string, now time.Time, includeBotFlagged bool) ([]account.RoutingCandidate, error) {
+	key := candidateCacheKey{provider: provider, modelRouteID: modelRouteID, upstreamModel: upstreamModel, quotaMode: quotaMode, includeBotFlagged: includeBotFlagged}
 	s.candidateMu.Lock()
 	if snapshot, ok := s.candidates[key]; ok && now.Before(snapshot.expiresAt) {
 		snapshot.lastAccess = now
@@ -1319,7 +1348,7 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 		return snapshot.values, nil
 	}
 	s.candidateMu.Unlock()
-	loadKey := fmt.Sprintf("%s\x00%d\x00%s\x00%s", provider, modelRouteID, upstreamModel, quotaMode)
+	loadKey := fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%t", provider, modelRouteID, upstreamModel, quotaMode, includeBotFlagged)
 	loaded, err, _ := s.candidateLoads.Do(loadKey, func() (any, error) {
 		checkTime := time.Now().UTC()
 		var stale candidateSnapshot
@@ -1350,7 +1379,7 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 			}
 			return nil, err
 		}
-		values, err = s.applyBuildBotFlaggedFilter(ctx, provider, values)
+		values, err = s.maybeFilterBotFlagged(ctx, provider, values, includeBotFlagged)
 		if err != nil {
 			return nil, err
 		}
@@ -1365,8 +1394,8 @@ func (s *Selector) loadCombinedCandidates(ctx context.Context, provider account.
 	return loaded.([]account.RoutingCandidate), nil
 }
 
-func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode string, now time.Time) ([]account.RoutingCandidate, error) {
-	key := candidateCacheKey{provider: provider, modelRouteID: modelRouteID, upstreamModel: upstreamModel, quotaMode: quotaMode}
+func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.Provider, modelRouteID uint64, upstreamModel, quotaMode string, now time.Time, includeBotFlagged bool) ([]account.RoutingCandidate, error) {
+	key := candidateCacheKey{provider: provider, modelRouteID: modelRouteID, upstreamModel: upstreamModel, quotaMode: quotaMode, includeBotFlagged: includeBotFlagged}
 	s.candidateMu.Lock()
 	if snapshot, ok := s.candidates[key]; ok && now.Before(snapshot.expiresAt) {
 		snapshot.lastAccess = now
@@ -1375,7 +1404,7 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 		return snapshot.values, nil
 	}
 	s.candidateMu.Unlock()
-	loadKey := fmt.Sprintf("assembled\x00%s\x00%d\x00%s\x00%s", provider, modelRouteID, upstreamModel, quotaMode)
+	loadKey := fmt.Sprintf("assembled\x00%s\x00%d\x00%s\x00%s\x00%t", provider, modelRouteID, upstreamModel, quotaMode, includeBotFlagged)
 	loaded, err, _ := s.candidateLoads.Do(loadKey, func() (any, error) {
 		checkTime := time.Now().UTC()
 		s.candidateMu.Lock()
@@ -1401,7 +1430,7 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 				continue
 			}
 			values := assembleRoutingCandidates(provider, quotaMode, bases, overlay)
-			values, filterErr := s.applyBuildBotFlaggedFilter(ctx, provider, values)
+			values, filterErr := s.maybeFilterBotFlagged(ctx, provider, values, includeBotFlagged)
 			if filterErr != nil {
 				return nil, filterErr
 			}
@@ -1422,7 +1451,7 @@ func (s *Selector) loadLayeredCandidates(ctx context.Context, provider account.P
 		if err != nil {
 			return nil, err
 		}
-		return s.applyBuildBotFlaggedFilter(ctx, provider, values)
+		return s.maybeFilterBotFlagged(ctx, provider, values, includeBotFlagged)
 	})
 	if err != nil {
 		return nil, err

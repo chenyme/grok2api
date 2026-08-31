@@ -150,16 +150,22 @@ qualityGuard:
   nodeIDs: []
   rotatableNodeIDs: []
   # Optional request-path withhold/retry for thinking models.
-  # Observe up to 30s for real reasoning evidence. If upstream has announced
-  # a reasoning item and visible output but proof arrives later, the still-open
-  # stream is released at the deadline without penalizing the account. Empty or
-  # terminal no-thinking responses are still retried.
-  # Missing thinking with enough visible output is not delivered; another
-  # account is tried (up to maxAttempts). fail_closed returns 503 instead
-  # of the last body. Sidecar qualityGuard.enabled stays false until you
-  # start the quality-guard profile.
+  # Recommended lab values are filled in; enabled stays false so stock
+  # installs do not intercept. Set enabled: true to turn the hold on.
+  # Observe up to 30s for real reasoning evidence. A reasoning-item stub plus
+  # enough visible output at the deadline is withheld (TUI dump after 30s),
+  # not released as late ciphertext. Empty stub-only streams keep waiting.
+  # Floor-met ciphertext that then dumps a short greeting in under 1s is
+  # also withheld. TUI follow-ups (previous_response_id) and hosted tools
+  # stay held for classification, but a quality withhold never replays
+  # account-bound state or side-effecting tools. Context compaction stays exempt.
+  # Replay-safe missing-thinking requests try another account (up to
+  # maxAttempts). fail_closed returns 503 instead of the held body. Sidecar
+  # qualityGuard.enabled stays false until you start the quality-guard profile.
+  # Non-empty encrypted_content stubs are not thinking. The ciphertext floor
+  # is max(minEncryptedBytes, reasoning_tokens * encryptedBytesPerReasoningToken).
   requestRetry:
-    enabled: true
+    enabled: false
     maxAttempts: 6
     holdTimeout: 30s
     minOutputTokens: 8
@@ -171,3 +177,5 @@ qualityGuard:
     # Single-account pools should set this lower; toggling enabled does not
     # clear cooldown — use POST /api/admin/v1/accounts/:id/clear-cooldown.
     idleAccountCooldown: 15m
+    minEncryptedBytes: 256
+    encryptedBytesPerReasoningToken: 4
