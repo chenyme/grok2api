@@ -77,7 +77,7 @@ func TestSegmentedActiveSkipsCredentialMaterialLoadError(t *testing.T) {
 	selector := newSegmentedActiveTestSelector(100, limiter, nil)
 	selector.UpdateSegmentedSelector(true, 100, 8)
 	repo := selector.accounts.(*layeredAccountRepository)
-	repo.materialErrors = map[uint64]error{1: errors.New("temporary credential store timeout")}
+	repo.materialErrors = map[uint64]error{1: sqliteRoutingLoadError{code: 5}}
 
 	lease, err := selector.Acquire(context.Background(), account.ProviderBuild, 0, "model", "", "", nil, false)
 	if err != nil {
