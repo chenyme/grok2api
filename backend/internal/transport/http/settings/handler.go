@@ -84,7 +84,7 @@ type providerWebConfigDTO struct {
 	VideoTimeout            string  `json:"videoTimeout"`
 	MediaConcurrency        int     `json:"mediaConcurrency"`
 	AllowNSFW               bool    `json:"allowNSFW"`
-	FreeVideoDurationCap    int     `json:"freeVideoDurationCap"`
+	FreeVideoDurationCap    *int    `json:"freeVideoDurationCap,omitempty"`
 	RecoveryBackoffBase     string  `json:"recoveryBackoffBase"`
 	RecoveryBackoffMax      string  `json:"recoveryBackoffMax"`
 }
@@ -206,8 +206,9 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 			ImageTimeout:     value.ProviderWeb.ImageTimeout,
 			VideoTimeout:     value.ProviderWeb.VideoTimeout,
 			MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
-			FreeVideoDurationCap: value.ProviderWeb.FreeVideoDurationCap,
-			RecoveryBackoffBase:  value.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: value.ProviderWeb.RecoveryBackoffMax,
+			FreeVideoDurationCap:         intValue(value.ProviderWeb.FreeVideoDurationCap),
+			FreeVideoDurationCapProvided: value.ProviderWeb.FreeVideoDurationCap != nil,
+			RecoveryBackoffBase:          value.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: value.ProviderWeb.RecoveryBackoffMax,
 		},
 		ProviderConsole: settingsapp.ProviderConsoleConfig{
 			BaseURL: value.ProviderConsole.BaseURL, ChatTimeout: value.ProviderConsole.ChatTimeout,
@@ -290,7 +291,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				ImageTimeout:     config.ProviderWeb.ImageTimeout,
 				VideoTimeout:     config.ProviderWeb.VideoTimeout,
 				MediaConcurrency: config.ProviderWeb.MediaConcurrency, AllowNSFW: config.ProviderWeb.AllowNSFW,
-				FreeVideoDurationCap: config.ProviderWeb.FreeVideoDurationCap,
+				FreeVideoDurationCap: intPointer(config.ProviderWeb.FreeVideoDurationCap),
 				RecoveryBackoffBase:  config.ProviderWeb.RecoveryBackoffBase, RecoveryBackoffMax: config.ProviderWeb.RecoveryBackoffMax,
 			},
 			ProviderConsole: providerConsoleConfigDTO{

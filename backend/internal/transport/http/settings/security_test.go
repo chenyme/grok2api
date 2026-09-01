@@ -109,6 +109,32 @@ func TestAccountIsolationSettingsPresenceIsPreserved(t *testing.T) {
 	}
 }
 
+func TestFreeVideoDurationCapPresenceIsPreserved(t *testing.T) {
+	response := newSettingsResponse(settingsapp.Snapshot{Config: settingsapp.EditableConfig{
+		ProviderWeb: settingsapp.ProviderWebConfig{FreeVideoDurationCap: 8},
+	}})
+	if response.Config.ProviderWeb.FreeVideoDurationCap == nil || *response.Config.ProviderWeb.FreeVideoDurationCap != 8 {
+		t.Fatal("freeVideoDurationCap was lost from settings response")
+	}
+
+	var legacy settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"providerWeb":{"baseURL":"https://grok.com"}}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.toApplication().ProviderWeb.FreeVideoDurationCapProvided {
+		t.Fatal("missing freeVideoDurationCap was treated as an explicit update")
+	}
+
+	var explicit settingsConfigDTO
+	if err := json.Unmarshal([]byte(`{"providerWeb":{"freeVideoDurationCap":8}}`), &explicit); err != nil {
+		t.Fatal(err)
+	}
+	input := explicit.toApplication()
+	if !input.ProviderWeb.FreeVideoDurationCapProvided || input.ProviderWeb.FreeVideoDurationCap != 8 {
+		t.Fatalf("explicit freeVideoDurationCap was lost: %#v", input.ProviderWeb)
+	}
+}
+
 func TestLegacySettingsRequestMayOmitAccounts(t *testing.T) {
 	var dto settingsConfigDTO
 	if err := json.Unmarshal([]byte(`{"server":{"maxConcurrentRequests":64}}`), &dto); err != nil {

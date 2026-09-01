@@ -264,11 +264,11 @@ func (a *Adapter) GenerateVideo(ctx context.Context, request provider.VideoReque
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, err)
 	}
 	defer lease.Release()
-	seconds := applyFreeWebVideoDurationCap(request.Duration, cfg.FreeVideoDurationCap, request.Billing)
-	segments := videoSegments(seconds)
-	if len(segments) == 0 {
+	if len(videoSegments(request.Duration)) == 0 {
 		return provider.VideoResult{}, provider.WrapVideoStage(provider.VideoStagePrepare, 0, fmt.Errorf("duration 必须在 1 到 15 秒之间"))
 	}
+	seconds := applyFreeWebVideoDurationCap(request.Duration, cfg.FreeVideoDurationCap, request.Credential)
+	segments := videoSegments(seconds)
 	ratio := resolveAspectRatio(request.AspectRatio)
 	resolution := request.Resolution
 	if resolution == "" {
@@ -522,17 +522,14 @@ func normalizeFreeVideoDurationCap(value int) int {
 	return settingsdomain.NormalizeWebFreeVideoDurationCap(value)
 }
 
-func isFreeWebVideoAccount(billing *account.Billing) bool {
-	if billing == nil || billing.IsPaid() {
-		return false
-	}
-	return billing.HasFreeProfileSignal() || billing.HasInferredFreeProfileSignal()
+func shouldCapWebVideoDuration(credential account.Credential) bool {
+	return credential.WebTier == account.WebTierBasic
 }
 
 // applyFreeWebVideoDurationCap clamps duration for free-tier Web accounts so
 // upstream 429s from >6s (or the configured cap) do not trigger useless account rotation.
-func applyFreeWebVideoDurationCap(seconds, cap int, billing *account.Billing) int {
-	if !isFreeWebVideoAccount(billing) {
+func applyFreeWebVideoDurationCap(seconds, cap int, credential account.Credential) int {
+	if !shouldCapWebVideoDuration(credential) {
 		return seconds
 	}
 	cap = normalizeFreeVideoDurationCap(cap)
