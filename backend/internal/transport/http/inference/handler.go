@@ -1292,10 +1292,30 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 		return
 	}
 	copyHeaders(c.Writer.Header(), result.Header)
-	c.Status(result.StatusCode)
 	if result.StatusCode >= 400 {
 		errorCode = "upstream_error"
+		if stream && !isEventStreamContentType(result.Header.Get("Content-Type")) {
+			raw, readErr := io.ReadAll(io.LimitReader(result.Body, maxJSONResponseTransferBytes+1))
+			if readErr != nil {
+				if anthropic {
+					writeAnthropicError(c, http.StatusBadGateway, "api_error", "读取上游错误响应失败", "upstream_error")
+				} else {
+					writeOpenAIError(c, http.StatusBadGateway, "upstream_error", "读取上游错误响应失败")
+				}
+				return
+			}
+			c.Writer.Header().Del("Content-Length")
+			code, message := gateway.ClassifyUpstreamHTTPError(result.StatusCode, raw)
+			errorCode = code
+			if anthropic {
+				writeAnthropicError(c, result.StatusCode, anthropicUpstreamHTTPErrorType(result.StatusCode), message, errorCode)
+			} else {
+				writeOpenAIError(c, result.StatusCode, errorCode, message)
+			}
+			return
+		}
 	}
+	c.Status(result.StatusCode)
 	var err error
 	if stream {
 		metadata, copyErr := copyStreamWithFallbackModel(c.Writer, result.Body, protocol, result.MarkFirstToken, fallbackModel)
@@ -1309,6 +1329,21 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	}
 	if err != nil {
 		errorCode = classifyCopyError(c.Request.Context(), err)
+	}
+}
+
+func anthropicUpstreamHTTPErrorType(status int) string {
+	switch status {
+	case http.StatusBadRequest, http.StatusConflict, http.StatusUnprocessableEntity:
+		return "invalid_request_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		return "timeout_error"
+	default:
+		return "api_error"
 	}
 }
 
@@ -2230,6 +2265,11 @@ func copyHeaders(destination, source http.Header) {
 			destination.Add(name, value)
 		}
 	}
+}
+
+func isEventStreamContentType(value string) bool {
+	mediaType, _, err := mime.ParseMediaType(value)
+	return err == nil && strings.EqualFold(mediaType, "text/event-stream")
 }
 
 func writeOpenAIError(c *gin.Context, status int, code, message string) {

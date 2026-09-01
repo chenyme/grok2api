@@ -336,6 +336,59 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestLiftsFunctionParameterUnion(t *testing.T) {
+	spec, ok := Resolve("grok-4.3")
+	if !ok {
+		t.Fatal("grok-4.3 missing")
+	}
+	body, err := normalizeRequest([]byte(`{
+		"model":"grok-4.3",
+		"input":"hello",
+		"tools":[{"type":"function","name":"automation_update","parameters":{
+			"$defs":{
+				"View":{"type":"object","properties":{"mode":{"enum":["view"],"type":"string"}},"required":["mode"]},
+				"Create":{"oneOf":[{"type":"object","properties":{"mode":{"enum":["create"],"type":"string"}},"required":["mode"]}]}
+			},
+			"type":"object",
+			"properties":{},
+			"oneOf":[{"$ref":"#/$defs/View"},{"$ref":"#/$defs/Create"}]
+		}}]
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	parameters := payload["tools"].([]any)[0].(map[string]any)["parameters"].(map[string]any)
+	branches, _ := parameters["oneOf"].([]any)
+	if len(branches) != 2 {
+		t.Fatalf("parameters = %#v", parameters)
+	}
+	for i, raw := range branches {
+		branch, _ := raw.(map[string]any)
+		if branch["type"] != "object" || branch["$ref"] != nil || branch["oneOf"] != nil {
+			t.Fatalf("branch[%d] = %#v", i, branch)
+		}
+	}
+}
+
+func TestNormalizeRequestIllegalFunctionRootNamesTool(t *testing.T) {
+	spec, ok := Resolve("grok-4.3")
+	if !ok {
+		t.Fatal("grok-4.3 missing")
+	}
+	_, err := normalizeRequest([]byte(`{
+		"model":"grok-4.3",
+		"input":"hello",
+		"tools":[{"type":"function","name":"automation_update","parameters":{"type":"string"}}]
+	}`), spec)
+	if err == nil || !strings.Contains(err.Error(), "automation_update") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 	spec, ok := Resolve("grok-4.3")
 	if !ok {

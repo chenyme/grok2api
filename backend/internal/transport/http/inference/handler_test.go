@@ -1644,6 +1644,98 @@ func TestWriteResultUpstreamCutStaysUpstreamInterrupted(t *testing.T) {
 	}
 }
 
+func TestWriteProtocolResultMapsJSONInvalidArgumentWithoutCopyStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	body := `{"code":"invalid-argument","error":"mcp__codex_app__automation_update: tool parameter root must be an object type (root schema is an anyOf/oneOf union with a non-object branch)"}`
+	var finalCode string
+	recorded := false
+	result := &gateway.Result{
+		StatusCode: http.StatusBadRequest,
+		Status:     "400 Bad Request",
+		Header:     http.Header{"Content-Type": {"application/json"}, "Content-Length": {fmt.Sprintf("%d", len(body))}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		RecordStreamFailure: func(gateway.StreamFailureDiagnostic) {
+			recorded = true
+		},
+		Finalize: func(_ gateway.Usage, _, code string) {
+			finalCode = code
+		},
+	}
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) {
+		handler.writeResponsesResult(c, result, true, "")
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusBadRequest || recorded || finalCode != "invalid_argument" {
+		t.Fatalf("status=%d recorded=%v final=%q body=%s", recorder.Code, recorded, finalCode, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "mcp__codex_app__automation_update") || strings.Contains(recorder.Body.String(), "upstream_stream_incomplete") {
+		t.Fatalf("body=%s", recorder.Body.String())
+	}
+}
+
+func TestWriteProtocolResultAnthropicJSONReadFailureKeepsAnthropicShape(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	var finalCode string
+	result := &gateway.Result{
+		StatusCode: http.StatusBadRequest,
+		Status:     "400 Bad Request",
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(&chunkErrorReader{data: []byte(`{"error":"partial"}`)}),
+		Finalize: func(_ gateway.Usage, _, code string) {
+			finalCode = code
+		},
+	}
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) {
+		handler.writeAnthropicResult(c, result, true)
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	var payload struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusBadGateway || payload.Type != "error" || payload.Error.Type != "api_error" || payload.Error.Code != "upstream_error" || finalCode != "upstream_error" {
+		t.Fatalf("status=%d payload=%#v final=%q body=%s", recorder.Code, payload, finalCode, recorder.Body.String())
+	}
+}
+
+func TestWriteProtocolResultDoesNotRemapOtherJSON4xxAsServerError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewHandler(nil, nil, 1<<20)
+	body := `{"error":{"code":"not_found","message":"requested response is missing"}}`
+	var finalCode string
+	result := &gateway.Result{
+		StatusCode: http.StatusNotFound,
+		Status:     "404 Not Found",
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Finalize: func(_ gateway.Usage, _, code string) {
+			finalCode = code
+		},
+	}
+	router := gin.New()
+	router.GET("/", func(c *gin.Context) {
+		handler.writeResponsesResult(c, result, true, "")
+	})
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusNotFound || finalCode != "upstream_error" || !strings.Contains(recorder.Body.String(), "requested response is missing") {
+		t.Fatalf("status=%d final=%q body=%s", recorder.Code, finalCode, recorder.Body.String())
+	}
+}
+
 func TestWriteResultOutputLoopFinalizesDistinctCode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewHandler(nil, nil, 1<<20)
