@@ -37,24 +37,26 @@ type ProviderBuildRecommendation struct {
 }
 
 type ProviderWebConfig struct {
-	BaseURL                 string
-	StatsigMode             string
-	StatsigManualValue      string
-	StatsigManualConfigured bool
-	StatsigSignerURL        string
-	ClearanceMode           string
-	FlareSolverrURL         string
-	ClearanceTimeout        string
-	ClearanceRefresh        string
-	QuotaTimeout            string
-	ChatTimeout             string
-	StreamIdleTimeout       string
-	ImageTimeout            string
-	VideoTimeout            string
-	MediaConcurrency        int
-	AllowNSFW               bool
-	RecoveryBackoffBase     string
-	RecoveryBackoffMax      string
+	BaseURL                      string
+	StatsigMode                  string
+	StatsigManualValue           string
+	StatsigManualConfigured      bool
+	StatsigSignerURL             string
+	ClearanceMode                string
+	FlareSolverrURL              string
+	ClearanceTimeout             string
+	ClearanceRefresh             string
+	QuotaTimeout                 string
+	ChatTimeout                  string
+	StreamIdleTimeout            string
+	ImageTimeout                 string
+	VideoTimeout                 string
+	MediaConcurrency             int
+	AllowNSFW                    bool
+	FreeVideoDurationCap         int
+	FreeVideoDurationCapProvided bool
+	RecoveryBackoffBase          string
+	RecoveryBackoffMax           string
 	// ClearanceProvided distinguishes older admin clients that predate the
 	// managed-clearance fields from an explicit update to those fields.
 	ClearanceProvided bool
@@ -339,6 +341,10 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	if clearanceRefresh <= 0 {
 		clearanceRefresh = base.Provider.Web.ClearanceRefresh.Value()
 	}
+	freeVideoDurationCap := value.ProviderWeb.FreeVideoDurationCap
+	if freeVideoDurationCap == 0 {
+		freeVideoDurationCap = base.Provider.Web.FreeVideoDurationCap
+	}
 	base.Provider.Web = config.WebProviderConfig{
 		BaseURL: value.ProviderWeb.BaseURL, QuotaTimeout: config.Duration(value.ProviderWeb.QuotaTimeout),
 		StatsigMode: value.ProviderWeb.StatsigMode, StatsigManualValue: value.ProviderWeb.StatsigManualValue, StatsigSignerURL: value.ProviderWeb.StatsigSignerURL,
@@ -348,7 +354,8 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 		ImageTimeout:     config.Duration(value.ProviderWeb.ImageTimeout),
 		VideoTimeout:     config.Duration(value.ProviderWeb.VideoTimeout),
 		MediaConcurrency: value.ProviderWeb.MediaConcurrency, AllowNSFW: value.ProviderWeb.AllowNSFW,
-		RecoveryBackoffBase: config.Duration(value.ProviderWeb.RecoveryBackoffBase), RecoveryBackoffMax: config.Duration(value.ProviderWeb.RecoveryBackoffMax),
+		FreeVideoDurationCap: settingsdomain.NormalizeWebFreeVideoDurationCap(freeVideoDurationCap),
+		RecoveryBackoffBase:  config.Duration(value.ProviderWeb.RecoveryBackoffBase), RecoveryBackoffMax: config.Duration(value.ProviderWeb.RecoveryBackoffMax),
 	}
 	if value.ProviderWeb.StreamIdleTimeout <= 0 {
 		base.Provider.Web.StreamIdleTimeout = config.Duration(settingsdomain.DefaultWebStreamIdleTimeout)
@@ -457,7 +464,8 @@ func toDomainConfig(value config.Config) settingsdomain.Config {
 			ImageTimeout:     value.Provider.Web.ImageTimeout.Value(),
 			VideoTimeout:     value.Provider.Web.VideoTimeout.Value(),
 			MediaConcurrency: value.Provider.Web.MediaConcurrency, AllowNSFW: value.Provider.Web.AllowNSFW,
-			RecoveryBackoffBase: value.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: value.Provider.Web.RecoveryBackoffMax.Value(),
+			FreeVideoDurationCap: settingsdomain.NormalizeWebFreeVideoDurationCap(value.Provider.Web.FreeVideoDurationCap),
+			RecoveryBackoffBase:  value.Provider.Web.RecoveryBackoffBase.Value(), RecoveryBackoffMax: value.Provider.Web.RecoveryBackoffMax.Value(),
 		},
 		ProviderConsole: settingsdomain.ProviderConsoleConfig{
 			BaseURL: value.Provider.Console.BaseURL, ChatTimeout: value.Provider.Console.ChatTimeout.Value(),
@@ -555,6 +563,9 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	}
 	next.Provider.Web.MediaConcurrency = input.ProviderWeb.MediaConcurrency
 	next.Provider.Web.AllowNSFW = input.ProviderWeb.AllowNSFW
+	if input.ProviderWeb.FreeVideoDurationCapProvided {
+		next.Provider.Web.FreeVideoDurationCap = settingsdomain.NormalizeWebFreeVideoDurationCap(input.ProviderWeb.FreeVideoDurationCap)
+	}
 	next.Provider.Console.BaseURL = strings.TrimSpace(input.ProviderConsole.BaseURL)
 	next.Batch = config.BatchConfig{
 		ImportConcurrency: input.Batch.ImportConcurrency, ConversionConcurrency: input.Batch.ConversionConcurrency,
@@ -689,7 +700,9 @@ func toEditable(cfg config.Config) EditableConfig {
 			ImageTimeout:     cfg.Provider.Web.ImageTimeout.String(),
 			VideoTimeout:     cfg.Provider.Web.VideoTimeout.String(),
 			MediaConcurrency: cfg.Provider.Web.MediaConcurrency, AllowNSFW: cfg.Provider.Web.AllowNSFW,
-			RecoveryBackoffBase: cfg.Provider.Web.RecoveryBackoffBase.String(), RecoveryBackoffMax: cfg.Provider.Web.RecoveryBackoffMax.String(),
+			FreeVideoDurationCap:         settingsdomain.NormalizeWebFreeVideoDurationCap(cfg.Provider.Web.FreeVideoDurationCap),
+			FreeVideoDurationCapProvided: true,
+			RecoveryBackoffBase:          cfg.Provider.Web.RecoveryBackoffBase.String(), RecoveryBackoffMax: cfg.Provider.Web.RecoveryBackoffMax.String(),
 		},
 		ProviderConsole: ProviderConsoleConfig{
 			BaseURL: cfg.Provider.Console.BaseURL, ChatTimeout: cfg.Provider.Console.ChatTimeout.String(),

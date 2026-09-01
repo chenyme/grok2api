@@ -26,6 +26,7 @@ type Config struct {
 	VideoTimeoutSeconds      int
 	MaxInputImageBytes       int64
 	AllowNSFW                bool
+	FreeVideoDurationCap     int
 }
 
 type Adapter struct {
@@ -86,6 +87,7 @@ func normalizedConfig(cfg Config) Config {
 	if cfg.MaxInputImageBytes <= 0 {
 		cfg.MaxInputImageBytes = 32 << 20
 	}
+	cfg.FreeVideoDurationCap = normalizeFreeVideoDurationCap(cfg.FreeVideoDurationCap)
 	return cfg
 }
 

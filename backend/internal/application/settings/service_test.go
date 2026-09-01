@@ -241,6 +241,51 @@ func TestUpdatePreservesAccountIsolationWhenFieldIsOmitted(t *testing.T) {
 	}
 }
 
+func TestUpdatePreservesFreeVideoDurationCapWhenFieldIsOmitted(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Provider.Web.FreeVideoDurationCap = 8
+	repository := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repository, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.ProviderWeb.FreeVideoDurationCap = 0
+	input.ProviderWeb.FreeVideoDurationCapProvided = false
+
+	snapshot, err := service.Update(context.Background(), 0, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied.Provider.Web.FreeVideoDurationCap != 8 || repository.value.ProviderWeb.FreeVideoDurationCap != 8 {
+		t.Fatalf("omitted free video duration cap was overwritten: applied=%d persisted=%d", applied.Provider.Web.FreeVideoDurationCap, repository.value.ProviderWeb.FreeVideoDurationCap)
+	}
+
+	input = snapshot.Config
+	input.ProviderWeb.FreeVideoDurationCap = 0
+	input.ProviderWeb.FreeVideoDurationCapProvided = true
+	if _, err := service.Update(context.Background(), snapshot.Revision, input); err != nil {
+		t.Fatal(err)
+	}
+	if applied.Provider.Web.FreeVideoDurationCap != settingsdomain.DefaultWebFreeVideoDurationCap {
+		t.Fatalf("explicit zero free video duration cap = %d, want default %d", applied.Provider.Web.FreeVideoDurationCap, settingsdomain.DefaultWebFreeVideoDurationCap)
+	}
+}
+
+func TestLoadPersistedKeepsFreeVideoDurationCapForOlderPayload(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Provider.Web.FreeVideoDurationCap = 8
+	persisted := toDomainConfig(cfg)
+	persisted.ProviderWeb.FreeVideoDurationCap = 0
+	repository := &runtimeSettingsRepositoryStub{value: persisted, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider.Web.FreeVideoDurationCap != 8 {
+		t.Fatalf("legacy persisted free video duration cap = %d, want config value 8", loaded.Provider.Web.FreeVideoDurationCap)
+	}
+}
+
 func TestLoadPersistedKeepsAccountIsolationDefaultForOlderPayload(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Routing.AccountIsolatedConnections = true
