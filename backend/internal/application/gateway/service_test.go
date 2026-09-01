@@ -4874,6 +4874,9 @@ func TestIsUpstreamStreamFailureIncludesIdleTimeout(t *testing.T) {
 	if !isUpstreamStreamFailure("upstream_response_empty") {
 		t.Fatal("empty non-streaming response must update account health after handoff")
 	}
+	if !isUpstreamStreamFailure("upstream_output_loop") {
+		t.Fatal("output-loop abort must stay classified as an upstream stream failure")
+	}
 	if isUpstreamStreamFailure("") || isUpstreamStreamFailure("quality_degraded") || isUpstreamStreamFailure("client_stream_interrupted") || isUpstreamStreamFailure("request_canceled") {
 		t.Fatal("non-stream codes must not look like mid-stream failures")
 	}

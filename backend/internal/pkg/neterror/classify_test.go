@@ -58,6 +58,12 @@ func TestIsUpstreamResponseEmpty(t *testing.T) {
 	}
 }
 
+func TestIsUpstreamOutputLoop(t *testing.T) {
+	if !IsUpstreamOutputLoop(fmt.Errorf("read body: %w", ErrUpstreamOutputLoop)) || IsUpstreamOutputLoop(io.EOF) {
+		t.Fatal("output-loop sentinel classification failed")
+	}
+}
+
 func TestIsClientRequestCancel(t *testing.T) {
 	idleCtx, idleCancel := context.WithCancelCause(context.Background())
 	idleCancel(ErrUpstreamStreamIdleTimeout)
