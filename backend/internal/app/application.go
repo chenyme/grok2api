@@ -463,7 +463,8 @@ func webProviderConfig(cfg config.Config) webprovider.Config {
 		ChatTimeoutSeconds: int(cfg.Provider.Web.ChatTimeout.Value().Seconds()), StreamIdleTimeoutSeconds: int(cfg.Provider.Web.StreamIdleTimeout.Value().Seconds()),
 		ImageTimeoutSeconds: int(cfg.Provider.Web.ImageTimeout.Value().Seconds()),
 		VideoTimeoutSeconds: int(cfg.Provider.Web.VideoTimeout.Value().Seconds()), MaxInputImageBytes: cfg.Media.MaxImageBytes,
-		AllowNSFW: cfg.Provider.Web.AllowNSFW,
+		AllowNSFW:            cfg.Provider.Web.AllowNSFW,
+		FreeVideoDurationCap: cfg.Provider.Web.FreeVideoDurationCap,
 	}
 }
 
@@ -493,13 +494,15 @@ func accountAutoCleanConfig(value config.AccountsConfig) accountapp.AutoCleanCon
 
 func qualityRetryRuntime(value config.QualityGuardRequestRetryConfig) gateway.QualityRetryRuntime {
 	return gateway.QualityRetryRuntime{
-		Enabled:             value.Enabled,
-		MaxAttempts:         value.MaxAttempts,
-		HoldTimeout:         value.HoldTimeout.Value(),
-		MinOutputTokens:     int64(value.MinOutputTokens),
-		OnExhausted:         value.OnExhausted,
-		AccountCooldown:     value.AccountCooldown.Value(),
-		IdleAccountCooldown: value.IdleAccountCooldown.Value(),
+		Enabled:                         value.Enabled,
+		MaxAttempts:                     value.MaxAttempts,
+		HoldTimeout:                     value.HoldTimeout.Value(),
+		MinOutputTokens:                 int64(value.MinOutputTokens),
+		OnExhausted:                     value.OnExhausted,
+		AccountCooldown:                 value.AccountCooldown.Value(),
+		IdleAccountCooldown:             value.IdleAccountCooldown.Value(),
+		MinEncryptedBytes:               value.MinEncryptedBytes,
+		EncryptedBytesPerReasoningToken: value.EncryptedBytesPerReasoningToken,
 	}
 }
 

@@ -336,6 +336,59 @@ func TestNormalizeRequestAppliesConsoleContract(t *testing.T) {
 	}
 }
 
+func TestNormalizeRequestLiftsFunctionParameterUnion(t *testing.T) {
+	spec, ok := Resolve("grok-4.3")
+	if !ok {
+		t.Fatal("grok-4.3 missing")
+	}
+	body, err := normalizeRequest([]byte(`{
+		"model":"grok-4.3",
+		"input":"hello",
+		"tools":[{"type":"function","name":"automation_update","parameters":{
+			"$defs":{
+				"View":{"type":"object","properties":{"mode":{"enum":["view"],"type":"string"}},"required":["mode"]},
+				"Create":{"oneOf":[{"type":"object","properties":{"mode":{"enum":["create"],"type":"string"}},"required":["mode"]}]}
+			},
+			"type":"object",
+			"properties":{},
+			"oneOf":[{"$ref":"#/$defs/View"},{"$ref":"#/$defs/Create"}]
+		}}]
+	}`), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	parameters := payload["tools"].([]any)[0].(map[string]any)["parameters"].(map[string]any)
+	branches, _ := parameters["oneOf"].([]any)
+	if len(branches) != 2 {
+		t.Fatalf("parameters = %#v", parameters)
+	}
+	for i, raw := range branches {
+		branch, _ := raw.(map[string]any)
+		if branch["type"] != "object" || branch["$ref"] != nil || branch["oneOf"] != nil {
+			t.Fatalf("branch[%d] = %#v", i, branch)
+		}
+	}
+}
+
+func TestNormalizeRequestIllegalFunctionRootNamesTool(t *testing.T) {
+	spec, ok := Resolve("grok-4.3")
+	if !ok {
+		t.Fatal("grok-4.3 missing")
+	}
+	_, err := normalizeRequest([]byte(`{
+		"model":"grok-4.3",
+		"input":"hello",
+		"tools":[{"type":"function","name":"automation_update","parameters":{"type":"string"}}]
+	}`), spec)
+	if err == nil || !strings.Contains(err.Error(), "automation_update") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 	spec, ok := Resolve("grok-4.3")
 	if !ok {
@@ -1085,7 +1138,7 @@ func TestAdapterForwardsConsoleHeadersAndNormalizedBody(t *testing.T) {
 	}
 }
 
-func TestAdapterScopesStreamIdleTimeoutToConsoleTextStreams(t *testing.T) {
+func TestAdapterAppliesIdleTimeoutToConsoleTextResponses(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if serveTestDPoPToken(t, writer, request) {
 			return
@@ -1117,8 +1170,8 @@ func TestAdapterScopesStreamIdleTimeoutToConsoleTextStreams(t *testing.T) {
 				t.Fatalf("response body = %T, want *releaseBody", response.Body)
 			}
 			_, wrapped := released.ReadCloser.(*providerstreamidle.ReadCloser)
-			if wrapped != streaming {
-				t.Fatalf("stream-idle wrapper present = %t, streaming = %t", wrapped, streaming)
+			if !wrapped {
+				t.Fatalf("text response idle wrapper missing for streaming=%t", streaming)
 			}
 		})
 	}
@@ -1149,6 +1202,55 @@ func TestConsoleStreamingReadReturnsIdleTimeout(t *testing.T) {
 	defer response.Body.Close()
 	if _, err := io.Copy(io.Discard, response.Body); !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) {
 		t.Fatalf("body read error = %v, want ErrUpstreamStreamIdleTimeout", err)
+	}
+}
+
+func TestConsoleNonStreamingConversationReadReturnsIdleTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	adapter.UpdateConfig(Config{BaseURL: server.URL, TimeoutSeconds: 5, StreamIdleTimeoutSeconds: 1})
+	started := time.Now()
+	_, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+		Operation: conversation.OperationChat, Streaming: false, NormalizeBody: true,
+		Body: []byte(`{"model":"grok-4.3","messages":[{"role":"user","content":"hello"}]}`),
+	})
+	if !errors.Is(err, neterror.ErrUpstreamStreamIdleTimeout) || neterror.IdleTimeoutObservedData(err) {
+		t.Fatalf("body read error = %#v, observed=%t", err, neterror.IdleTimeoutObservedData(err))
+	}
+	if elapsed := time.Since(started); elapsed >= 3*time.Second {
+		t.Fatalf("non-streaming idle timeout took %s", elapsed)
+	}
+}
+
+func TestConsoleNonStreamingConversationRejectsEmptySuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if serveTestDPoPToken(t, writer, request) {
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adapter, credential := newConsoleTestAdapter(t, server.URL)
+	_, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: credential, Method: http.MethodPost, Path: "/responses", Model: "grok-4.3",
+		Operation: conversation.OperationChat, Streaming: false, NormalizeBody: true,
+		Body: []byte(`{"model":"grok-4.3","messages":[{"role":"user","content":"hello"}]}`),
+	})
+	if !errors.Is(err, neterror.ErrUpstreamResponseEmpty) {
+		t.Fatalf("empty response error = %v", err)
 	}
 }
 

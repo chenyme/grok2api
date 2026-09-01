@@ -80,6 +80,7 @@ type DegradeAccount struct {
 	Enabled            bool
 	Found              bool
 	BuildBotFlagSource int
+	LeaseCooldownUntil *time.Time
 	Nodes              []string
 }
 

@@ -18,6 +18,7 @@ import (
 
 	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	clientkeyapp "github.com/chenyme/grok2api/backend/internal/application/clientkey"
+	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/domain/audit"
 	"github.com/chenyme/grok2api/backend/internal/domain/clientkey"
@@ -29,6 +30,7 @@ import (
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	neterrorpkg "github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/pkg/requestmeta"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -448,6 +450,90 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	}
 }
 
+func TestQualityProbeForcesObservedNodeForUnboundAccountAndRejectsConflictingBinding(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quality-probe-unbound.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	nodes := relational.NewEgressRepository(database)
+	observedNode, err := nodes.CreateEgressNode(ctx, egressdomain.Node{
+		Name: "observed", Scope: egressdomain.ScopeBuild, Enabled: true, EncryptedProxyURL: "encrypted-observed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherNode, err := nodes.CreateEgressNode(ctx, egressdomain.Node{
+		Name: "other", Scope: egressdomain.ScopeBuild, Enabled: true, EncryptedProxyURL: "encrypted-other",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unbound, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "unbound", SourceKey: "quality-unbound", EncryptedAccessToken: "encrypted",
+		ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundElsewhere, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "bound-elsewhere", SourceKey: "quality-bound", EncryptedAccessToken: "encrypted",
+		ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1, EgressNodeID: otherNode.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-test"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{unbound.ID, boundElsewhere.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-test"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "quality-probe", Prefix: "quality", SecretHash: strings.Repeat("7", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &forcedQualityProbeAdapter{}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 1)
+
+	result, err := service.ProbeEgressQuality(ctx, observedNode.ID, egressapp.QualityProbeInput{
+		AccountID: unbound.ID, ClientKeyID: key.ID, Model: "grok-test", Prompt: "probe", Expected: "ok", MatchMode: "contains", MaxOutputTokens: 16,
+	})
+	if err != nil {
+		t.Fatalf("unbound account did not reach the observed node: %v", err)
+	}
+	if !result.ExpectedMatched || adapter.Attempts() != 1 || adapter.LastAccountID() != unbound.ID || adapter.LastForcedNodeID() != observedNode.ID {
+		t.Fatalf("probe result=%#v attempts=%d account=%d forcedNode=%d", result, adapter.Attempts(), adapter.LastAccountID(), adapter.LastForcedNodeID())
+	}
+
+	_, err = service.ProbeEgressQuality(ctx, observedNode.ID, egressapp.QualityProbeInput{
+		AccountID: boundElsewhere.ID, ClientKeyID: key.ID, Model: "grok-test", Prompt: "probe", Expected: "ok", MatchMode: "contains", MaxOutputTokens: 16,
+	})
+	if !errors.Is(err, egressapp.ErrQualityProbeNoAccount) {
+		t.Fatalf("conflicting explicit binding returned %v", err)
+	}
+	if adapter.Attempts() != 1 {
+		t.Fatalf("conflicting binding reached upstream; attempts=%d", adapter.Attempts())
+	}
+}
+
 func TestGatewayBuildResponseHeaderTimeoutDoesNotSwitchAccounts(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-build-header-timeout.db"))
@@ -505,6 +591,113 @@ func TestGatewayBuildResponseHeaderTimeoutDoesNotSwitchAccounts(t *testing.T) {
 	}
 	if latest.FailureCount != 0 || latest.CooldownUntil != nil {
 		t.Fatalf("ambiguous response-header timeout changed account health: %#v", latest)
+	}
+}
+
+func TestGatewayNonStreamingEmptyIdleCoolsAccountAndSwitches(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "gateway-non-stream-idle.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"empty-idle", "healthy"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: "encrypted-" + name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index*100, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	const model = "grok-non-stream-idle"
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{model}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "non-stream-idle", Prefix: "idle", SecretHash: strings.Repeat("8", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &failoverAdapter{transportErrorIDs: map[uint64]error{credentials[0].ID: &neterrorpkg.IdleTimeoutError{}}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+	service.UpdateQualityRetry(QualityRetryRuntime{Enabled: false, IdleAccountCooldown: 7 * time.Minute})
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-non-stream-idle", ClientKey: key, PublicModel: model,
+		Body: []byte(`{"model":"grok-non-stream-idle","input":"hello","stream":false}`), Streaming: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(result.Body)
+	result.Finalize(Usage{}, "resp-non-stream-idle", "")
+	_ = result.Body.Close()
+	if len(adapter.attempts) != 2 || adapter.attempts[0] != credentials[0].ID || adapter.attempts[1] != credentials[1].ID {
+		t.Fatalf("attempts = %#v", adapter.attempts)
+	}
+	cooled, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cooled.FailureCount != 1 || cooled.CooldownUntil == nil || cooled.LastError != "upstream status 504" {
+		t.Fatalf("cooled account = %#v", cooled)
+	}
+	remaining := time.Until(*cooled.CooldownUntil)
+	if remaining < 6*time.Minute || remaining > 8*time.Minute {
+		t.Fatalf("idle cooldown = %s, want about 7m", remaining)
+	}
+
+	// The same health penalty must apply without replaying a hosted tool, whose
+	// execution may already have started upstream before the response went idle.
+	if err := accountRepo.UpdateHealth(ctx, credentials[0].ID, account.ProviderBuild, 0, nil, "", false); err != nil {
+		t.Fatal(err)
+	}
+	adapter.resetAttempts()
+	unsafeSticky := memory.NewStickyStore()
+	unsafeAccountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), unsafeSticky, registry, testCipher(t), nil)
+	unsafeSelector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), unsafeSticky, registry, time.Hour, time.Second, time.Minute)
+	unsafeService := NewService(modelRepo, auditRepo, unsafeAccountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, unsafeSelector, responseRepo, 3)
+	unsafeService.UpdateQualityRetry(QualityRetryRuntime{Enabled: false, IdleAccountCooldown: 7 * time.Minute})
+
+	_, err = unsafeService.CreateResponse(ctx, Input{
+		RequestID: "req-non-stream-idle-hosted-tool", ClientKey: key, PublicModel: model,
+		Body: []byte(`{"model":"grok-non-stream-idle","input":"hello","stream":false,"tools":[{"type":"web_search"}]}`), Streaming: false,
+	})
+	if err == nil {
+		t.Fatal("expected hosted-tool idle failure")
+	}
+	if len(adapter.attempts) != 1 || adapter.attempts[0] != credentials[0].ID {
+		t.Fatalf("hosted-tool attempts = %#v, want only account %d", adapter.attempts, credentials[0].ID)
+	}
+	cooled, err = accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cooled.CooldownUntil == nil || cooled.LastError != "upstream status 504" {
+		t.Fatalf("hosted-tool account health = %#v", cooled)
 	}
 }
 
@@ -2884,6 +3077,17 @@ func TestGatewaySafetyRejectionDoesNotTouchAccountState(t *testing.T) {
 			}
 		}
 	}
+	logs, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || len(logs) != 1 {
+		t.Fatalf("audit list = %#v, total=%d, err=%v", logs, total, err)
+	}
+	detail, err := auditRepo.Get(ctx, logs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.AttemptCount != 1 || len(detail.Attempts) != 1 || detail.Attempts[0].Stage != "upstream_response" || detail.Attempts[0].UpstreamStatusCode == nil || *detail.Attempts[0].UpstreamStatusCode != http.StatusForbidden {
+		t.Fatalf("terminal 403 attempts = %#v", detail.Attempts)
+	}
 }
 
 func TestGatewayConsoleDPoPRequirementStopsAfterOneAccount(t *testing.T) {
@@ -3309,6 +3513,96 @@ func TestGatewayGeneric429CoolsAccountAndRotates(t *testing.T) {
 	}
 	if cooled.AuthStatus != account.AuthStatusActive || cooled.FailureCount != 1 || cooled.CooldownUntil == nil {
 		t.Fatalf("generic 429 must briefly cool account A without permanent invalidation: %#v", cooled)
+	}
+}
+
+func TestGatewayRetryStreamFailureRecordsPrior429AndRetryStream(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "retry-stream-failure.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"retry-a", "retry-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-retry-stream"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-retry-stream"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "retry-stream-key", Prefix: "retrystream", SecretHash: strings.Repeat("4", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	exhausted := `{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage for model grok-4.6 for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 558975/500000."}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusTooManyRequests, body: exhausted}},
+		credentials[1].ID: {{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, body: "data: {\"type\":\"response.created\"}\n\n"}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-retry-stream", ClientKey: clientKey, PublicModel: "grok-retry-stream",
+		Body: []byte(`{"model":"grok-retry-stream","input":"hello"}`), Streaming: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{}, "", "upstream_stream_interrupted")
+	_ = result.Body.Close()
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+		t.Fatalf("429 must rotate before stream failure, attempts=%#v", attempts)
+	}
+
+	logs, _, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || len(logs) == 0 {
+		t.Fatalf("audits = %#v, err = %v", logs, err)
+	}
+	detail, err := auditRepo.Get(ctx, logs[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.ErrorCode != "upstream_stream_interrupted" || detail.AccountID == nil || *detail.AccountID != credentials[1].ID {
+		t.Fatalf("audit = %#v", detail)
+	}
+	if detail.AttemptCount != 2 || len(detail.Attempts) != 2 {
+		t.Fatalf("attempt count = %d stored = %d, attempts=%#v", detail.AttemptCount, len(detail.Attempts), detail.Attempts)
+	}
+	first, second := detail.Attempts[0], detail.Attempts[1]
+	if first.Stage != "upstream_response" || first.UpstreamStatusCode == nil || *first.UpstreamStatusCode != http.StatusTooManyRequests || first.AccountID == nil || *first.AccountID != credentials[0].ID {
+		t.Fatalf("first attempt = %#v", first)
+	}
+	if second.Stage != "response_stream" || second.UpstreamStatusCode == nil || *second.UpstreamStatusCode != http.StatusOK || second.AccountID == nil || *second.AccountID != credentials[1].ID || second.TransportError != "upstream_stream_interrupted" {
+		t.Fatalf("retry stream attempt = %#v", second)
 	}
 }
 
@@ -3829,6 +4123,102 @@ func TestGatewayPreviousResponseIDDoesNotCrossAccounts(t *testing.T) {
 	}
 }
 
+func TestGatewayPinnedDisabledOwnerRecordsSpecific503(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "pinned-disabled-owner.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	const model = "grok-pinned-disabled"
+	owner, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "disabled-owner", SourceKey: "disabled-owner", EncryptedAccessToken: "owner-access",
+		ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 200, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	healthy, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "healthy-pool", SourceKey: "healthy-pool", EncryptedAccessToken: "healthy-access",
+		ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive, Priority: 100, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{model}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{owner.ID, healthy.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{model}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "pinned-disabled-key", Prefix: "pindisabled", SecretHash: strings.Repeat("8", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := responseRepo.Save(ctx, inferencedomain.ResponseOwnership{
+		ResponseID: "resp-pinned-disabled", AccountID: owner.ID, ClientKeyID: clientKey.ID,
+		Provider: account.ProviderBuild, PromptCacheKey: "session-pinned-disabled", ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	if updated, err := accountRepo.UpdateMany(ctx, account.ProviderBuild, []uint64{owner.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil || updated != 1 {
+		t.Fatalf("disable owner updated=%d err=%v", updated, err)
+	}
+
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		healthy.ID: {{status: http.StatusOK, body: `{"id":"must-not-run"}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	_, err = service.CreateResponse(ctx, Input{
+		RequestID: "req-pinned-disabled", ClientKey: clientKey, PublicModel: model,
+		PreviousResponseID: "resp-pinned-disabled",
+		Body:               []byte(`{"model":"grok-pinned-disabled","previous_response_id":"resp-pinned-disabled","input":"hello"}`),
+	})
+	var unavailable *SelectionUnavailableError
+	if !errors.As(err, &unavailable) || unavailable.Reason != SelectionPinnedUnavailable || unavailable.Code() != "upstream_pinned_account_unavailable" || unavailable.AccountID != owner.ID {
+		t.Fatalf("selection failure = %#v, err=%v", unavailable, err)
+	}
+	if attempts := adapter.Attempts(); len(attempts) != 0 {
+		t.Fatalf("pinned failure must not use healthy account: %#v", attempts)
+	}
+	audits, total, err := auditRepo.List(ctx, 0, 10)
+	if err != nil || total != 1 || len(audits) != 1 {
+		t.Fatalf("audits=%#v total=%d err=%v", audits, total, err)
+	}
+	detail, err := auditRepo.Get(ctx, audits[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.StatusCode != http.StatusServiceUnavailable || detail.ErrorCode != "upstream_pinned_account_unavailable" || detail.AccountID == nil || *detail.AccountID != owner.ID {
+		t.Fatalf("audit = %#v", detail)
+	}
+	if len(detail.Attempts) != 1 || detail.Attempts[0].Stage != string(SelectionPinnedUnavailable) || detail.Attempts[0].AccountID == nil || *detail.Attempts[0].AccountID != owner.ID {
+		t.Fatalf("selection attempts = %#v", detail.Attempts)
+	}
+}
+
 func TestGatewayPinnedResponseReturnsCachedTeamRateLimitWithoutSpinning(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "pinned-team-rate-limit.db"))
@@ -3910,6 +4300,52 @@ type scriptedBuildResponse struct {
 	status int
 	body   string
 	header http.Header
+}
+
+type forcedQualityProbeAdapter struct {
+	mu           sync.Mutex
+	attempts     int
+	accountID    uint64
+	forcedNodeID uint64
+}
+
+func (a *forcedQualityProbeAdapter) Provider() account.Provider { return account.ProviderBuild }
+func (a *forcedQualityProbeAdapter) Definition() provider.Definition {
+	definition := testConversationDefinition(account.ProviderBuild)
+	definition.Credential.Refresh = false
+	return definition
+}
+func (a *forcedQualityProbeAdapter) ForwardResponse(_ context.Context, request provider.ResponseResourceRequest) (*provider.Response, error) {
+	a.mu.Lock()
+	a.attempts++
+	a.accountID = request.Credential.ID
+	a.forcedNodeID = request.ForcedEgressNodeID
+	a.mu.Unlock()
+	body := strings.Join([]string{
+		`data: {"id":"quality-response","model":"grok-test","choices":[{"delta":{"content":"ok"}}]}`,
+		`data: {"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	return &provider.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", Header: http.Header{"Content-Type": {"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(body)),
+	}, nil
+}
+func (a *forcedQualityProbeAdapter) Attempts() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.attempts
+}
+func (a *forcedQualityProbeAdapter) LastAccountID() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.accountID
+}
+func (a *forcedQualityProbeAdapter) LastForcedNodeID() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.forcedNodeID
 }
 
 type barePermissionEgressAdapter struct {
@@ -4425,6 +4861,7 @@ func TestAuditRequestSucceeded(t *testing.T) {
 	}{
 		{name: "2xx without error succeeds", statusCode: 200, errorCode: "", want: true},
 		{name: "2xx stream interruption fails", statusCode: 200, errorCode: "upstream_stream_interrupted", want: false},
+		{name: "2xx client stream interruption fails", statusCode: 200, errorCode: "client_stream_interrupted", want: false},
 		{name: "2xx stream incomplete fails", statusCode: 200, errorCode: "upstream_stream_incomplete", want: false},
 		{name: "2xx stream idle timeout fails", statusCode: 200, errorCode: "upstream_stream_idle_timeout", want: false},
 		{name: "any 2xx error fails", statusCode: 201, errorCode: "stream_interrupted", want: false},
@@ -4447,7 +4884,13 @@ func TestIsUpstreamStreamFailureIncludesIdleTimeout(t *testing.T) {
 	if !isUpstreamStreamFailure("upstream_stream_interrupted") || !isUpstreamStreamFailure("upstream_stream_incomplete") {
 		t.Fatal("existing stream-failure codes must stay classified")
 	}
-	if isUpstreamStreamFailure("") || isUpstreamStreamFailure("quality_degraded") {
+	if !isUpstreamStreamFailure("upstream_response_empty") {
+		t.Fatal("empty non-streaming response must update account health after handoff")
+	}
+	if !isUpstreamStreamFailure("upstream_output_loop") {
+		t.Fatal("output-loop abort must stay classified as an upstream stream failure")
+	}
+	if isUpstreamStreamFailure("") || isUpstreamStreamFailure("quality_degraded") || isUpstreamStreamFailure("client_stream_interrupted") || isUpstreamStreamFailure("request_canceled") {
 		t.Fatal("non-stream codes must not look like mid-stream failures")
 	}
 }
@@ -4471,5 +4914,27 @@ func TestStreamFailureHealthPenaltyOnlyLongCoolsTrulyEmptyIdle(t *testing.T) {
 		if status != 0 || cooldown != 0 {
 			t.Fatalf("non-empty idle usage %#v received long penalty (%d, %s)", usage, status, cooldown)
 		}
+	}
+	status, cooldown = streamFailureHealthPenalty("upstream_response_empty", Usage{}, 15*time.Minute)
+	if status != http.StatusBadGateway || cooldown != 15*time.Minute {
+		t.Fatalf("empty response penalty = (%d, %s)", status, cooldown)
+	}
+}
+
+func TestUpstreamResponseErrorHealthPenaltyDistinguishesPartialIdle(t *testing.T) {
+	status, cooldown, ok := upstreamResponseErrorHealthPenalty(&neterrorpkg.IdleTimeoutError{}, 15*time.Minute)
+	if !ok || status != http.StatusGatewayTimeout || cooldown != 15*time.Minute {
+		t.Fatalf("empty idle penalty = (%d, %s, %t)", status, cooldown, ok)
+	}
+	status, cooldown, ok = upstreamResponseErrorHealthPenalty(&neterrorpkg.IdleTimeoutError{DataObserved: true}, 15*time.Minute)
+	if !ok || status != 0 || cooldown != 0 {
+		t.Fatalf("partial idle penalty = (%d, %s, %t)", status, cooldown, ok)
+	}
+	status, cooldown, ok = upstreamResponseErrorHealthPenalty(neterrorpkg.ErrUpstreamResponseEmpty, 15*time.Minute)
+	if !ok || status != http.StatusBadGateway || cooldown != 15*time.Minute {
+		t.Fatalf("empty body penalty = (%d, %s, %t)", status, cooldown, ok)
+	}
+	if _, _, ok = upstreamResponseErrorHealthPenalty(context.DeadlineExceeded, 15*time.Minute); ok {
+		t.Fatal("ordinary timeout must not look like a confirmed response-body failure")
 	}
 }

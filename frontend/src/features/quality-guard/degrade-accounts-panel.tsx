@@ -166,6 +166,8 @@ export function DegradeAccountsPanel({ softTPS, hardTPS, failClosed, minGenMs }:
                     <TableCell className="whitespace-nowrap">
                       {!account.found
                         ? <Badge variant="outline" className="whitespace-nowrap text-muted-foreground">{t("qualityGuard.degrade.deletedStatus")}</Badge>
+                        : account.leaseQuarantinedUntil
+                          ? <Badge variant="outline" className="whitespace-nowrap border-amber-500/40 text-amber-700 dark:text-amber-400">{t("qualityGuard.leaseUntil", { time: formatCompactDateTime(account.leaseQuarantinedUntil, i18n.language) })}</Badge>
                         : account.enabled
                           ? <Badge variant="outline" className="whitespace-nowrap text-destructive">{t("qualityGuard.degrade.scheduling")}</Badge>
                           : <Badge variant="outline" className="whitespace-nowrap text-emerald-600 dark:text-emerald-400">{t("qualityGuard.degrade.disabledStatus")}</Badge>}

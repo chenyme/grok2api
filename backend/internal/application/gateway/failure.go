@@ -153,6 +153,21 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.SpendingLimitBlocked = isPaidQuotaExhaustion(metadataText)
 		failure.CredentialRejected = !failure.QuotaExhausted && containsAny(metadataText, "authentication", "unauthorized", "invalid token", "token expired")
 		failure.AccountScoped = failure.AccountBlocked || failure.PermanentAccountDenial || failure.QuotaExhausted || failure.CredentialRejected || isAccountScopedForbidden(metadataText)
+	case http.StatusBadRequest:
+		if isRequestScopedForbidden(upstreamCode, metadataText) {
+			failure.Code = "invalid_argument"
+			failure.RequestScopedForbidden = true
+			if upstreamMessage != "" {
+				failure.PublicMessage = upstreamMessage
+			} else {
+				failure.PublicMessage = "请求参数无效"
+			}
+			break
+		}
+		failure.Code = "upstream_error"
+		if upstreamMessage != "" {
+			failure.PublicMessage = upstreamMessage
+		}
 	case http.StatusTooManyRequests:
 		failure.Code = "upstream_rate_limited"
 		failure.PublicMessage = "上游请求频率受限"
@@ -163,8 +178,16 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
 	default:
-		failure.Code = "upstream_server_error"
-		failure.PublicMessage = "上游服务暂时异常"
+		if status >= 400 && status < 500 {
+			failure.Code = "upstream_error"
+			failure.PublicMessage = "上游拒绝了该请求"
+			if upstreamMessage != "" {
+				failure.PublicMessage = upstreamMessage
+			}
+		} else {
+			failure.Code = "upstream_server_error"
+			failure.PublicMessage = "上游服务暂时异常"
+		}
 	}
 	fingerprintPart := normalizeFailureCode(firstNonEmptyFailure(upstreamCode, upstreamType, upstreamMessage))
 	if fingerprintPart == "" {
@@ -174,13 +197,26 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 	return failure
 }
 
+// ClassifyUpstreamHTTPError maps an upstream HTTP error body to a client-facing
+// error code and message. Request-scoped 400s (invalid-argument) keep the
+// upstream text so the client can see the tool name.
+func ClassifyUpstreamHTTPError(status int, body []byte) (string, string) {
+	failure := newHTTPUpstreamFailure(status, body, 0, "")
+	if failure == nil {
+		return "upstream_error", "上游服务返回错误"
+	}
+	return failure.Code, failure.PublicMessage
+}
+
 func newTransportUpstreamFailure(err error, accountID uint64, accountName string) *UpstreamFailure {
 	code, message := "upstream_network_error", "连接上游服务失败"
 	status := http.StatusBadGateway
 	if neterrorpkg.IsResponseHeaderTimeout(err) {
 		status, code, message = http.StatusGatewayTimeout, "upstream_header_timeout", "等待上游响应头超时"
 	} else if neterrorpkg.IsUpstreamStreamIdleTimeout(err) {
-		status, code, message = http.StatusGatewayTimeout, "upstream_stream_idle_timeout", "上游流式响应长时间无数据"
+		status, code, message = http.StatusGatewayTimeout, "upstream_stream_idle_timeout", "上游响应长时间无数据"
+	} else if neterrorpkg.IsUpstreamResponseEmpty(err) {
+		status, code, message = http.StatusBadGateway, "upstream_response_empty", "上游响应为空"
 	} else if errors.Is(err, errQualityEmptyStream) {
 		status, code, message = http.StatusBadGateway, "upstream_stream_empty", "上游流式响应为空"
 	} else if errors.Is(err, context.DeadlineExceeded) {

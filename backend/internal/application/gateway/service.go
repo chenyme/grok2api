@@ -1023,6 +1023,9 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	// A lease recovery probe stays on exactly one account and one rendered proxy
 	// identity. Retrying the same pinned account would provide neither failover
 	// nor new evidence and can multiply a slow/failing probe.
+	holdCfg := s.qualityRetryConfig()
+	qualityHoldEnabled := shouldHoldQualityStream(input, ownership, route, operation, holdCfg)
+	qualityCrossAccountReplay := canReplayQualityHoldAcrossAccounts(input, ownership)
 	attemptPolicy := newRequestRoutingAttemptPolicy(int(s.maxAttempts.Load()), ownership != nil || input.ForcedAccountID != 0)
 	idempotencyID, _ := security.NewOpaqueToken(18)
 	pricingModel := s.providers.PricingModel(route.Provider, route.UpstreamModel)
@@ -1037,8 +1040,6 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	excluded := make(map[uint64]bool)
 	failureFingerprints := make(map[string]int)
 	authRecoveryAttempted := make(map[uint64]bool)
-	holdCfg := s.qualityRetryConfig()
-	qualityHoldEnabled := shouldHoldQualityStream(input, ownership, route, operation, holdCfg)
 	// Count accounts that actually reached the upstream. Credential-only skips
 	// do not consume the quality retry budget; refreshes stay on the same account.
 	qualityAccountAttempts := 0
@@ -1123,26 +1124,10 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 				}
 				record.DurationMS = time.Since(startedAt).Milliseconds()
 				record.ErrorCode = errorCode
-				attempts := failureAttempts.snapshot()
-				if !successful && len(attempts) == 0 {
-					statusCode := response.StatusCode
-					failureAttempts.append(audit.Attempt{
-						Source:             audit.AttemptSourceUpstreamHTTP,
-						Stage:              "response_stream",
-						AccountID:          auditAccountID(credential.ID),
-						AccountName:        credential.Name,
-						Method:             http.MethodPost,
-						RequestPath:        sanitizeRequestPath(path),
-						UpstreamURL:        sanitizeUpstreamURL(response.UpstreamURL),
-						StartedAt:          upstreamStartedAt.UTC(),
-						DurationMS:         time.Since(upstreamStartedAt).Milliseconds(),
-						UpstreamStatusCode: &statusCode,
-						UpstreamStatus:     response.Status,
-						ResponseHeaders:    sanitizeDiagnosticHeaders(response.Header),
-						TransportError:     errorCode,
-					})
-					attempts = failureAttempts.snapshot()
+				if !successful && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+					failureAttempts.ensureStreamFailureAttempt(credential, upstreamStartedAt, response, errorCode)
 				}
+				attempts := failureAttempts.snapshot()
 				if !successful || len(attempts) > 0 {
 					record.Attempts = attempts
 				}
@@ -1240,7 +1225,10 @@ attemptLoop:
 				err = &SelectionUnavailableError{Reason: SelectionNoAccounts}
 			} else {
 				lease, err = s.selector.AcquirePinnedForQualityProbe(ctx, route.Provider, input.ForcedAccountID, route.ID, route.UpstreamModel, quotaMode, accountScope)
-				if err == nil && lease.Credential.EgressNodeID != input.ForcedEgressNodeID {
+				// An unbound account can still have reached the observed node through
+				// runtime pool selection. The Provider request below carries the forced
+				// node explicitly; only a conflicting concrete binding is invalid.
+				if err == nil && lease.Credential.EgressNodeID != 0 && lease.Credential.EgressNodeID != input.ForcedEgressNodeID {
 					lease.Release()
 					lease = nil
 					err = &SelectionUnavailableError{Reason: SelectionNoAccounts}
@@ -1263,6 +1251,13 @@ attemptLoop:
 			if lastFailure == nil {
 				lastErr = err
 			}
+			pinnedID := uint64(0)
+			if ownership != nil {
+				pinnedID = ownership.AccountID
+			} else if input.ForcedAccountID != 0 {
+				pinnedID = input.ForcedAccountID
+			}
+			failureAttempts.captureSelectionFailure(pinnedID, "", err)
 			break
 		}
 		excluded[lease.Credential.ID] = true
@@ -1326,8 +1321,24 @@ attemptLoop:
 			if !isRetryableTransportFailure(credential.Provider, err) {
 				break
 			}
-			if !neterrorpkg.IsUpstreamStreamIdleTimeout(err) {
+			responseFailure := false
+			if status, retryAfter, classified := upstreamResponseErrorHealthPenalty(err, holdCfg.IdleAccountCooldown); classified {
+				responseFailure = true
+				writeCtx, writeCancel := context.WithTimeout(context.WithoutCancel(ctx), finalizationTimeout)
+				markErr := s.selector.MarkFailureAfterSuccess(writeCtx, credential, status, retryAfter)
+				writeCancel()
+				if markErr != nil {
+					s.logger.Warn("upstream_response_health_write_failed", "request_id", input.RequestID, "account_id", credential.ID, "error", markErr)
+				} else {
+					s.logger.Warn("upstream_response_health_retry", "request_id", input.RequestID, "account_id", credential.ID, "status", status, "minimum_cooldown", retryAfter)
+				}
+			} else {
 				s.selector.MarkFailure(ctx, credential, 0, 0)
+			}
+			// The failed response is safe to retry on another account only when
+			// doing so cannot repeat an upstream-hosted tool side effect.
+			if responseFailure && qualityRequestHasReplayUnsafeHostedTools(input.Body) {
+				break attemptLoop
 			}
 			if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 				break
@@ -1597,14 +1608,16 @@ attemptLoop:
 						}
 						writeCancel()
 					}
-					if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
+					if !qualityCrossAccountReplay || shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 						break
 					}
 					continue
 				}
 				response.Body = replay
-				hasNextAccount := attemptPolicy.hasNext(attempt) && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
-				hasNextAccount = hasNextAccount && qualityAccountAttempts < holdCfg.MaxAttempts
+				hasNextAccount := qualityCrossAccountReplay && attemptPolicy.hasNext(attempt) && qualityAccountAttempts < holdCfg.MaxAttempts
+				if hasNextAccount {
+					hasNextAccount = selection != nil && selection.hasAvailableCandidate(excluded, !quotaProbeAttempted)
+				}
 				commit := CommitQualityHold(verdict, qualityAccountAttempts-1, holdCfg.MaxAttempts, hasNextAccount, holdCfg.OnExhausted)
 				if verdict == QualityWithhold {
 					s.applyMissingThinkingPenalty(ctx, input.RequestID, credential, holdCfg.AccountCooldown)
@@ -1717,6 +1730,15 @@ attemptLoop:
 	if errors.As(lastErr, &selectionFailure) {
 		record.StatusCode = selectionFailure.HTTPStatus()
 		record.ErrorCode = selectionFailure.Code()
+		if selectionFailure.AccountID != 0 {
+			accountID := selectionFailure.AccountID
+			record.AccountID = &accountID
+			record.AccountName = selectionFailure.AccountName
+		}
+	}
+	if record.AccountID == nil && ownership != nil {
+		accountID := ownership.AccountID
+		record.AccountID = &accountID
 	}
 	record.Attempts = failureAttempts.snapshot()
 	record.CreatedAt = time.Now().UTC()
@@ -1731,7 +1753,7 @@ attemptLoop:
 
 func isUpstreamStreamFailure(errorCode string) bool {
 	switch errorCode {
-	case "upstream_stream_incomplete", "upstream_stream_interrupted", "upstream_stream_idle_timeout":
+	case "upstream_stream_incomplete", "upstream_stream_interrupted", "upstream_stream_idle_timeout", "upstream_response_empty", "upstream_output_loop":
 		return true
 	default:
 		return false
@@ -1739,13 +1761,37 @@ func isUpstreamStreamFailure(errorCode string) bool {
 }
 
 func streamFailureHealthPenalty(errorCode string, usage Usage, idleCooldown time.Duration) (int, time.Duration) {
-	if errorCode == "upstream_stream_idle_timeout" && !usage.OutputObserved && usage.OutputTokens == 0 && usage.ReasoningTokens == 0 {
+	if (errorCode == "upstream_stream_idle_timeout" || errorCode == "upstream_response_empty") && !usage.OutputObserved && usage.OutputTokens == 0 && usage.ReasoningTokens == 0 {
 		if idleCooldown <= 0 {
 			idleCooldown = qualityIdleAccountCooldown
+		}
+		if errorCode == "upstream_response_empty" {
+			return http.StatusBadGateway, idleCooldown
 		}
 		return http.StatusGatewayTimeout, idleCooldown
 	}
 	return 0, 0
+}
+
+// upstreamResponseErrorHealthPenalty classifies failures that happen after a
+// successful response header but before a usable non-streaming body exists.
+// A truly empty response receives the configured long cooldown. If some body
+// bytes arrived before an idle timeout, retain only the ordinary short network
+// cooldown by returning a zero status/retry pair.
+func upstreamResponseErrorHealthPenalty(err error, idleCooldown time.Duration) (int, time.Duration, bool) {
+	switch {
+	case neterrorpkg.IsUpstreamResponseEmpty(err):
+		status, cooldown := streamFailureHealthPenalty("upstream_response_empty", Usage{}, idleCooldown)
+		return status, cooldown, true
+	case neterrorpkg.IsUpstreamStreamIdleTimeout(err):
+		if neterrorpkg.IdleTimeoutObservedData(err) {
+			return 0, 0, true
+		}
+		status, cooldown := streamFailureHealthPenalty("upstream_stream_idle_timeout", Usage{}, idleCooldown)
+		return status, cooldown, true
+	default:
+		return 0, 0, false
+	}
 }
 
 // auditRequestSucceeded keeps transport truth (the HTTP status) separate from
@@ -2054,8 +2100,18 @@ func isRetryable(status int) bool {
 	return status == 402 || status == 403 || status == 429 || status >= 500
 }
 
+func isReasoningRecoveryFailedResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
+	return upstreamProvider == accountdomain.ProviderBuild && response != nil && response.ReasoningRecoveryFailed
+}
+
 func isRetryableResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
-	if response == nil || !isRetryable(response.StatusCode) {
+	if response == nil {
+		return false
+	}
+	if response.StatusCode == http.StatusBadRequest && isReasoningRecoveryFailedResponse(response, upstreamProvider) {
+		return true
+	}
+	if !isRetryable(response.StatusCode) {
 		return false
 	}
 	// Account-scoped payment failures must always rotate accounts.

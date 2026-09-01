@@ -73,6 +73,65 @@ func TestEgressLeaseBlockRoutesOnlyMatchingActiveBindingAndUsesCAS(t *testing.T)
 	}
 }
 
+func TestEgressLeaseBlockRoutesUnboundAccountUsingObservedLeaseNode(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "egress-dynamic-lease.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := NewAccountRepository(database)
+	nodes := NewEgressRepository(database)
+	node := createHealthyEgressNode(t, ctx, nodes, egressOperationsCipher(t), "dynamic-lease", 0)
+	laterNode := createHealthyEgressNode(t, ctx, nodes, egressOperationsCipher(t), "dynamic-lease-later", 0)
+	credential := createEgressOperationsAccount(t, ctx, accounts, "dynamic-lease-account")
+	if credential.EgressNodeID != 0 {
+		t.Fatalf("test account unexpectedly bound to node %d", credential.EgressNodeID)
+	}
+
+	base := time.Now().UTC()
+	stored, err := accounts.UpsertEgressLeaseBlock(ctx, account.EgressLeaseBlock{
+		AccountID: credential.ID, NodeID: node.ID, Reason: "hard_tps", Version: "dynamic-lease-0001", CooldownUntil: base.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("unbound account lease quarantine failed: %v", err)
+	}
+	if stored.AccountID != credential.ID || stored.NodeID != node.ID {
+		t.Fatalf("stored dynamic lease = %#v", stored)
+	}
+	if _, err := accounts.UpsertEgressLeaseBlock(ctx, account.EgressLeaseBlock{
+		AccountID: credential.ID, NodeID: laterNode.ID, Reason: "hard_tps", Version: "dynamic-lease-0002", CooldownUntil: base.Add(2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("second observed lease quarantine failed: %v", err)
+	}
+	candidates, err := accounts.ListRoutingCandidates(ctx, account.ProviderBuild, 0, "grok-test", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].EgressLeaseBlock == nil || candidates[0].EgressLeaseBlock.NodeID != laterNode.ID {
+		t.Fatalf("dynamic lease was not loaded for routing: %#v", candidates)
+	}
+
+	credential.Name = "dynamic-lease-account-refreshed"
+	if _, err := accounts.Update(ctx, credential); err != nil {
+		t.Fatal(err)
+	}
+	leases, err := accounts.ListEgressLeaseBlocks(ctx, 10, nil)
+	if err != nil || len(leases) != 2 {
+		t.Fatalf("ordinary account refresh removed dynamic lease: leases=%#v err=%v", leases, err)
+	}
+	if _, err := accounts.UpdateEgressBindings(ctx, account.ProviderBuild, []uint64{credential.ID}, &node.ID, account.EgressAssignmentManual, base); err != nil {
+		t.Fatal(err)
+	}
+	leases, err = accounts.ListEgressLeaseBlocks(ctx, 10, nil)
+	if err != nil || len(leases) != 1 || leases[0].NodeID != node.ID {
+		t.Fatalf("explicit binding did not remove leases observed on other nodes: leases=%#v err=%v", leases, err)
+	}
+}
+
 func TestExpiredEgressLeaseBlockIsReconciledButNotRouted(t *testing.T) {
 	ctx := context.Background()
 	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "expired-egress-lease.db"))

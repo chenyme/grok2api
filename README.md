@@ -39,8 +39,12 @@
 
 <table>
 <tr>
-<td width="200" align="center" valign="middle"><a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE"><img src="https://raw.githubusercontent.com/Krill-ai-org/krill-ai-static/refs/heads/main/krill-logo/Eng/250x150.png" alt="Krill AI" width="160"></a></td>
-<td valign="middle">Krill AI provides fast, stable API access to GPT, Claude, Gemini, and leading Chinese models, with enterprise customization, invoicing, 7×16 support, and optimized WebSocket connections for faster first-token latency. Register through the <a href="https://www.krill-ai.com/register?invite=KJ2VGIRVAE">exclusive link</a> and use code “grok2api” for 23% off your first Codex package.</td>
+<td width="200" align="center" valign="middle"><a href="https://go.apimart.ai/gh-grok2api"><img src="frontend/public/sponner/api-mart.jpg" alt="APIMart" width="180"></a></td>
+<td valign="middle">Thanks to APIMart for sponsoring this project! APIMart is a low-cost API platform for AI image &amp; video generation — GPT-Image-2 from $0.006/image, 160+ images per dollar. One async API covers both image and video: submit a task, get an ID, fetch results via polling or callback. Batch tens of thousands of images without timeouts, switch models without changing code. Pay-as-you-go with no monthly fee — <a href="https://go.apimart.ai/gh-grok2api">sign up here</a> to get started.</td>
+</tr>
+<tr>
+<td width="200" align="center" valign="middle"><a href="https://www.packyapi.com/register"><img src="frontend/public/sponner/packycode.png" alt="PackyCode" width="180"></a></td>
+<td valign="middle">PackyCode is a stable and professional API relay for Claude Code, Codex, Gemini, and leading Chinese models. With fast unified access, full-stack observability, risk controls, elastic scaling, and cost optimization, it delivers a smooth developer experience. <a href="https://www.packyapi.com/register">Sign up here</a> to bring production-ready AI into your workflows.</td>
 </tr>
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://github.com/DEEIX-AI/DEEIX-Chat"><img src="frontend/public/sponner/deeix-chat_deeix-ai.png" alt="DEEIX AI / DEEIX Chat" width="160"></a></td>
@@ -303,7 +307,7 @@ Web can be weakly linked one-to-one with matching Build and Console accounts. Li
 
 ### Codex, Claude Code, and prompt caching
 
-Responses and Messages support streaming, tools, reasoning, multi-turn sessions, and compaction. Stable client session signals are preserved for Grok Build prompt-cache affinity. Cache hits still require a compatible upstream account and an unchanged prompt prefix. A still-decryptable compaction summary from this gateway instance is expanded even if the session or PromptCacheKey remaps; foreign or undecodable blobs remain a compatibility boundary.
+Responses and Messages support streaming, tools, reasoning, multi-turn sessions, and compaction. Stable client session signals are preserved for Grok Build prompt-cache affinity. Cache hits still require a compatible upstream account and an unchanged prompt prefix. A still-decryptable `g2a_compact_v1` summary from this gateway instance is expanded even if the session or PromptCacheKey remaps; an invalid prefixed blob is rejected with 400. Other compaction blobs keep their original `encrypted_content` when forwarded as upstream state, and any Build rejection is returned to the client.
 
 Responses and Chat Completions report OpenAI-style total input. Messages reports Anthropic-style uncached input and cache reads separately. Audits retain total and cached input for billing reconciliation.
 
@@ -397,8 +401,9 @@ qualityGuard:
   enabled: true
   model: "grok-4.6"
   # Withhold thinking-model streams that have no streamed reasoning.
-  # Observe for up to 30s. An open stream with a reasoning start and visible
-  # output is released at the deadline; empty/terminal failures still retry.
+  # Observe for up to 30s. A stub plus enough visible output at the deadline
+  # is withheld; empty stub-only streams keep waiting. Floor-met dumps that
+  # flush a short greeting in under 1s are also withheld.
   requestRetry:
     enabled: true
     maxAttempts: 6
@@ -409,7 +414,7 @@ qualityGuard:
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` runs on the gateway request path and is independent of the sidecar. The example enables it. When enabled, a thinking-model stream with enough visible output and no streamed reasoning is **not delivered**; another account is tried. If every attempt still has no reasoning, `onExhausted` either returns `503 quality_degraded` or delivers the last body. Image, video, stored-response, and ForcedEgress probe requests are unchanged. Grok TUI tool turns stay held so 0-thinking dumps cannot skip the gate.
+`requestRetry` runs on the gateway request path and is independent of the sidecar. `config.example.yaml` keeps `enabled: false`; set it true to intercept. When enabled, a thinking-model stream with enough visible output and no streamed reasoning is **not delivered**; replay-safe stateless requests may try another account. TUI follow-ups (`previous_response_id`) and hosted-tool turns are still held for classification, but a quality withhold never replays account-bound state or side-effecting tools across accounts; `onExhausted` returns `503 quality_degraded` or releases that held body. Context compaction, image, video, and ForcedEgress probe requests are unchanged.
 
 ```bash
 docker compose --profile quality-guard up -d --build

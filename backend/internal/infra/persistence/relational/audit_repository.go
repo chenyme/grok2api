@@ -738,6 +738,11 @@ type degradeAccountRow struct {
 	BuildBotFlagSource int              `gorm:"column:build_bot_flag_source"`
 }
 
+type degradeAccountLeaseRow struct {
+	AccountID     uint64           `gorm:"column:account_id"`
+	CooldownUntil degradeTimestamp `gorm:"column:cooldown_until"`
+}
+
 type degradeTimestamp time.Time
 
 func (value *degradeTimestamp) Scan(input any) error {
@@ -874,6 +879,20 @@ func (r *AuditRepository) SummarizeDegrade(ctx context.Context, input repository
 			accountsByID[row.ID] = &result.Accounts[len(result.Accounts)-1]
 		}
 		if len(accountIDs) > 0 {
+			var leaseRows []degradeAccountLeaseRow
+			if err := tx.Table("account_egress_lease_blocks").
+				Select("account_id, MAX(cooldown_until) AS cooldown_until").
+				Where("account_id IN ? AND cooldown_until > ?", accountIDs, input.End).
+				Group("account_id").Scan(&leaseRows).Error; err != nil {
+				return err
+			}
+			for _, row := range leaseRows {
+				if account := accountsByID[row.AccountID]; account != nil {
+					cooldownUntil := time.Time(row.CooldownUntil).UTC()
+					account.LeaseCooldownUntil = &cooldownUntil
+				}
+			}
+
 			var nodeRows []degradeAccountNodeRow
 			if err := tx.Table("(?) AS d", classified).
 				Select("d.account_id, COALESCE(NULLIF(d.egress_node_name, ''), '?') AS name").
