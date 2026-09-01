@@ -13,9 +13,12 @@ import (
 )
 
 var reasoningDecodeFailureMarkers = [][]byte{
-	[]byte("could not decode the compaction blob"),
 	[]byte("could not decrypt the provided encrypted_content"),
 	[]byte("invalid_encrypted_content"),
+}
+
+var compactionBlobDecodeFailureMarkers = [][]byte{
+	[]byte("could not decode the compaction blob"),
 }
 
 type reasoningRecoveryOutcome struct {
@@ -105,6 +108,14 @@ func (a *Adapter) recoverReasoningDecodeFailure(
 	originalCall := initialCall
 	originalCall.response = original
 	if truncated || !isReasoningDecodeFailure(errorBody) {
+		return originalCall, reasoningRecoveryOutcome{}, nil
+	}
+	// Build historically reused the compaction-decode wording for opaque
+	// reasoning and server-side session failures. Only treat that wording as a
+	// real compaction rejection when the rejected request actually carried a
+	// compaction input item. This preserves reasoning recovery without ever
+	// rewriting a client-held compact state.
+	if isCompactionBlobDecodeFailure(errorBody) && hasCompactionInputItem(body) {
 		return originalCall, reasoningRecoveryOutcome{}, nil
 	}
 	out := reasoningRecoveryOutcome{}
@@ -265,8 +276,16 @@ func (a *Adapter) logReasoningRecovery(request provider.ResponseResourceRequest,
 }
 
 func isReasoningDecodeFailure(body []byte) bool {
+	return isCompactionBlobDecodeFailure(body) || containsDecodeFailureMarker(body, reasoningDecodeFailureMarkers)
+}
+
+func isCompactionBlobDecodeFailure(body []byte) bool {
+	return containsDecodeFailureMarker(body, compactionBlobDecodeFailureMarkers)
+}
+
+func containsDecodeFailureMarker(body []byte, markers [][]byte) bool {
 	lower := bytes.ToLower(body)
-	for _, marker := range reasoningDecodeFailureMarkers {
+	for _, marker := range markers {
 		if bytes.Contains(lower, marker) {
 			return true
 		}
@@ -274,11 +293,27 @@ func isReasoningDecodeFailure(body []byte) bool {
 	return false
 }
 
-// stripReasoningEncryptedContent removes undecodable opaque reasoning and
-// compaction ciphertext so Grok Build does not fail on server-side decryption.
+func hasCompactionInputItem(body []byte) bool {
+	var payload struct {
+		Input []struct {
+			Type string `json:"type"`
+		} `json:"input"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	for _, item := range payload.Input {
+		if strings.TrimSpace(item.Type) == "compaction" {
+			return true
+		}
+	}
+	return false
+}
+
+// stripReasoningEncryptedContent removes only undecodable opaque reasoning.
 // Readable reasoning summaries are kept as portable assistant messages; empty
-// encrypted-only reasoning items are dropped. Foreign compaction blobs become
-// a boundary note because this gateway cannot decrypt them.
+// encrypted-only reasoning items are dropped. Compaction items are client-held
+// upstream state and must never be rewritten by reasoning recovery.
 func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 	var payload map[string]any
 	if json.Unmarshal(body, &payload) != nil {
@@ -296,8 +331,7 @@ func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 			rebuilt = append(rebuilt, raw)
 			continue
 		}
-		switch stringField(item, "type") {
-		case "reasoning":
+		if stringField(item, "type") == "reasoning" {
 			encrypted, hasEncrypted := item["encrypted_content"].(string)
 			if !hasEncrypted || strings.TrimSpace(encrypted) == "" {
 				if portable, ok := portableReasoningSummaryMessage(item); ok {
@@ -312,16 +346,9 @@ func stripReasoningEncryptedContent(body []byte) ([]byte, bool) {
 			if portable, ok := portableReasoningSummaryMessage(item); ok {
 				rebuilt = append(rebuilt, portable)
 			}
-		case "compaction":
-			changed = true
-			if portable, ok := portableReasoningSummaryMessage(item); ok {
-				rebuilt = append(rebuilt, portable)
-				continue
-			}
-			rebuilt = append(rebuilt, compatibilityBoundaryMessage("A prior compacted context could not be decoded by upstream. Continue from the retained conversation messages."))
-		default:
-			rebuilt = append(rebuilt, raw)
+			continue
 		}
+		rebuilt = append(rebuilt, raw)
 	}
 	if !changed {
 		return body, false

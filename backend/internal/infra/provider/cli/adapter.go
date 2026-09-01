@@ -247,17 +247,14 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 				request.NormalizedMetadata.ReasoningEffort = conversationOptions.ReasoningEffort
 			}
 		} else {
-			var foreignCompactions, driftedCompactions int
-			body, foreignCompactions, driftedCompactions, err = expandGatewayCompactionHistory(body, a.compaction, request.PromptCacheKey)
+			var driftedCompactions int
+			body, driftedCompactions, err = expandGatewayCompactionHistory(body, a.compaction, request.PromptCacheKey)
 			if err != nil {
 				return invalidResponsesResponse(err), nil
 			}
 			body, toolCompatibility, err = normalizeResponsesRequestWithMetadata(body, request.Model, request.NormalizedMetadata)
 			if toolCompatibility != nil {
 				compactionRequested = toolCompatibility.compactionRequested
-				if foreignCompactions > 0 {
-					toolCompatibility.addWarning("foreign_compaction_omitted")
-				}
 				if driftedCompactions > 0 {
 					toolCompatibility.addWarning("compaction_session_drifted")
 				}
@@ -317,8 +314,9 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 	// Explicit mode wins; in auto mode only confirmed Super accounts with bot_flag_source/bfs in {1,2} default to XAI.
 	primaryBase := a.primaryBaseURL()
 	base := a.inferenceBaseForOperation(request.Credential, request.Billing, request.Method, request.Path)
-	// Cache affinity and reasoning replay use separate identities. Replay is also bound to the actual account and upstream plane,
-	// preventing opaque reasoning issued for one account or Build plane from reaching another scope.
+	// Cache affinity and reasoning replay use separate identities. Replay is bound to the
+	// upstream plane (Build vs XAI) so a blob captured on one API is not injected onto the other.
+	// Encrypted reasoning is portable across accounts, so the cache key is not account-scoped.
 	replayBaseBody := body
 	body, replayKey := a.applyReasoningReplay(ctx, request, replayBaseBody, base)
 	call := a.doResponseRequest(ctx, request, accessToken, body, base)
@@ -537,14 +535,14 @@ func (a *Adapter) applyReasoningReplay(ctx context.Context, request provider.Res
 
 func (a *Adapter) scopedReasoningReplayKey(request provider.ResponseResourceRequest, base string) string {
 	seed := strings.TrimSpace(request.ReasoningReplayKey)
-	if seed == "" || request.Credential.ID == 0 {
+	if seed == "" {
 		return ""
 	}
 	plane := "build"
 	if fallback := a.fallbackBaseURL(); fallback != "" && strings.EqualFold(strings.TrimRight(base, "/"), fallback) {
 		plane = "xai"
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("grok2api:reasoning-replay:v2:%s:%d:%s", seed, request.Credential.ID, plane)))
+	digest := sha256.Sum256([]byte(fmt.Sprintf("grok2api:reasoning-replay:v3:%s:%s", seed, plane)))
 	return hex.EncodeToString(digest[:])
 }
 

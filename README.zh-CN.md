@@ -297,7 +297,7 @@ Web 可与对应的 Build、Console 建立一对一弱关联。关联只共享�
 
 ### Codex、Claude Code 与 Prompt Cache
 
-Responses 与 Messages 支持流式、工具、推理、多轮会话和 compact。客户端会话信号会保持稳定，用于 Grok Build Prompt Cache 亲和；实际命中仍要求上游账号兼容且请求前缀未变化。同一网关实例内，仍可解密的 compact 摘要在 session / PromptCacheKey 漂移后也会展开；无法解密的外源 blob 仍视为兼容边界。
+Responses 与 Messages 支持流式、工具、推理、多轮会话和 compact。客户端会话信号会保持稳定，用于 Grok Build Prompt Cache 亲和；实际命中仍要求上游账号兼容且请求前缀未变化。同一网关实例内，仍可解密的 `g2a_compact_v1` 摘要在 session / PromptCacheKey 漂移后也会展开；带该前缀但无法解码的 blob 会返回 400。其他 compact blob 作为上游原始状态转发时会保留原始 `encrypted_content`；若 Build 拒绝，该错误会原样返回客户端。
 
 Responses 与 Chat Completions 按 OpenAI 语义报告输入总量；Messages 按 Anthropic 语义分开报告未缓存输入和缓存读取。审计保留输入总量与缓存部分，用于计费对账。
 

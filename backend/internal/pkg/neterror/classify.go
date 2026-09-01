@@ -20,6 +20,11 @@ var ErrUpstreamStreamIdleTimeout = errors.New("upstream stream idle timeout")
 // policy without penalizing ordinary request aborts.
 var ErrUpstreamResponseEmpty = errors.New("upstream response body is empty")
 
+// ErrUpstreamOutputLoop is raised when the gateway terminates a stream because
+// the model repeated the same visible or reasoning delta past the doom-loop
+// guard. It is distinct from a transport cut (upstream_stream_interrupted).
+var ErrUpstreamOutputLoop = errors.New("model output loop detected")
+
 // ErrBuildStreamIdleTimeout is retained as a compatibility alias for callers
 // introduced before stream-idle protection became provider-neutral.
 var ErrBuildStreamIdleTimeout = ErrUpstreamStreamIdleTimeout
@@ -53,6 +58,12 @@ func IsUpstreamStreamIdleTimeout(err error) bool {
 // completed without a response body.
 func IsUpstreamResponseEmpty(err error) bool {
 	return errors.Is(err, ErrUpstreamResponseEmpty)
+}
+
+// IsUpstreamOutputLoop reports whether the stream was aborted by the repeated
+// delta doom-loop guard rather than a transport interrupt.
+func IsUpstreamOutputLoop(err error) bool {
+	return errors.Is(err, ErrUpstreamOutputLoop)
 }
 
 // IdleTimeoutError retains whether any response bytes arrived before an idle

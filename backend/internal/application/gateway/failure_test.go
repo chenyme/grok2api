@@ -127,6 +127,11 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 			requestScopedForbidden: true, upstreamCode: "invalid-argument",
 		},
 		{
+			name: "400 tool schema union", status: http.StatusBadRequest,
+			body:                   `{"code":"invalid-argument","error":"mcp__codex_app__automation_update: tool parameter root must be an object type (root schema is an anyOf/oneOf union with a non-object branch)"}`,
+			requestScopedForbidden: true, upstreamCode: "invalid-argument",
+		},
+		{
 			name: "request-level access denied sentence", body: `{"code":"operation-denied","error":"Access denied because this operation is unavailable under ZDR"}`,
 			requestScopedForbidden: true, upstreamCode: "operation-denied",
 		},
@@ -157,6 +162,24 @@ func TestHTTPUpstreamFailureClassifiesBuildForbiddenBodies(t *testing.T) {
 				t.Fatalf("public=%q audit=%q", failure.ClientCredentialErrorCode(), failure.AuditCode())
 			}
 		})
+	}
+}
+
+func TestClassifyUpstreamHTTPErrorInvalidArgument(t *testing.T) {
+	code, message := ClassifyUpstreamHTTPError(http.StatusBadRequest, []byte(`{"code":"invalid-argument","error":"mcp__codex_app__automation_update: tool parameter root must be an object type (root schema is an anyOf/oneOf union with a non-object branch)"}`))
+	if code != "invalid_argument" || !strings.Contains(message, "mcp__codex_app__automation_update") {
+		t.Fatalf("code=%q message=%q", code, message)
+	}
+	failure := newHTTPUpstreamFailure(http.StatusBadRequest, []byte(`{"code":"invalid-argument","error":"mcp__codex_app__automation_update: tool parameter root must be an object type"}`), 42, "build")
+	if !failure.RequestScopedForbidden || failure.AccountScoped || failure.Code != "invalid_argument" {
+		t.Fatalf("failure = %#v", failure)
+	}
+}
+
+func TestClassifyUpstreamHTTPErrorKeepsOther4xxMessage(t *testing.T) {
+	code, message := ClassifyUpstreamHTTPError(http.StatusNotFound, []byte(`{"error":{"code":"not_found","message":"requested response is missing"}}`))
+	if code != "upstream_error" || message != "requested response is missing" {
+		t.Fatalf("code=%q message=%q", code, message)
 	}
 }
 

@@ -1,10 +1,13 @@
 package conversation
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 )
 
 type blockingStreamSource struct {
@@ -47,6 +50,9 @@ func TestConvertResponsesStreamTerminatesContentDoomLoop(t *testing.T) {
 	_, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
 	if err == nil {
 		t.Fatal("repeated visible content must terminate the stream")
+	}
+	if !errors.Is(err, neterror.ErrUpstreamOutputLoop) {
+		t.Fatalf("content loop must wrap ErrUpstreamOutputLoop: %v", err)
 	}
 	if !strings.Contains(err.Error(), "model output loop detected") {
 		t.Fatalf("unexpected error: %v", err)
@@ -141,6 +147,9 @@ func TestConvertResponsesStreamTerminatesReasoningDoomLoop(t *testing.T) {
 			_, err := io.ReadAll(ConvertResponseStream(io.NopCloser(strings.NewReader(stream)), OperationChat))
 			if err == nil {
 				t.Fatal("a runaway reasoning loop must still terminate the stream")
+			}
+			if !errors.Is(err, neterror.ErrUpstreamOutputLoop) {
+				t.Fatalf("reasoning loop must wrap ErrUpstreamOutputLoop: %v", err)
 			}
 			if !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("unexpected error: %v", err)
