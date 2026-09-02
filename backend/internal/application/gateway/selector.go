@@ -1271,6 +1271,7 @@ func (s *Selector) markMissingThinking(ctx context.Context, credential account.C
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {
+	retryAfter = s.boundUpstreamRetryAfter(retryAfter)
 	_ = s.markFailure(ctx, credential, credential.FailureCount, credential.FailureCount+1, status, retryAfter, status == 0)
 }
 
@@ -1285,7 +1286,19 @@ func (s *Selector) MarkFailureAfterSuccess(ctx context.Context, credential accou
 // applying the bounded, non-accumulating health penalty used for transient
 // network and provider-wide failures.
 func (s *Selector) markSoftFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) error {
+	retryAfter = s.boundUpstreamRetryAfter(retryAfter)
 	return s.markFailure(ctx, credential, credential.FailureCount, credential.FailureCount+1, status, retryAfter, true)
+}
+
+func (s *Selector) boundUpstreamRetryAfter(retryAfter time.Duration) time.Duration {
+	if retryAfter <= 0 {
+		return retryAfter
+	}
+	_, _, cooldownMax, _ := s.routingConfig()
+	if cooldownMax > 0 && retryAfter > cooldownMax {
+		return cooldownMax
+	}
+	return retryAfter
 }
 
 func (s *Selector) markFailure(ctx context.Context, credential account.Credential, baselineFailureCount, nextFailureCount, status int, retryAfter time.Duration, soft bool) error {
