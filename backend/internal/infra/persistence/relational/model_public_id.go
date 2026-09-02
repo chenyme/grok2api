@@ -80,6 +80,13 @@ func preserveModelRouteAlias(tx *gorm.DB, alias string, routeID uint64) error {
 		if existing.ModelRouteID == routeID {
 			return nil
 		}
+		var current modelRouteModel
+		if err := tx.Select("origin").Where("id = ?", routeID).First(&current).Error; err != nil {
+			return err
+		}
+		if current.Origin == string(modeldomain.OriginManual) {
+			return nil
+		}
 		return fmt.Errorf("%w: 模型兼容名称 %q 已绑定路由 %d", repository.ErrConflict, alias, existing.ModelRouteID)
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
