@@ -250,6 +250,44 @@ func TestManualRouteTargetsMaySharePublicID(t *testing.T) {
 	}
 }
 
+func TestManualRouteMayReuseCompatibilityAlias(t *testing.T) {
+	ctx := context.Background()
+	database := openTestDatabase(t)
+	repo := NewModelRepository(database)
+
+	renamed, err := repo.Create(ctx, model.Route{
+		PublicID: "gpt-5.6-sol", Provider: account.ProviderBuild, UpstreamModel: "grok-4.5",
+		Capability: model.CapabilityResponses, Origin: model.OriginManual, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed.PublicID = "renamed-model"
+	if _, err := repo.Update(ctx, renamed, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := repo.Create(ctx, model.Route{
+		PublicID: "gpt-5.6-sol", Provider: account.ProviderBuild, UpstreamModel: "grok-4.6",
+		Capability: model.CapabilityResponses, Origin: model.OriginManual, Enabled: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("manual route reusing compatibility alias: %v", err)
+	}
+
+	routes, err := findModelRoutesByPublicID(database.db.WithContext(ctx), "gpt-5.6-sol")
+	if err != nil || len(routes) != 2 {
+		t.Fatalf("legacy model routes = %#v, err = %v", routes, err)
+	}
+	if routes[0].ID != created.ID || routes[1].ID != renamed.ID {
+		t.Fatalf("legacy model route order = %#v, want direct route before alias route", routes)
+	}
+	created.PublicID = "another-model"
+	if _, err := repo.Update(ctx, created, nil); err != nil {
+		t.Fatalf("manual route rename after compatibility alias reuse: %v", err)
+	}
+}
+
 func TestReplaceProviderRoutesKeepsManualAliasesWithSharedUpstream(t *testing.T) {
 	ctx := context.Background()
 	database := openTestDatabase(t)

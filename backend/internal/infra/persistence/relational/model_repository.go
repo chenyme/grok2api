@@ -1076,9 +1076,6 @@ func (r *ModelRepository) Create(ctx context.Context, value model.Route, account
 		Capability: string(value.Capability), Origin: string(model.OriginManual), Enabled: value.Enabled,
 	}
 	err := r.db.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := ensureModelPublicIDNotAlias(tx, value.PublicID, 0); err != nil {
-			return err
-		}
 		if err := tx.Create(&row).Error; err != nil {
 			return mapError(err)
 		}
@@ -1112,8 +1109,10 @@ func (r *ModelRepository) Update(ctx context.Context, value model.Route, account
 			return fmt.Errorf("模型路由公开 ID 无效")
 		}
 		value.PublicID = publicID
-		if err := ensureModelPublicIDNotAlias(tx, value.PublicID, existing.ID); err != nil {
-			return err
+		if existing.Origin != string(model.OriginManual) {
+			if err := ensureModelPublicIDNotAlias(tx, value.PublicID, existing.ID); err != nil {
+				return err
+			}
 		}
 		if existing.PublicID != value.PublicID {
 			if err := preserveModelRouteAlias(tx, existing.PublicID, existing.ID); err != nil {
