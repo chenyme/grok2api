@@ -10,10 +10,10 @@ func TestCurrentAttestationFailsClosedAndAcceptsExactReleaseIdentity(t *testing.
 	if _, err := CurrentAttestation(); err == nil {
 		t.Fatal("missing build identity was accepted")
 	}
-	Version = "v3.1.5+cheapai.3"
+	Version = "v3.1.5+cheapai.4"
 	SourceCommit = "0123456789abcdef0123456789abcdef01234567"
 	BuildFingerprint = expectedBuildFingerprint(SourceCommit, Version)
-	if BuildFingerprint != "c0e58b866af7d3ccc7602552e958b111ba9f084257bd5febc1798b9b702460f5" {
+	if BuildFingerprint != "ffaf21438358e7737c43eedc34b0d08035af8385accd0b09899844eee812fd63" {
 		t.Fatalf("build fingerprint contract = %q", BuildFingerprint)
 	}
 	t.Setenv(runtimeImageDigestEnv, "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
