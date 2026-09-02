@@ -88,6 +88,10 @@ media:
     # [按需修改] 图片二进制目录；数据库只保存资源元数据。
     path: "./data/media"
 
+chat:
+  # [按需修改] Chat Completions 未声明 web_search 时自动注入该工具。
+  autoWebSearch: true
+
 routing:
   # [按需修改] 服务端推理回放缓存：多轮时自动补回客户端未携带的 encrypted_content。
   reasoningReplayEnabled: true
