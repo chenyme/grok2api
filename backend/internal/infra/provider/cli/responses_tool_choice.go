@@ -108,6 +108,23 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 	if function, nested := object["function"].(map[string]any); nested {
 		name = strings.TrimSpace(stringField(function, "name"))
 		namespace = strings.TrimSpace(stringField(function, "namespace"))
+		if name != "" {
+			identity := responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name}
+			if alias, exists := c.identityAliases[identity.key()]; exists {
+				function["name"] = alias
+				if namespace == "" && alias != name {
+					c.changed = true
+					payload["tool_choice"] = mustJSON(object)
+					return nil
+				}
+				if name != "" && namespace != "" {
+					delete(function, "namespace")
+					c.changed = true
+					payload["tool_choice"] = mustJSON(object)
+					return nil
+				}
+			}
+		}
 		if name != "" && namespace != "" {
 			identity := responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name}
 			alias, exists := c.identityAliases[identity.key()]
@@ -116,6 +133,15 @@ func (c *responsesToolCompatibility) normalizeToolChoice(payload map[string]json
 			}
 			function["name"] = alias
 			delete(function, "namespace")
+			c.changed = true
+			payload["tool_choice"] = mustJSON(object)
+		}
+		return nil
+	}
+	if name != "" && namespace == "" {
+		identity := responsesToolIdentity{Kind: responsesFunctionTool, Name: name}
+		if alias, exists := c.identityAliases[identity.key()]; exists && alias != name {
+			object["name"] = alias
 			c.changed = true
 			payload["tool_choice"] = mustJSON(object)
 		}

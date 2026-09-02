@@ -184,7 +184,13 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 			}
 		}
 		identity := responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name}
-		alias := c.alias(identity)
+		alias := c.functionAlias(identity)
+		if alias != name {
+			c.changed = true
+			if strings.EqualFold(name, "view_image") && namespace == "" {
+				c.addWarning("view_image_name_normalized")
+			}
+		}
 		if parameters, exists := tool["parameters"]; exists && schemaContainsInteger(parameters) {
 			c.functionSchemas[alias] = cloneJSONValue(parameters)
 		}

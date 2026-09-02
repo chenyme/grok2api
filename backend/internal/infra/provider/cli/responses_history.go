@@ -225,8 +225,8 @@ func (c *responsesToolCompatibility) normalizeFunctionCallInput(item map[string]
 		return nil, &responsesRequestError{Message: param + ".arguments 无法编码", Param: param + ".arguments", Code: "invalid_parameter"}
 	}
 	namespace := strings.TrimSpace(stringField(item, "namespace"))
-	if namespace != "" {
-		name = c.alias(responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name})
+	if namespace != "" || strings.EqualFold(name, "view_image") {
+		name = c.functionAlias(responsesToolIdentity{Kind: responsesFunctionTool, Namespace: namespace, Name: name})
 	}
 	// 按官方 Build 回放结构仅保留四个输入字段，避免输出态字段和私有元数据
 	// 干扰 Grok 的 untagged ModelInput 反序列化。

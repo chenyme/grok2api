@@ -1012,6 +1012,74 @@ func TestForwardResponseRestoresNamespaceResponse(t *testing.T) {
 	}
 }
 
+func TestForwardResponseAliasesTopLevelViewImageForBuild(t *testing.T) {
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, cipher)
+	adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		tools, ok := payload["tools"].([]any)
+		if !ok || len(tools) != 1 || tools[0].(map[string]any)["name"] != "grok2api_view_image" {
+			t.Fatalf("Build tools = %#v", payload["tools"])
+		}
+		if payload["tool_choice"] != "auto" {
+			t.Fatalf("Build tool_choice = %#v", payload["tool_choice"])
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Status: "200 OK",
+			Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"id":"resp_view_image",
+				"tools":[{"type":"function","name":"grok2api_view_image"}],
+				"output":[{"type":"function_call","call_id":"call_1","name":"grok2api_view_image","arguments":"{}"}]
+			}`)),
+			Request: request,
+		}, nil
+	})
+
+	response, err := adapter.ForwardResponse(context.Background(), provider.ResponseResourceRequest{
+		Credential: account.Credential{ID: 8, EncryptedAccessToken: encrypted},
+		Method:     http.MethodPost, Path: "/responses", Model: "grok-4.6",
+		NormalizeBody: true, Operation: conversation.OperationResponses,
+		Body: []byte(`{
+			"model":"grok-4.6","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}],
+			"tools":[{"type":"function","name":"view_image","description":"View a local image","parameters":{"type":"object","properties":{},"required":[]}}],
+			"tool_choice":"auto"
+		}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", response.StatusCode)
+	}
+	if response.Header.Get("X-Grok2API-Compatibility-Warnings") != "view_image_name_normalized" {
+		t.Fatalf("compatibility warnings = %q", response.Header.Get("X-Grok2API-Compatibility-Warnings"))
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	call := payload["output"].([]any)[0].(map[string]any)
+	if call["name"] != "view_image" {
+		t.Fatalf("client function call = %#v", call)
+	}
+	visibleTools := payload["tools"].([]any)
+	if visibleTools[0].(map[string]any)["name"] != "view_image" {
+		t.Fatalf("client tools = %#v", visibleTools)
+	}
+}
+
 func TestForwardResponsePreservesClaudeCodeMessagesOptions(t *testing.T) {
 	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
 	if err != nil {

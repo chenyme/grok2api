@@ -91,6 +91,21 @@ func (c *responsesToolCompatibility) alias(identity responsesToolIdentity) strin
 		}
 		base = identity.Namespace + separator + identity.Name
 	}
+	return c.aliasWithBase(identity, base)
+}
+
+func (c *responsesToolCompatibility) functionAlias(identity responsesToolIdentity) string {
+	if identity.Kind == responsesFunctionTool && identity.Namespace == "" && strings.EqualFold(identity.Name, "view_image") {
+		return c.aliasWithBase(identity, "grok2api_view_image")
+	}
+	return c.alias(identity)
+}
+
+func (c *responsesToolCompatibility) aliasWithBase(identity responsesToolIdentity, base string) string {
+	key := identity.key()
+	if alias, exists := c.identityAliases[key]; exists {
+		return alias
+	}
 	alias := truncateToolAlias(base, key)
 	if existing, collision := c.aliases[alias]; collision && existing.key() != key {
 		alias = hashedToolAlias(base, key)
