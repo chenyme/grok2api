@@ -1800,6 +1800,133 @@ func TestMarkFailureSoftNetworkCooldown(t *testing.T) {
 	}
 }
 
+func TestBoundUpstreamRetryAfter(t *testing.T) {
+	selector := &Selector{cooldownMax: time.Minute}
+	tests := []struct {
+		name string
+		input time.Duration
+		want  time.Duration
+	}{
+		{name: "empty", input: 0, want: 0},
+		{name: "negative", input: -time.Second, want: -time.Second},
+		{name: "within maximum", input: 30 * time.Second, want: 30 * time.Second},
+		{name: "above maximum", input: 2 * time.Minute, want: time.Minute},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := selector.boundUpstreamRetryAfter(test.input); got != test.want {
+				t.Fatalf("boundUpstreamRetryAfter(%s) = %s, want %s", test.input, got, test.want)
+			}
+		})
+	}
+}
+
+func TestMarkFailureBoundsUpstreamRetryAfter(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "retry-after-bound.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "retry-after-bound", SourceKey: "retry-after-bound", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 500*time.Millisecond)
+	before := time.Now().UTC()
+	selector.MarkFailure(ctx, credential, http.StatusTooManyRequests, 24*time.Hour)
+	updated, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CooldownUntil == nil {
+		t.Fatal("expected cooldown")
+	}
+	cooldown := updated.CooldownUntil.Sub(before)
+	if cooldown < 50*time.Second || cooldown > 70*time.Second {
+		t.Fatalf("upstream Retry-After cooldown = %s, want at most cooldownMax (~1m)", cooldown)
+	}
+}
+
+func TestMarkSoftFailureBoundsUpstreamRetryAfter(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "soft-retry-after-bound.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "soft-retry-after-bound", SourceKey: "soft-retry-after-bound", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 500*time.Millisecond)
+	before := time.Now().UTC()
+	if err := selector.markSoftFailure(ctx, credential, http.StatusServiceUnavailable, 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CooldownUntil == nil {
+		t.Fatal("expected cooldown")
+	}
+	cooldown := updated.CooldownUntil.Sub(before)
+	if cooldown < 50*time.Second || cooldown > 70*time.Second {
+		t.Fatalf("soft upstream Retry-After cooldown = %s, want at most cooldownMax (~1m)", cooldown)
+	}
+}
+
+func TestMarkFailureAfterSuccessPreservesExplicitCooldown(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "after-success-cooldown.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderBuild, Name: "after-success-cooldown", SourceKey: "after-success-cooldown", EncryptedAccessToken: "encrypted", Enabled: true,
+		AuthStatus: account.AuthStatusActive, Priority: 10, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selector := NewSelector(accounts, memory.NewConcurrencyLimiter(), memory.NewStickyStore(), nil, time.Hour, time.Second, time.Minute, 500*time.Millisecond)
+	before := time.Now().UTC()
+	if err := selector.MarkFailureAfterSuccess(ctx, credential, http.StatusGatewayTimeout, 2*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := accounts.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CooldownUntil == nil {
+		t.Fatal("expected cooldown")
+	}
+	cooldown := updated.CooldownUntil.Sub(before)
+	if cooldown < 119*time.Minute || cooldown > 121*time.Minute {
+		t.Fatalf("explicit after-success cooldown = %s, want ~2h", cooldown)
+	}
+}
+
 func TestConsoleRateLimitReconciliationUsesNonAccumulatingCooldown(t *testing.T) {
 	tests := []struct {
 		name             string
