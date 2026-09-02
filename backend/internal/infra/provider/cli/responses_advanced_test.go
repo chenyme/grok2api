@@ -403,6 +403,78 @@ func TestResponsesBuild02110NativeAndUnsupportedToolMatrix(t *testing.T) {
 	}
 }
 
+func TestResponsesViewImageFunctionIsAliasedForBuild(t *testing.T) {
+	normalized, compatibility, err := normalizeResponsesRequest([]byte(`{
+		"model":"grok-4.6","input":"hello","tools":[
+			{"type":"function","name":"view_image","description":"View a local image","parameters":{"type":"object","properties":{}}}
+		],"tool_choice":{"type":"function","name":"view_image"}
+	}`), "grok-4.6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compatibility == nil || !strings.Contains(compatibility.warningHeader(), "view_image_name_normalized") {
+		t.Fatalf("compatibility = %#v", compatibility)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tools := request["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	if tool["name"] != "grok2api_view_image" {
+		t.Fatalf("Build tool name = %#v", tool["name"])
+	}
+	choice := request["tool_choice"].(map[string]any)
+	if choice["name"] != "grok2api_view_image" {
+		t.Fatalf("Build tool_choice = %#v", choice)
+	}
+
+	restored, err := compatibility.normalizeResponseJSON([]byte(`{
+		"tools":[{"type":"function","name":"grok2api_view_image"}],
+		"output":[{"type":"function_call","call_id":"call_1","name":"grok2api_view_image","arguments":"{}"}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(restored, &response); err != nil {
+		t.Fatal(err)
+	}
+	visibleTool := response["tools"].([]any)[0].(map[string]any)
+	if visibleTool["name"] != "view_image" {
+		t.Fatalf("visible tool name = %#v", visibleTool["name"])
+	}
+	call := response["output"].([]any)[0].(map[string]any)
+	if call["name"] != "view_image" {
+		t.Fatalf("restored call name = %#v", call["name"])
+	}
+}
+
+func TestResponsesViewImageAliasAvoidsFunctionNameCollision(t *testing.T) {
+	normalized, _, err := normalizeResponsesRequest([]byte(`{
+		"model":"grok-4.6","input":"hello","tools":[
+			{"type":"function","name":"view_image","parameters":{"type":"object"}},
+			{"type":"function","name":"grok2api_view_image","parameters":{"type":"object"}}
+		]
+	}`), "grok-4.6")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(normalized, &request); err != nil {
+		t.Fatal(err)
+	}
+	tools := request["tools"].([]any)
+	if len(tools) != 2 {
+		t.Fatalf("Build tools = %#v", tools)
+	}
+	first := tools[0].(map[string]any)["name"]
+	second := tools[1].(map[string]any)["name"]
+	if first == second || first != "grok2api_view_image" || second == "grok2api_view_image" {
+		t.Fatalf("view_image alias collision was not resolved: %#v", tools)
+	}
+}
+
 func TestResponsesXSearchDateBounds(t *testing.T) {
 	normalized, _, err := normalizeResponsesRequest([]byte(`{
 		"model":"public","input":"search",
