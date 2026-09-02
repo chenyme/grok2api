@@ -439,12 +439,16 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 		if _, exists := webSearch["enable_image_search"]; exists {
 			t.Fatalf("enable_image_search should be absent by default: %#v", webSearch)
 		}
+		if payload["tool_choice"] != nil {
+			t.Fatalf("hosted-only web_search must not inject tool_choice: %#v", payload["tool_choice"])
+		}
 	})
 
 	t.Run("forwards valid x_search from_date and to_date", func(t *testing.T) {
 		body, err := normalizeRequest([]byte(`{
 			"model":"grok-4.3",
-			"tools":[{"type":"x_search","from_date":"2026-07-01","to_date":"2026-07-23","noise":1}]
+			"tools":[{"type":"x_search","from_date":"2026-07-01","to_date":"2026-07-23","noise":1}],
+			"tool_choice":"auto"
 		}`), spec)
 		if err != nil {
 			t.Fatal(err)
@@ -462,6 +466,31 @@ func TestNormalizeRequestForwardsXSearchTimeRangeAndImageSearch(t *testing.T) {
 		}
 		if xSearch["noise"] != nil {
 			t.Fatalf("unknown field noise should be stripped: %#v", xSearch)
+		}
+		if payload["tool_choice"] != nil {
+			t.Fatalf("hosted-only x_search must omit tool_choice: %#v", payload["tool_choice"])
+		}
+	})
+
+	t.Run("preserves explicit non-auto hosted search choices", func(t *testing.T) {
+		for _, choice := range []string{"none", "required"} {
+			t.Run(choice, func(t *testing.T) {
+				body, err := normalizeRequest([]byte(`{
+					"model":"grok-4.3",
+					"tools":[{"type":"x_search"}],
+					"tool_choice":"`+choice+`"
+				}`), spec)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if payload["tool_choice"] != choice {
+					t.Fatalf("tool_choice = %#v, want %q", payload["tool_choice"], choice)
+				}
+			})
 		}
 	})
 
@@ -704,7 +733,7 @@ func TestNormalizeRequestAppliesConsoleCompatibilityBoundary(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["response_format"] != nil || payload["reasoning"] != nil || payload["tool_choice"] != "auto" {
+	if payload["response_format"] != nil || payload["reasoning"] != nil || payload["tool_choice"] != "required" {
 		t.Fatalf("payload boundary = %#v", payload)
 	}
 	include, _ := payload["include"].([]any)

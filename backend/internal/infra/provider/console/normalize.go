@@ -369,6 +369,19 @@ func normalizeConsoleToolChoice(payload map[string]any, retainedClientTools bool
 		delete(payload, "tool_choice")
 		return
 	}
+	// Console accepts hosted search tools without tool_choice, but rejects an
+	// automatic choice when no client-callable tool is present as "no tools
+	// specified". Preserve explicit non-auto choices for compatibility.
+	if !retainedClientTools {
+		choice, exists := payload["tool_choice"]
+		if !exists {
+			return
+		}
+		if value, ok := choice.(string); ok && strings.EqualFold(strings.TrimSpace(value), "auto") {
+			delete(payload, "tool_choice")
+		}
+		return
+	}
 	choice, exists := payload["tool_choice"]
 	if !exists {
 		payload["tool_choice"] = "auto"
