@@ -232,7 +232,7 @@ func (a *Adapter) ForwardResponse(ctx context.Context, request provider.Response
 		parallelTools = *input.ParallelToolCalls
 	}
 	if modelKnown && spec.Capability == modeldomain.CapabilityImage {
-		if len(tools.ResponseTools) > 0 {
+		if len(tools.Functions) > 0 {
 			return invalidImageRequest("图片生成模型不支持 tools")
 		}
 		return a.forwardImageChatCompletion(ctx, request, input, normalized, spec)

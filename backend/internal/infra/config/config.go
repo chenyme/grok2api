@@ -70,6 +70,11 @@ type Config struct {
 	QualityGuard      QualityGuardConfig      `yaml:"qualityGuard"`
 	ClientKeyDefaults ClientKeyDefaultsConfig `yaml:"clientKeyDefaults"`
 	Accounts          AccountsConfig          `yaml:"-"`
+	Chat              ChatConfig              `yaml:"chat"`
+}
+
+type ChatConfig struct {
+	AutoWebSearch bool `yaml:"autoWebSearch"`
 }
 
 type ServerConfig struct {
@@ -959,6 +964,7 @@ func defaultConfig() Config {
 				MinEncryptedBytes: 256, EncryptedBytesPerReasoningToken: 4,
 			},
 		},
+		Chat:              ChatConfig{AutoWebSearch: true},
 		ClientKeyDefaults: ClientKeyDefaultsConfig{RPMLimit: clientkeydomain.DefaultRPMLimit, MaxConcurrent: clientkeydomain.DefaultMaxConcurrent},
 		Accounts: AccountsConfig{
 			MarkBuildForbiddenReauth:             false,
