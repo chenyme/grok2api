@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -99,13 +100,16 @@ func (c *ReasoningCache) Get(callID string) (responseItem, bool) {
 	defer c.mu.RUnlock()
 
 	entry, exists := c.entries[callID]
-	if !exists {
-		return responseItem{}, false
+	if exists && time.Since(entry.createdAt) <= c.ttl {
+		return entry.item, true
 	}
-	if time.Since(entry.createdAt) > c.ttl {
-		return responseItem{}, false
+	if strings.Contains(callID, "|") {
+		prefix := strings.Split(callID, "|")[0]
+		if entry, exists := c.entries[prefix]; exists && time.Since(entry.createdAt) <= c.ttl {
+			return entry.item, true
+		}
 	}
-	return entry.item, true
+	return responseItem{}, false
 }
 
 func (c *ReasoningCache) evictOldestLocked(now time.Time) {

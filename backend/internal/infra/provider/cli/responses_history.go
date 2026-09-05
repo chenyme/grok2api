@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
 )
 
 // normalizeInputItems 将 Codex/Responses 扩展历史降级为 Grok Build 可接受的结构，
@@ -34,6 +36,34 @@ func (c *responsesToolCompatibility) normalizeInputItems(items []any) ([]any, []
 			c.changed = true
 			rewritten = append(rewritten, converted)
 		case "function_call":
+			callID := strings.TrimSpace(stringField(item, "call_id"))
+			if !hasPrecedingReasoningItem(rewritten) {
+				lookupID := callID
+				if strings.Contains(lookupID, "|") {
+					lookupID = strings.Split(lookupID, "|")[0]
+				}
+				if reasoningItem, found := conversation.GetReasoningForCall(lookupID); found && reasoningItem.ID != "" {
+					reasoningBlock := map[string]any{
+						"type":   "reasoning",
+						"id":     reasoningItem.ID,
+						"status": "completed",
+					}
+					if reasoningItem.Encrypted != "" {
+						reasoningBlock["encrypted_content"] = reasoningItem.Encrypted
+					}
+					if len(reasoningItem.Summary) > 0 {
+						reasoningBlock["summary"] = reasoningItem.Summary
+					}
+					if len(reasoningItem.Content) > 0 {
+						reasoningBlock["content"] = reasoningItem.Content
+					}
+					rewritten = append(rewritten, reasoningBlock)
+					c.changed = true
+				} else if fallback := findLastReasoningBlock(rewritten, items); fallback != nil {
+					rewritten = append(rewritten, fallback)
+					c.changed = true
+				}
+			}
 			converted, err := c.normalizeFunctionCallInput(item, param)
 			if err != nil {
 				return nil, nil, nil, err
@@ -377,4 +407,39 @@ func encodeFunctionArguments(value any) (string, error) {
 		return "", err
 	}
 	return string(encoded), nil
+}
+
+func hasPrecedingReasoningItem(items []any) bool {
+	if len(items) == 0 {
+		return false
+	}
+	last, ok := items[len(items)-1].(map[string]any)
+	if !ok {
+		return false
+	}
+	return stringField(last, "type") == "reasoning"
+}
+
+func findLastReasoningBlock(rewritten []any, originalItems []any) map[string]any {
+	// 优先在已重写的序列中倒序查找最近的合法 reasoning
+	for i := len(rewritten) - 1; i >= 0; i-- {
+		item, ok := rewritten[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringField(item, "type") == "reasoning" && stringField(item, "encrypted_content") != "" {
+			return cloneJSONObject(item)
+		}
+	}
+	// 其次在原始输入序列中倒序查找
+	for i := len(originalItems) - 1; i >= 0; i-- {
+		item, ok := originalItems[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringField(item, "type") == "reasoning" && stringField(item, "encrypted_content") != "" {
+			return cloneJSONObject(item)
+		}
+	}
+	return nil
 }
