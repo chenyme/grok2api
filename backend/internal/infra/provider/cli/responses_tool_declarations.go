@@ -312,15 +312,16 @@ func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, e
 			continue
 		}
 		filtered := make([]any, 0, len(branches))
-		removedNull := false
+		removedNonObject := false
 		for _, rawBranch := range branches {
-			if isNullOnlySchema(rawBranch) {
-				removedNull = true
+			branch, branchOK := rawBranch.(map[string]any)
+			if !branchOK || isNullOnlySchema(branch) || !isObjectRootSchema(branch, normalized, nil) {
+				removedNonObject = true
 				continue
 			}
 			filtered = append(filtered, rawBranch)
 		}
-		if !removedNull {
+		if !removedNonObject {
 			continue
 		}
 		changed = true
