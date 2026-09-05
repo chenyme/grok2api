@@ -309,6 +309,7 @@ func (c *streamConverter) handle(event string, data []byte) error {
 	case "response.completed", "response.incomplete":
 		var response responseEnvelope
 		_ = json.Unmarshal(root["response"], &response)
+		RememberReasoningForEnvelope(response)
 		c.setResponse(response)
 		if c.operation == OperationMessages && c.options.AnthropicWebSearch {
 			parsed := parseResponse(response)
