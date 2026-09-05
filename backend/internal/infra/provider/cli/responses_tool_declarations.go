@@ -503,3 +503,20 @@ func (c *responsesToolCompatibility) buildClientSearchFunction() (map[string]any
 		"parameters": cloneJSONValue(parameters),
 	}, nil
 }
+
+func dedupeSlice(slice []any) []any {
+	seen := make(map[string]bool)
+	var result []any
+	for _, item := range slice {
+		str, ok := item.(string)
+		if ok {
+			if !seen[str] {
+				seen[str] = true
+				result = append(result, str)
+			}
+		} else {
+			result = append(result, item)
+		}
+	}
+	return result
+}
