@@ -124,6 +124,9 @@ func convertChatMessages(messages []chatMessage) ([]any, error) {
 				if err != nil {
 					return nil, err
 				}
+				if reasoningBlock := restoreReasoningForCalls(calls); reasoningBlock != nil {
+					input = append(input, reasoningBlock)
+				}
 				input = append(input, calls...)
 			}
 		case "tool":
@@ -405,4 +408,35 @@ func convertChatToolChoice(raw json.RawMessage) (json.RawMessage, error) {
 		return nil, errors.New("tool_choice.function.name 无效")
 	}
 	return mustJSON(map[string]any{"type": "function", "name": function.Name}), nil
+}
+
+func restoreReasoningForCalls(calls []any) any {
+	for _, raw := range calls {
+		callMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		callID, _ := callMap["call_id"].(string)
+		if callID == "" {
+			continue
+		}
+		if item, found := GetReasoningForCall(callID); found && item.Type == "reasoning" && item.ID != "" {
+			payload := map[string]any{
+				"type":   "reasoning",
+				"id":     item.ID,
+				"status": "completed",
+			}
+			if item.Encrypted != "" {
+				payload["encrypted_content"] = item.Encrypted
+			}
+			if len(item.Summary) > 0 {
+				payload["summary"] = item.Summary
+			}
+			if len(item.Content) > 0 {
+				payload["content"] = item.Content
+			}
+			return payload
+		}
+	}
+	return nil
 }

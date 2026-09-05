@@ -128,6 +128,7 @@ func ConvertResponseJSONWithOptions(body []byte, operation string, options Respo
 		}
 		return body, nil
 	}
+	RememberReasoningForEnvelope(envelope)
 	parsed := parseResponse(envelope)
 	if operation == OperationMessages || operation == OperationChat {
 		parsed.Text, parsed.StopSequence = applyStopSequences(parsed.Text, options.StopSequences)
