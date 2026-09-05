@@ -3,10 +3,14 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
 func normalizeResponsesTools(payload map[string]json.RawMessage) (*responsesToolCompatibility, error) {
+	if rawTools := payload["tools"]; len(rawTools) > 0 && strings.Contains(string(rawTools), "automation_update") {
+		slog.Info("DEBUG_RAW_AUTOMATION_TOOLS", "tools", string(rawTools))
+	}
 	compatibility := newResponsesToolCompatibility()
 	tools, hasTools, err := decodeOptionalArray(payload["tools"], "tools")
 	if err != nil {
@@ -65,6 +69,9 @@ func normalizeResponsesTools(payload map[string]json.RawMessage) (*responsesTool
 			compatibility.addWarning("parallel_tool_calls_without_tools_ignored")
 		}
 		compatibility.changed = true
+	}
+	if rawTools := payload["tools"]; len(rawTools) > 0 && strings.Contains(string(rawTools), "automation_update") {
+		slog.Info("DEBUG_NORMALIZED_AUTOMATION_TOOLS", "tools", string(rawTools))
 	}
 	if err := compatibility.normalizeToolChoice(payload, normalizedTools); err != nil {
 		return nil, err
@@ -171,6 +178,15 @@ func (c *responsesToolCompatibility) normalizeTool(raw any, namespace string, cl
 			return nil, nil
 		}
 		converted := cloneJSONObject(tool)
+		if inputSchema, exists := converted["inputSchema"]; exists {
+			converted["parameters"] = inputSchema
+			delete(converted, "inputSchema")
+			c.changed = true
+		} else if inputSchema, exists := converted["input_schema"]; exists {
+			converted["parameters"] = inputSchema
+			delete(converted, "input_schema")
+			c.changed = true
+		}
 		if parameters, exists := converted["parameters"]; exists {
 			normalized, changed, normalizeErr := normalizeBuildFunctionParametersRoot(parameters, param+".parameters")
 			if normalizeErr != nil {
@@ -302,15 +318,21 @@ func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, e
 		}
 	}
 
-	for _, keyword := range []string{"anyOf", "oneOf"} {
+	defs, _ := normalized["$defs"].(map[string]any)
+	if defs == nil {
+		defs, _ = normalized["definitions"].(map[string]any)
+	}
+
+	for _, keyword := range []string{"oneOf", "anyOf"} {
 		rawBranches, exists := normalized[keyword]
 		if !exists {
 			continue
 		}
 		branches, ok := rawBranches.([]any)
-		if !ok {
+		if !ok || len(branches) == 0 {
 			continue
 		}
+
 		filtered := make([]any, 0, len(branches))
 		removedNonObject := false
 		for _, rawBranch := range branches {
@@ -321,6 +343,73 @@ func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, e
 			}
 			filtered = append(filtered, rawBranch)
 		}
+
+		// 如果包含多分支，必须拍平消除顶层 keyword！
+		if len(filtered) > 1 {
+			changed = true
+			delete(normalized, keyword)
+
+			mergedProperties := make(map[string]any)
+			if existingProps, ok := normalized["properties"].(map[string]any); ok {
+				for k, v := range existingProps {
+					mergedProperties[k] = v
+				}
+			}
+
+			var mergedRequired []any
+			if req, ok := normalized["required"].([]any); ok {
+				mergedRequired = append(mergedRequired, req...)
+			}
+
+			var collectProps func(target any, depth int)
+			collectProps = func(target any, depth int) {
+				if depth > 10 || target == nil {
+					return
+				}
+				obj, ok := target.(map[string]any)
+				if !ok {
+					return
+				}
+				if ref, ok := obj["$ref"].(string); ok && defs != nil {
+					refKey := strings.TrimPrefix(ref, "#/$defs/")
+					refKey = strings.TrimPrefix(refKey, "#/definitions/")
+					if defObj, exists := defs[refKey]; exists {
+						collectProps(defObj, depth+1)
+					}
+				}
+				if props, ok := obj["properties"].(map[string]any); ok {
+					for k, v := range props {
+						if _, exists := mergedProperties[k]; !exists {
+							mergedProperties[k] = v
+						}
+					}
+				}
+				if req, ok := obj["required"].([]any); ok {
+					for _, r := range req {
+						mergedRequired = append(mergedRequired, r)
+					}
+				}
+				for _, subKw := range []string{"anyOf", "oneOf"} {
+					if subBranches, exists := obj[subKw].([]any); exists {
+						for _, b := range subBranches {
+							collectProps(b, depth+1)
+						}
+					}
+				}
+			}
+
+			for _, branch := range filtered {
+				collectProps(branch, 0)
+			}
+
+			normalized["type"] = "object"
+			normalized["properties"] = mergedProperties
+			if len(mergedRequired) > 0 {
+				normalized["required"] = dedupeSlice(mergedRequired)
+			}
+			continue
+		}
+
 		if !removedNonObject {
 			continue
 		}
@@ -342,14 +431,11 @@ func normalizeBuildFunctionParametersRoot(value any, param string) (any, bool, e
 			normalized["type"] = "object"
 			continue
 		}
-		for _, rawBranch := range filtered {
-			branch, ok := rawBranch.(map[string]any)
-			if !ok || !isObjectRootSchema(branch, normalized, nil) {
-				return nil, false, invalidBuildFunctionParametersRoot(param)
-			}
-		}
-		normalized[keyword] = cloneJSONArray(filtered)
+	}
+
+	if normalized["type"] != "object" {
 		normalized["type"] = "object"
+		changed = true
 	}
 
 	return normalized, changed, nil
