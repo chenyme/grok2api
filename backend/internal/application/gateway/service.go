@@ -228,6 +228,7 @@ type Service struct {
 	modelSyncing                map[uint64]struct{}
 	markBuildChatDeniedAsReauth atomic.Bool
 	qualityRetry                atomic.Pointer[QualityRetryRuntime]
+	autoWebSearch               atomic.Bool
 }
 
 type teamModelRateLimit struct {
@@ -486,6 +487,10 @@ func (s *Service) UpdateMarkBuildChatDeniedAsReauth(enabled bool) {
 	s.markBuildChatDeniedAsReauth.Store(enabled)
 }
 
+func (s *Service) UpdateAutoWebSearch(enabled bool) {
+	s.autoWebSearch.Store(enabled)
+}
+
 func (s *Service) UpdateRequestTimeout(value time.Duration) {
 	if value <= 0 {
 		value = minimumTextBillingReservationTTL
@@ -526,6 +531,9 @@ func (s *Service) CreateResponse(ctx context.Context, input Input) (*Result, err
 
 func (s *Service) CreateChatCompletion(ctx context.Context, input Input) (*Result, error) {
 	input.Operation = audit.OperationChat
+	if s.autoWebSearch.Load() {
+		input.Body = maybeInjectAutoWebSearch(input.Body)
+	}
 	return s.createResponseAt(ctx, input, "/responses")
 }
 

@@ -355,6 +355,7 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger) (*Applicat
 	gatewayService.UpdateQualityRetry(qualityRetryRuntime(cfg.QualityGuard.RequestRetry))
 	gatewayService.UpdateVideoMaxAttempts(cfg.Routing.VideoMaxAttempts)
 	gatewayService.UpdateMarkBuildChatDeniedAsReauth(cfg.Routing.MarkBuildChatDeniedAsReauth)
+	gatewayService.UpdateAutoWebSearch(cfg.Chat.AutoWebSearch)
 	gatewayService.SetLogger(logger)
 	egressService.SetQualityProber(gatewayService)
 	gatewayService.UpdateBuildForbiddenReauthPolicy(cfg.Accounts.MarkBuildForbiddenReauth, cfg.Accounts.BuildForbiddenReauthCodes)
