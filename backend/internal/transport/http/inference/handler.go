@@ -49,7 +49,10 @@ const (
 	maxStreamResponseTransferBytes  = 256 << 20
 	maxMediaResponseTransferBytes   = int64(2) << 30
 	responseWriteTimeout            = 30 * time.Second
+	streamHeartbeatInterval         = 15 * time.Second
 )
+
+var streamHeartbeatComment = []byte(": keep-alive\n\n")
 
 var (
 	errResponseTransferLimit    = errors.New("响应超过代理安全上限")
@@ -1292,6 +1295,16 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 		return
 	}
 	copyHeaders(c.Writer.Header(), result.Header)
+	if stream {
+		// Keep every proxy hop in streaming mode. In particular, X-Accel-Buffering
+		// prevents nginx-compatible frontends from collecting small SSE frames,
+		// while no-transform prevents intermediaries from rewriting/compressing
+		// them into a buffered response.
+		c.Writer.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		c.Writer.Header().Set("Cache-Control", "no-cache, no-transform")
+		c.Writer.Header().Set("X-Accel-Buffering", "no")
+		c.Writer.Header().Del("Content-Length")
+	}
 	if result.StatusCode >= 400 {
 		errorCode = "upstream_error"
 		if stream && !isEventStreamContentType(result.Header.Get("Content-Type")) {
@@ -1403,21 +1416,135 @@ func copyStream(writer gin.ResponseWriter, source io.Reader, protocol streamProt
 }
 
 func copyStreamWithFallbackModel(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol, onFirstToken func(), fallbackModel string) (responseMetadata, error) {
+	return copyStreamWithHeartbeatInterval(writer, source, protocol, onFirstToken, fallbackModel, streamHeartbeatInterval)
+}
+
+type streamReadResult struct {
+	chunk []byte
+	err   error
+}
+
+// pumpStreamReads lets the forwarding loop keep writing downstream heartbeats
+// while an upstream Read is blocked. The copy makes each result independent of
+// the pump's reusable buffer and is bounded by the existing stream transfer cap.
+func pumpStreamReads(source io.Reader, done <-chan struct{}) <-chan streamReadResult {
+	results := make(chan streamReadResult)
+	go func() {
+		defer close(results)
+		buffer := make([]byte, responseCopyBufferBytes)
+		for {
+			n, err := source.Read(buffer)
+			result := streamReadResult{err: err}
+			if n > 0 {
+				result.chunk = append([]byte(nil), buffer[:n]...)
+			}
+			select {
+			case results <- result:
+			case <-done:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return results
+}
+
+type sseEventBoundaryTracker struct {
+	wrote bool
+	tail  []byte
+}
+
+func (t *sseEventBoundaryTracker) Observe(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	t.wrote = true
+	t.tail = append(t.tail, chunk...)
+	if len(t.tail) > 4 {
+		t.tail = append(t.tail[:0], t.tail[len(t.tail)-4:]...)
+	}
+}
+
+// AtBoundary prevents a locally generated comment from being inserted inside
+// a data line when an upstream transport split one SSE event across reads.
+func (t *sseEventBoundaryTracker) AtBoundary() bool {
+	if !t.wrote {
+		return true
+	}
+	return bytes.HasSuffix(t.tail, []byte("\n\n")) ||
+		bytes.HasSuffix(t.tail, []byte("\r\n\r\n")) ||
+		bytes.HasSuffix(t.tail, []byte("\r\r"))
+}
+
+func resetStreamHeartbeat(timer *time.Timer, interval time.Duration) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(interval)
+}
+
+func copyStreamWithHeartbeatInterval(writer gin.ResponseWriter, source io.Reader, protocol streamProtocol, onFirstToken func(), fallbackModel string, heartbeatInterval time.Duration) (responseMetadata, error) {
 	inspector := &responseInspector{protocol: protocol, onFirstToken: onFirstToken}
 	markerFilter := internalSSEMarkerFilter{enabled: protocol == streamProtocolChat || protocol == streamProtocolAnthropic}
 	var compat responsesCompatState
 	compat.model = strings.TrimSpace(fallbackModel)
-	buffer := make([]byte, responseCopyBufferBytes)
+	readDone := make(chan struct{})
+	defer close(readDone)
+	readResults := pumpStreamReads(source, readDone)
+	var heartbeatTimer *time.Timer
+	var heartbeat <-chan time.Time
+	if heartbeatInterval > 0 {
+		heartbeatTimer = time.NewTimer(heartbeatInterval)
+		heartbeat = heartbeatTimer.C
+		defer heartbeatTimer.Stop()
+	}
+	var boundary sseEventBoundaryTracker
 	received := 0
 	transferred := 0
 	for {
-		n, readErr := source.Read(buffer)
+		var result streamReadResult
+		waiting := true
+		for waiting {
+			select {
+			case value, ok := <-readResults:
+				if !ok {
+					result.err = io.EOF
+				} else {
+					result = value
+				}
+				waiting = false
+			case <-heartbeat:
+				if boundary.AtBoundary() {
+					if transferred+len(streamHeartbeatComment) > maxStreamResponseTransferBytes {
+						return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
+					}
+					if err := setResponseWriteDeadline(writer); err != nil {
+						return inspector.Metadata(), err
+					}
+					if _, err := writer.Write(streamHeartbeatComment); err != nil {
+						return inspector.Metadata(), err
+					}
+					writer.Flush()
+					transferred += len(streamHeartbeatComment)
+				}
+				resetStreamHeartbeat(heartbeatTimer, heartbeatInterval)
+			}
+		}
+		n, readErr := len(result.chunk), result.err
 		if n > 0 {
 			if received+n > maxStreamResponseTransferBytes {
 				return inspector.Metadata(), fmt.Errorf("%w: 流式响应超过 %d MiB", errResponseTransferLimit, maxStreamResponseTransferBytes>>20)
 			}
 			received += n
-			chunk := buffer[:n]
+			chunk := result.chunk
 			if protocol == streamProtocolChat {
 				// The internal reasoning marker is intentionally removed before
 				// forwarding, but still counts as generation start.
@@ -1445,6 +1572,8 @@ func copyStreamWithFallbackModel(writer gin.ResponseWriter, source io.Reader, pr
 				}
 				writer.Flush()
 				transferred += len(chunk)
+				boundary.Observe(chunk)
+				resetStreamHeartbeat(heartbeatTimer, heartbeatInterval)
 			}
 			inspector.markFirstTokenForwarded()
 		}

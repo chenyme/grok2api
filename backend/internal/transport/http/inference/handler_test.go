@@ -1022,6 +1022,64 @@ func TestCopyStreamConsumesAnthropicReasoningEvidenceMarker(t *testing.T) {
 	}
 }
 
+func TestCopyStreamSendsHeartbeatWhileAnthropicUpstreamIsSilent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	reader, writer := io.Pipe()
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		timer := time.NewTimer(40 * time.Millisecond)
+		defer timer.Stop()
+		<-timer.C
+		_, _ = io.WriteString(writer, "event: message_stop\n"+`data: {"type":"message_stop"}`+"\n\n")
+		_ = writer.Close()
+	}()
+
+	marked := 0
+	_, err := copyStreamWithHeartbeatInterval(context.Writer, reader, streamProtocolAnthropic, func() { marked++ }, "", 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-writeDone
+	got := recorder.Body.String()
+	if !strings.Contains(got, string(streamHeartbeatComment)) {
+		t.Fatalf("silent Anthropic stream did not receive a heartbeat: %q", got)
+	}
+	if !strings.Contains(got, `"type":"message_stop"`) {
+		t.Fatalf("terminal Anthropic event missing after heartbeat: %q", got)
+	}
+	if marked != 0 {
+		t.Fatalf("heartbeat incorrectly marked first token %d times", marked)
+	}
+}
+
+func TestCopyStreamDoesNotInsertHeartbeatInsideSplitSSEEvent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	reader, writer := io.Pipe()
+	go func() {
+		_, _ = io.WriteString(writer, "event: message_stop\ndata: {\"type\"")
+		timer := time.NewTimer(30 * time.Millisecond)
+		defer timer.Stop()
+		<-timer.C
+		_, _ = io.WriteString(writer, ":\"message_stop\"}\n\n")
+		_ = writer.Close()
+	}()
+
+	_, err := copyStreamWithHeartbeatInterval(context.Writer, reader, streamProtocolAnthropic, nil, "", 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := recorder.Body.String()
+	want := "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	if got != want {
+		t.Fatalf("split SSE event was modified by heartbeat: got %q, want %q", got, want)
+	}
+}
+
 func TestCopyStreamPreservesBufferedTailOnReadError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
