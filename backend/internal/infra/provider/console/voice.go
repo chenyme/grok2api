@@ -43,6 +43,9 @@ func (a *Adapter) SynthesizeSpeech(ctx context.Context, request provider.TTSRequ
 	if voiceID := strings.TrimSpace(request.VoiceID); voiceID != "" {
 		payload["voice_id"] = voiceID
 	}
+	if len(request.Replace) > 0 {
+		payload["replace"] = request.Replace
+	}
 	if format := normalizeTTSOutputFormat(request.OutputFormat); format != nil {
 		payload["output_format"] = format
 	}

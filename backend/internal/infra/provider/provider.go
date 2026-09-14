@@ -597,6 +597,7 @@ type TTSRequest struct {
 	Text                     string
 	VoiceID                  string
 	Language                 string
+	Replace                  map[string]string
 	OutputFormat             TTSOutputFormat
 	Speed                    float64
 	OptimizeStreamingLatency int

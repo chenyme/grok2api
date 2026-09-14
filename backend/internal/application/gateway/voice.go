@@ -30,6 +30,7 @@ type TTSInput struct {
 	Text                     string
 	VoiceID                  string
 	Language                 string
+	Replace                  map[string]string
 	OutputFormat             provider.TTSOutputFormat
 	Speed                    float64
 	OptimizeStreamingLatency int
@@ -97,7 +98,7 @@ func (s *Service) SynthesizeSpeech(ctx context.Context, input TTSInput) (*Result
 			return voiceExecutionResult{}, ErrNoAvailableAccount
 		}
 		result, err := adapter.SynthesizeSpeech(executionCtx, provider.TTSRequest{
-			Credential: credential, Model: upstream, Text: input.Text, VoiceID: input.VoiceID, Language: input.Language,
+			Credential: credential, Model: upstream, Text: input.Text, VoiceID: input.VoiceID, Language: input.Language, Replace: input.Replace,
 			OutputFormat: input.OutputFormat, Speed: input.Speed, OptimizeStreamingLatency: input.OptimizeStreamingLatency,
 			TextNormalization: input.TextNormalization, WithTimestamps: input.WithTimestamps,
 		})

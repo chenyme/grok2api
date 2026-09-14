@@ -17,15 +17,16 @@ import (
 )
 
 type ttsRequest struct {
-	Model                    string          `json:"model"`
-	Text                     string          `json:"text"`
-	VoiceID                  string          `json:"voice_id"`
-	Language                 string          `json:"language"`
-	OutputFormat             json.RawMessage `json:"output_format"`
-	Speed                    *float64        `json:"speed"`
-	OptimizeStreamingLatency json.RawMessage `json:"optimize_streaming_latency"`
-	TextNormalization        *bool           `json:"text_normalization"`
-	WithTimestamps           *bool           `json:"with_timestamps"`
+	Model                    string            `json:"model"`
+	Text                     string            `json:"text"`
+	VoiceID                  string            `json:"voice_id"`
+	Language                 string            `json:"language"`
+	Replace                  map[string]string `json:"replace"`
+	OutputFormat             json.RawMessage   `json:"output_format"`
+	Speed                    *float64          `json:"speed"`
+	OptimizeStreamingLatency json.RawMessage   `json:"optimize_streaming_latency"`
+	TextNormalization        *bool             `json:"text_normalization"`
+	WithTimestamps           *bool             `json:"with_timestamps"`
 }
 
 func (h *Handler) synthesizeSpeech(c *gin.Context) {
@@ -75,7 +76,7 @@ func (h *Handler) synthesizeSpeech(c *gin.Context) {
 	}
 	input := gateway.TTSInput{
 		RequestID: requestID, ClientKey: clientKey, PublicModel: model, Text: text, VoiceID: strings.TrimSpace(request.VoiceID),
-		Language: language, OutputFormat: format, Speed: speed, OptimizeStreamingLatency: optimize,
+		Language: language, Replace: request.Replace, OutputFormat: format, Speed: speed, OptimizeStreamingLatency: optimize,
 		Method: c.Request.Method, Path: c.Request.URL.Path, Headers: c.Request.Header.Clone(),
 	}
 	if request.TextNormalization != nil {
