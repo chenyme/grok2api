@@ -68,49 +68,119 @@ func TestClassifyQualityHoldBurst(t *testing.T) {
 		want QualityVerdict
 	}{
 		{
-			name: "terminal hold-expired hello dump withholds",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 2, ReasoningTokens: 954, EncryptedBytes: 4000, EncryptedFloor: 3816, UsageReported: true, FirstVisible: true, HoldExpired: true, Terminal: true},
+			name: "hold-expired hello dump withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 2, ReasoningTokens: 954, EncryptedBytes: 4000, EncryptedFloor: 3816, HoldExpired: true},
 			want: QualityWithhold,
 		},
 		{
-			name: "hold-expired long answer delivers",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 200, ReasoningTokens: 954, EncryptedBytes: 8000, EncryptedFloor: 3816, UsageReported: true, FirstVisible: true, HoldExpired: true},
-			want: QualityDeliver,
-		},
-		{
-			name: "non-terminal barely-over-floor flush keeps observing",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 300, EncryptedFloor: 256, UsageReported: true, FirstVisible: true, VisibleFlushMS: 100},
+			name: "hold-expired long answer still waiting without flush",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 200, ReasoningTokens: 954, EncryptedBytes: 8000, EncryptedFloor: 3816, HoldExpired: true},
 			want: QualityWait,
 		},
 		{
-			name: "terminal barely-over-floor flush withholds",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 300, EncryptedFloor: 256, UsageReported: true, FirstVisible: true, VisibleFlushMS: 100, Terminal: true},
+			name: "cipher-only visible streamed 2s delivers",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 200, ReasoningTokens: 954, EncryptedBytes: 8000, EncryptedFloor: 3816, FirstVisible: true, VisibleFlushMS: 2500},
+			want: QualityDeliver,
+		},
+		{
+			name: "barely-over-floor flush withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 300, EncryptedFloor: 256, FirstVisible: true, VisibleFlushMS: 100},
 			want: QualityWithhold,
 		},
 		{
-			name: "large cipher flush delivers",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 2000, EncryptedFloor: 256, UsageReported: true, FirstVisible: true, VisibleFlushMS: 100},
-			want: QualityDeliver,
-		},
-		{
-			name: "non-terminal floor-met short burst keeps observing",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 3, ReasoningTokens: 1371, EncryptedBytes: 8000, EncryptedFloor: 5484, UsageReported: true, FirstVisible: true, VisibleFlushMS: 200},
-			want: QualityWait,
+			name: "large cipher flush without plaintext withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 60, EncryptedBytes: 2000, EncryptedFloor: 256, FirstVisible: true, VisibleFlushMS: 100},
+			want: QualityWithhold,
 		},
 		{
 			name: "floor-met short visible fast dump withholds",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 3, ReasoningTokens: 1371, EncryptedBytes: 8000, EncryptedFloor: 5484, UsageReported: true, FirstVisible: true, VisibleFlushMS: 200, Terminal: true},
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 3, ReasoningTokens: 1371, EncryptedBytes: 8000, EncryptedFloor: 5484, FirstVisible: true, VisibleFlushMS: 200},
 			want: QualityWithhold,
 		},
 		{
 			name: "floor-met 8 visible 140 reasoning in under 1s withholds",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 8, ReasoningTokens: 140, EncryptedBytes: 2000, EncryptedFloor: 560, UsageReported: true, FirstVisible: true, VisibleFlushMS: 660, Terminal: true},
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 8, ReasoningTokens: 140, EncryptedBytes: 2000, EncryptedFloor: 560, FirstVisible: true, VisibleFlushMS: 660},
 			want: QualityWithhold,
 		},
 		{
-			name: "floor-met long visible fast flush delivers",
-			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 80, ReasoningTokens: 140, EncryptedBytes: 2000, EncryptedFloor: 560, UsageReported: true, FirstVisible: true, VisibleFlushMS: 200, Terminal: true},
+			name: "floor-met long visible fast flush withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 80, ReasoningTokens: 140, EncryptedBytes: 2000, EncryptedFloor: 560, FirstVisible: true, VisibleFlushMS: 200},
+			want: QualityWithhold,
+		},
+		{
+			name: "18190 fake enc 11s first-token dump withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 1425, ReasoningTokens: 1416, EncryptedBytes: 8000, EncryptedFloor: 5664, FirstVisible: true, VisibleFlushMS: 4, Terminal: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "18190 fake enc 1.8s 1962-token dump withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 1962, ReasoningTokens: 1813, EncryptedBytes: 8000, EncryptedFloor: 7252, FirstVisible: true, VisibleFlushMS: 1776, Terminal: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "plaintext thinking EOS dump withholds on reasoning ratio",
+			sig:  QualityStreamSignals{HasThinking: true, HasReasoningDelta: true, VisibleTokens: 9, OutputTokens: 1425, ReasoningTokens: 1416, EncryptedBytes: 8000, FirstVisible: true, VisibleFlushMS: 4, Terminal: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "18183 vis7 chat dump withholds without minOutput",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 7, OutputTokens: 3812, ReasoningTokens: 3805, EncryptedBytes: 8000, EncryptedFloor: 15220, FirstVisible: true, VisibleFlushMS: 1, Terminal: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "18183 vis1 chat dump withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 1, OutputTokens: 2313, ReasoningTokens: 2312, EncryptedBytes: 4000, EncryptedFloor: 9248, FirstVisible: true, VisibleFlushMS: 1, Terminal: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "plaintext thinking slow stream still delivers",
+			sig:  QualityStreamSignals{HasThinking: true, HasReasoningDelta: true, VisibleTokens: 400, OutputTokens: 900, ReasoningTokens: 500, FirstVisible: true, VisibleFlushMS: 8000, Terminal: true},
 			want: QualityDeliver,
+		},
+		{
+			name: "cipher stub 128k drool withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 128000, ReasoningTokens: 0, EncryptedBytes: 800, Terminal: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "cipher stub hold-expired short answer waits",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 64, ReasoningTokens: 0, EncryptedBytes: 400, HoldExpired: true},
+			want: QualityWait,
+		},
+		{
+			name: "cipher stub hold-expired 1024 visible withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 1024, ReasoningTokens: 0, EncryptedBytes: 400, HoldExpired: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "plaintext thinking with visible still delivers",
+			sig:  QualityStreamSignals{HasThinking: true, HasReasoningDelta: true, VisibleTokens: 64, ReasoningTokens: 0, EncryptedBytes: 400, HoldExpired: true},
+			want: QualityDeliver,
+		},
+		{
+			name: "cipher-only no visible waits",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 0, EncryptedBytes: 800, HoldExpired: true},
+			want: QualityWait,
+		},
+		{
+			name: "18190 smoke 107ms 1798-token dump withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 1798, ReasoningTokens: 1730, EncryptedBytes: 8000, EncryptedFloor: 6920, FirstVisible: true, VisibleFlushMS: 107, Terminal: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "cipher-only mid dump withholds",
+			sig:  QualityStreamSignals{HasThinking: true, VisibleTokens: 50, ReasoningTokens: 1730, EncryptedBytes: 8000, EncryptedFloor: 6920, FirstVisible: true, VisibleFlushMS: 50},
+			want: QualityWithhold,
+		},
+		{
+			name: "usage-only vis7 heavy reasoning 1ms flush withholds",
+			sig:  QualityStreamSignals{VisibleTokens: 7, OutputTokens: 3812, ReasoningTokens: 3805, FirstVisible: true, VisibleFlushMS: 1, Terminal: true, UsageReported: true},
+			want: QualityWithhold,
+		},
+		{
+			name: "usage-only vis1 heavy reasoning 1ms flush withholds",
+			sig:  QualityStreamSignals{VisibleTokens: 1, OutputTokens: 2313, ReasoningTokens: 2312, FirstVisible: true, VisibleFlushMS: 1, Terminal: true, UsageReported: true},
+			want: QualityWithhold,
 		},
 	}
 	for _, test := range tests {
@@ -133,13 +203,13 @@ func TestClassifyQualityHoldBurstUsesConfiguredFloor(t *testing.T) {
 	if got := ClassifyQualityHold(configuredHigh, 8); got != QualityWithhold {
 		t.Fatalf("configured high floor verdict = %s, want withhold", got)
 	}
-	configuredLow := QualityStreamSignals{
+	configuredMiss := QualityStreamSignals{
 		HasThinking: true, VisibleTokens: 40, ReasoningTokens: 60,
-		EncryptedBytes: 300, EncryptedFloor: 64, UsageReported: true,
+		EncryptedBytes: 300, EncryptedFloor: 4096, UsageReported: true,
 		FirstVisible: true, VisibleFlushMS: 100, Terminal: true,
 	}
-	if got := ClassifyQualityHold(configuredLow, 8); got != QualityDeliver {
-		t.Fatalf("configured low floor verdict = %s, want deliver", got)
+	if got := ClassifyQualityHold(configuredMiss, 8); got != QualityDeliver {
+		t.Fatalf("cipher below configured floor must not dump-bill: %s", got)
 	}
 }
 
@@ -378,6 +448,55 @@ func TestObserveQualityChunkShortNoThinkIgnoresFakeReasoningUsage(t *testing.T) 
 	}
 }
 
+func TestSignalsVisibleIgnoresUsageCompletion(t *testing.T) {
+	t.Parallel()
+	content := "Hi"
+	chat := qualityScanState{protocol: qualityProtocolChat}
+	ObserveQualityChunk(&chat, []byte(sse(
+		`data: {"choices":[{"delta":{"content":"`+content+`"}}]}`,
+		`data: {"usage":{"completion_tokens":2000,"completion_tokens_details":{"reasoning_tokens":0}}}`,
+		"data: [DONE]",
+	)))
+	chatSig := chat.signals()
+	if chatSig.VisibleTokens > 4 || chatSig.OutputTokens != 2000 {
+		t.Fatalf("chat must not treat usage completion as visible: %#v", chatSig)
+	}
+
+	resp := qualityScanState{protocol: qualityProtocolResponses}
+	ObserveQualityChunk(&resp, []byte(sse(
+		`data: {"type":"response.output_text.delta","delta":"`+content+`"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_1","usage":{"output_tokens":2000,"output_tokens_details":{"reasoning_tokens":0}}}}`,
+	)))
+	respSig := resp.signals()
+	if respSig.VisibleTokens != chatSig.VisibleTokens {
+		t.Fatalf("chat/responses visible mismatch: chat=%#v responses=%#v", chatSig, respSig)
+	}
+	if respSig.VisibleTokens > 4 || respSig.OutputTokens != 2000 {
+		t.Fatalf("responses must not treat usage output as visible: %#v", respSig)
+	}
+}
+
+func TestObserveQualityChunkChatTinyVisibleHugeReasoningWithholds(t *testing.T) {
+	t.Parallel()
+	state := qualityScanState{protocol: qualityProtocolChat}
+	ObserveQualityChunk(&state, []byte(sse(
+		": grok2api-reasoning-start",
+		`data: {"choices":[{"delta":{"content":"你好"}}]}`,
+		`data: {"usage":{"completion_tokens":3812,"completion_tokens_details":{"reasoning_tokens":3805}}}`,
+		"data: [DONE]",
+	)))
+	sig := state.signals()
+	if sig.HasReasoningDelta {
+		t.Fatalf("stub+content must not count as reasoning delta: %#v", sig)
+	}
+	if sig.VisibleTokens >= 8 {
+		t.Fatalf("tiny chat dump visible inflated: %#v", sig)
+	}
+	if got := ClassifyQualityHold(sig, 8); got != QualityWithhold {
+		t.Fatalf("vis<8 reasoning dump must withhold: %s (%#v)", got, sig)
+	}
+}
+
 func TestObserveQualityConvertedEncryptedThinking(t *testing.T) {
 	t.Parallel()
 	cipher := strings.Repeat("A", defaultMinEncryptedBytes*8)
@@ -411,8 +530,8 @@ func TestObserveQualityConvertedEncryptedThinking(t *testing.T) {
 			if !sig.HasThinking {
 				t.Fatalf("converted encrypted thinking evidence was lost:\n%s", converted)
 			}
-			if got := ClassifyQualityHold(sig, 32); got != QualityDeliver {
-				t.Fatalf("converted encrypted thinking verdict = %s (%#v)", got, sig)
+			if got := ClassifyQualityHold(sig, 32); got != QualityWithhold {
+				t.Fatalf("converted cipher dump without plaintext deltas must withhold: %s (%#v)", got, sig)
 			}
 		})
 	}
@@ -562,8 +681,8 @@ func TestObserveQualityChunkResponsesReasoningItem(t *testing.T) {
 	if !encSig.HasThinking || encSig.ReasoningTokens != 60 || encSig.EncryptedBytes < defaultMinEncryptedBytes {
 		t.Fatalf("encrypted reasoning item must count as thinking: %#v", encSig)
 	}
-	if ClassifyQualityHold(encSig, 32) != QualityDeliver {
-		t.Fatalf("encrypted thinking should deliver: %#v", encSig)
+	if ClassifyQualityHold(encSig, 32) != QualityWithhold {
+		t.Fatalf("encrypted thinking without plaintext deltas must withhold: %#v", encSig)
 	}
 
 	floorCipher := strings.Repeat("A", defaultMinEncryptedBytes)
@@ -704,26 +823,13 @@ func TestPeekQualityStreamCipherBurstWaitsAcrossEventSplits(t *testing.T) {
 		if result.replay != nil {
 			_ = result.replay.Close()
 		}
-		t.Fatalf("non-terminal burst was finalized early: verdict=%s err=%v", result.verdict, result.err)
-	case <-time.After(40 * time.Millisecond):
-	}
-	if _, err := io.WriteString(writer, completed); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case result := <-done:
-		if result.replay != nil {
-			_ = result.replay.Close()
-		}
 		if result.err != nil || result.verdict != QualityWithhold {
-			t.Fatalf("split verdict=%s err=%v, want withhold", result.verdict, result.err)
+			t.Fatalf("visible dump must withhold without waiting for completed: verdict=%s err=%v", result.verdict, result.err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("split terminal stream did not finish")
+		t.Fatal("split visible dump did not withhold")
 	}
+	_ = writer.Close()
 }
 
 func TestPeekQualityStreamWithholdsNoThinkEnough(t *testing.T) {
