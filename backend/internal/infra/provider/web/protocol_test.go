@@ -1786,3 +1786,66 @@ func MarshalJSONBytes(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data
 }
+
+
+func TestImagineCollectorFiltersMismatchedRequestIDs(t *testing.T) {
+	reqID := "img_target_12345"
+	collector := newImagineCollector(reqID)
+
+	// 1. Frame from another/stale request with mismatched requestId must be ignored
+	collector.Accept(map[string]any{
+		"type":                "image",
+		"id":                  "stale-image-1",
+		"requestId":           "img_stale_99999",
+		"url":                 "https://imagine-public.x.ai/imagine-public/images/stale.jpg",
+		"percentage_complete": 100.0,
+	})
+	collector.Accept(map[string]any{
+		"type":           "json",
+		"image_id":       "stale-image-1",
+		"requestId":      "img_stale_99999",
+		"current_status": "completed",
+		"moderated":      false,
+	})
+
+	if collector.UsableCount() != 0 || len(collector.Images()) != 0 {
+		t.Fatalf("collector accepted stale image with mismatched requestId: %#v", collector.Images())
+	}
+
+	// 2. Nested item.requestId must also be matched
+	collector.Accept(map[string]any{
+		"type": "image",
+		"id":   "stale-nested-1",
+		"item": map[string]any{
+			"requestId": "img_stale_88888",
+		},
+		"url":                 "https://imagine-public.x.ai/imagine-public/images/stale2.jpg",
+		"percentage_complete": 100.0,
+	})
+	if collector.UsableCount() != 0 {
+		t.Fatalf("collector accepted nested stale image")
+	}
+
+	// 3. Matching target request frames are accepted normally
+	collector.Accept(map[string]any{
+		"type":                "image",
+		"id":                  "target-image-1",
+		"requestId":           reqID,
+		"url":                 "https://imagine-public.x.ai/imagine-public/images/target.jpg",
+		"percentage_complete": 100.0,
+	})
+	collector.Accept(map[string]any{
+		"type":           "json",
+		"image_id":       "target-image-1",
+		"requestId":      reqID,
+		"current_status": "completed",
+		"moderated":      false,
+	})
+
+	if collector.UsableCount() != 1 || len(collector.Images()) != 1 {
+		t.Fatalf("collector failed to accept matching target image: %#v", collector.Images())
+	}
+	if collector.Images()[0].ID != "target-image-1" {
+		t.Fatalf("expected target-image-1, got %s", collector.Images()[0].ID)
+	}
+}
