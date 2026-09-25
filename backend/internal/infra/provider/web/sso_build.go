@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,9 +102,11 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		device.ExpiresIn = 1800
 	}
 
-	// verify/approve 已在 auth.x.ai 完成状态变更。重定向目标只是结果页，
-	// 因此不访问 accounts.x.ai，直接解析首个 3xx Location 的状态路径。
-	status, finalURL, _, err := f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false)
+	// verify → consent。xAI 2025-09 起在 device 授权流程加入防伪令牌：consent 页面内嵌一个
+	// 一次性 consent_token（ES256 JWT，typ=consent+jwt），approve 必须回传它，否则返回
+	// 403「Request could not be verified」。因此这里不能只看 3xx 的状态路径，还要取到
+	// consent 页面来解析该令牌。
+	status, finalURL, verifyBody, err := f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
@@ -119,8 +122,21 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败")
 	}
+
+	// verify 以 3xx 跳转到 consent 时响应体为空，需要 GET consent 页面本身来解析 consent_token。
+	consentToken := extractConsentToken(verifyBody)
+	if consentToken == "" {
+		if _, _, consentBody, cerr := f.do(ctx, http.MethodGet, finalURL, nil); cerr == nil {
+			consentToken = extractConsentToken(consentBody)
+		}
+	}
+	if consentToken == "" {
+		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败：未获取 consent_token")
+	}
+
 	status, finalURL, _, err = f.doWithFollow(ctx, http.MethodPost, ssoApproveURL, url.Values{
 		"user_code": {device.UserCode}, "action": {"allow"}, "principal_type": {"User"}, "principal_id": {""},
+		"consent_token": {consentToken},
 	}, false)
 	if err != nil {
 		return provider.CredentialSeed{}, err
@@ -349,6 +365,23 @@ func normalizeSSOToken(value string) string {
 		value = strings.TrimSpace(token)
 	}
 	return strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(value)
+}
+
+var (
+	consentTokenFormRe = regexp.MustCompile(`name="consent_token"[^>]*value="([^"]+)"`)
+	consentTokenJSONRe = regexp.MustCompile(`consentToken["\\:= ]{1,6}(eyJ[A-Za-z0-9._-]+)`)
+)
+
+// extractConsentToken 从 consent 页面 HTML 中解析一次性 consent_token：
+// 优先取表单隐藏字段 name="consent_token"，回退到 RSC/JSON 里的 consentToken。
+func extractConsentToken(body []byte) string {
+	if m := consentTokenFormRe.FindSubmatch(body); m != nil {
+		return string(m[1])
+	}
+	if m := consentTokenJSONRe.FindSubmatch(body); m != nil {
+		return string(m[1])
+	}
+	return ""
 }
 
 func decodeBuildClaims(token string) map[string]any {
