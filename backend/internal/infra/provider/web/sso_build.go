@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -103,7 +104,7 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 
 	// verify/approve 已在 auth.x.ai 完成状态变更。重定向目标只是结果页，
 	// 因此不访问 accounts.x.ai，直接解析首个 3xx Location 的状态路径。
-	status, finalURL, _, err := f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false)
+	status, finalURL, _, err := f.doWithFollow(ctx, http.MethodPost, ssoVerifyURL, url.Values{"user_code": {device.UserCode}}, false, nil)
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
@@ -119,9 +120,39 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败")
 	}
+	consentPage := finalURL
+	browserHeaders := map[string]string{
+		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Sec-Fetch-Dest":            "document",
+		"Sec-Fetch-Mode":            "navigate",
+		"Sec-Fetch-Site":            "same-site",
+		"Sec-Fetch-User":            "?1",
+		"Upgrade-Insecure-Requests": "1",
+	}
+	status, _, consentBody, err := f.doWithFollow(ctx, http.MethodGet, consentPage, nil, true, browserHeaders)
+	if err != nil {
+		return provider.CredentialSeed{}, err
+	}
+	if status < 200 || status >= 400 {
+		return provider.CredentialSeed{}, fmt.Errorf("SSO Device Consent 页面加载失败: %w", conversionHTTPError{status: status})
+	}
+	consentToken := scrapeConsentToken(consentBody)
+	if consentToken == "" {
+		return provider.CredentialSeed{}, fmt.Errorf("SSO Device Consent 缺少 consent_token")
+	}
 	status, finalURL, _, err = f.doWithFollow(ctx, http.MethodPost, ssoApproveURL, url.Values{
 		"user_code": {device.UserCode}, "action": {"allow"}, "principal_type": {"User"}, "principal_id": {""},
-	}, false)
+		"consent_token": {consentToken},
+	}, false, map[string]string{
+		"Origin":                    "https://accounts.x.ai",
+		"Referer":                   consentPage,
+		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Sec-Fetch-Dest":            "document",
+		"Sec-Fetch-Mode":            "navigate",
+		"Sec-Fetch-Site":            "same-site",
+		"Sec-Fetch-User":            "?1",
+		"Upgrade-Insecure-Requests": "1",
+	})
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
@@ -217,12 +248,12 @@ func (f *ssoBuildFlow) pollToken(ctx context.Context, deviceCode string, interva
 }
 
 func (f *ssoBuildFlow) do(ctx context.Context, method, endpoint string, form url.Values) (int, string, []byte, error) {
-	return f.doWithFollow(ctx, method, endpoint, form, true)
+	return f.doWithFollow(ctx, method, endpoint, form, true, nil)
 }
 
 // doWithFollow 在 follow=false 时遇到 3xx 直接返回状态码与解析后的 Location 作为 finalURL，
 // 用于重定向目标域会被 Cloudflare 拦截（accounts.x.ai）的请求。
-func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string, form url.Values, follow bool) (int, string, []byte, error) {
+func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string, form url.Values, follow bool, extraHeaders map[string]string) (int, string, []byte, error) {
 	if !safeXAIURL(endpoint) {
 		return 0, "", nil, fmt.Errorf("xAI OAuth URL 不安全")
 	}
@@ -242,6 +273,9 @@ func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string
 		request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 		request.Header.Set("User-Agent", f.userAgent)
 		request.Header.Set("Cookie", f.cookieHeader())
+		for key, value := range extraHeaders {
+			request.Header.Set(key, value)
+		}
 		if currentForm != nil {
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
@@ -298,6 +332,16 @@ func (f *ssoBuildFlow) captureCookies(response *http.Response) {
 		}
 		f.cookies[name] = value
 	}
+}
+
+var consentTokenPattern = regexp.MustCompile(`name="consent_token"\s+value="([^"]+)"`)
+
+func scrapeConsentToken(body []byte) string {
+	match := consentTokenPattern.FindSubmatch(body)
+	if len(match) < 2 {
+		return ""
+	}
+	return string(match[1])
 }
 
 func ssoDeviceRedirectState(raw string) string {
