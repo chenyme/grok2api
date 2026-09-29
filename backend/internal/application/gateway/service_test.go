@@ -1963,7 +1963,7 @@ func TestParseFreeQuotaExhaustionCurrentBuildFreeLimit(t *testing.T) {
 	}
 }
 
-func TestGatewayUnknownBuildForbiddenTraversesAllAccountsWithoutCooldown(t *testing.T) {
+func TestGatewayUnknownBuildForbiddenTraversesAllAccountsWithCooldown(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "systemic-forbidden.db"))
 	if err != nil {
@@ -2033,8 +2033,8 @@ func TestGatewayUnknownBuildForbiddenTraversesAllAccountsWithoutCooldown(t *test
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
-		if observed.FailureCount != 0 || observed.CooldownUntil != nil || observed.AuthStatus != account.AuthStatusActive {
-			t.Fatalf("account %d was penalized after unknown 403: %#v", credential.ID, observed)
+		if observed.FailureCount == 0 || observed.CooldownUntil == nil || observed.AuthStatus != account.AuthStatusActive {
+			t.Fatalf("account %d was not cooled down after unknown Build 403: %#v", credential.ID, observed)
 		}
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
@@ -3946,8 +3946,8 @@ func TestGatewayUnknownBuildForbiddenRotatesWithoutPenalizingAccount(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
-		t.Fatalf("unknown 403 penalized first account: %#v", observed)
+	if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount == 0 || observed.CooldownUntil == nil {
+		t.Fatalf("unknown Build 403 did not cool down first account: %#v", observed)
 	}
 	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, model, "")
 	if err != nil {
