@@ -531,6 +531,22 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 
 	quotaMode := videoQuotaMode(route.Provider, s.providers.QuotaMode(route.Provider, route.UpstreamModel), job.Quality)
 	quotaRefreshGroup := s.providers.QuotaRefreshGroup(route.Provider, route.UpstreamModel)
+	// The initial creation path (selectSchedulableEligibleMediaRouteWithQuotaMode,
+	// called from CreateVideoJob) always scopes account selection to the
+	// requesting client key's AccountScope. A retry here must not silently
+	// widen that: falling back to the unscoped account pool would let a key
+	// restricted to e.g. free-tier/web-only accounts consume a premium or
+	// console/build-only account's quota purely because its originally
+	// pinned account had a transient failure.
+	accountScope := clientkey.AccountScope{}
+	if job.ClientKeyID > 0 {
+		key, keyErr := s.clientKeys.Get(ctx, job.ClientKeyID)
+		if keyErr != nil {
+			s.failVideoJob(ctx, job, "client_key_unavailable", keyErr, 0, nil)
+			return
+		}
+		accountScope = key.AccountScope()
+	}
 	attemptPolicy := s.videoAttemptPolicy()
 	excluded := make(map[uint64]bool)
 	forbiddenEgressRetried := make(map[uint64]bool)
@@ -564,7 +580,7 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 		}
 		if lease == nil {
 			if selection == nil {
-				selection, err = s.selector.beginSelectionSession(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false)
+				selection, err = s.selector.beginSelectionSessionForKey(ctx, route.Provider, route.ID, route.UpstreamModel, quotaMode, "", excluded, false, accountScope)
 			}
 			if err == nil {
 				lease, err = selection.Acquire(ctx, excluded, false)
