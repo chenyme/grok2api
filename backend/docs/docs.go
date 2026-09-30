@@ -123,7 +123,8 @@ const docTemplate = `{
                     }
                 ],
                 "consumes": [
-                    "application/json"
+                    "application/json",
+                    "multipart/form-data"
                 ],
                 "produces": [
                     "application/json"
@@ -169,7 +170,8 @@ const docTemplate = `{
                     }
                 ],
                 "consumes": [
-                    "application/json"
+                    "application/json",
+                    "multipart/form-data"
                 ],
                 "produces": [
                     "application/json"
@@ -713,6 +715,12 @@ const docTemplate = `{
                 "image": {
                     "$ref": "#/definitions/httpserver.SwaggerImageReference"
                 },
+                "images": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                    }
+                },
                 "model": {
                     "type": "string",
                     "example": "grok-imagine-image-edit"
@@ -754,6 +762,15 @@ const docTemplate = `{
                     "type": "string",
                     "example": "16:9"
                 },
+                "image": {
+                    "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                },
+                "images": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                    }
+                },
                 "model": {
                     "type": "string",
                     "example": "grok-imagine-image-quality"
@@ -769,6 +786,12 @@ const docTemplate = `{
                 "prompt": {
                     "type": "string",
                     "example": "A cinematic city at night"
+                },
+                "reference_images": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                    }
                 },
                 "resolution": {
                     "type": "string",

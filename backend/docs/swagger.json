@@ -116,7 +116,8 @@
                     }
                 ],
                 "consumes": [
-                    "application/json"
+                    "application/json",
+                    "multipart/form-data"
                 ],
                 "produces": [
                     "application/json"
@@ -162,7 +163,8 @@
                     }
                 ],
                 "consumes": [
-                    "application/json"
+                    "application/json",
+                    "multipart/form-data"
                 ],
                 "produces": [
                     "application/json"
@@ -706,6 +708,12 @@
                 "image": {
                     "$ref": "#/definitions/httpserver.SwaggerImageReference"
                 },
+                "images": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                    }
+                },
                 "model": {
                     "type": "string",
                     "example": "grok-imagine-image-edit"
@@ -747,6 +755,15 @@
                     "type": "string",
                     "example": "16:9"
                 },
+                "image": {
+                    "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                },
+                "images": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                    }
+                },
                 "model": {
                     "type": "string",
                     "example": "grok-imagine-image-quality"
@@ -762,6 +779,12 @@
                 "prompt": {
                     "type": "string",
                     "example": "A cinematic city at night"
+                },
+                "reference_images": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/httpserver.SwaggerImageReference"
+                    }
                 },
                 "resolution": {
                     "type": "string",

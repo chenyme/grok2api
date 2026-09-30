@@ -154,6 +154,7 @@ type Usage struct {
 }
 
 type Result struct {
+	Provider            accountdomain.Provider
 	StatusCode          int
 	Status              string
 	Header              http.Header
@@ -1183,7 +1184,7 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 			markFirstToken = firstToken.mark
 		}
 		timingHandedOff = true
-		return &Result{StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, MarkFirstToken: markFirstToken, RecordStreamFailure: recordStreamFailure, Finalize: finalize}
+		return &Result{Provider: route.Provider, StatusCode: response.StatusCode, Status: response.Status, Header: response.Header, Body: &finalizingBody{ReadCloser: response.Body, finalize: func() { finalize(Usage{}, "", "stream_closed") }}, MarkFirstToken: markFirstToken, RecordStreamFailure: recordStreamFailure, Finalize: finalize}
 	}
 	// fail_open retains at most one successful no-thinking stream. The account
 	// lease is released immediately; the read pump applies upstream backpressure
