@@ -1554,7 +1554,7 @@ attemptLoop:
 			} else if s.providers.SupportsCredentialRefresh(credential.Provider) && lastFailure.CredentialRejected {
 				failureHandled = s.markReauthRequired(ctx, input.RequestID, credential, fmt.Sprintf("%s credential rejected", credential.Provider))
 			}
-			if lastFailure.AccountScoped && !failureHandled {
+			if !failureHandled && (lastFailure.AccountScoped || credential.Provider == accountdomain.ProviderBuild && response.StatusCode == http.StatusForbidden) {
 				s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
 			} else if !lastFailure.AccountScoped && response.StatusCode >= http.StatusInternalServerError {
 				// Provider-wide 5xx responses should rotate this request and briefly
