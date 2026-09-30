@@ -900,3 +900,104 @@ func TestVideoWebForbiddenRetriesPinnedAccountOnceThenFailsOver(t *testing.T) {
 		t.Fatalf("unclassified failed job = %#v", stored)
 	}
 }
+
+// The initial creation path (CreateVideoJob) always scopes account selection
+// to the requesting client key's AccountScope. This confirms the retry path
+// inside runVideoJob does not silently widen that scope when the originally
+// pinned account fails: a key restricted to Super-tier accounts must never
+// fail over to a Free-tier account, even though one is available in the pool.
+func TestVideoRetryDoesNotEscapeClientKeyAccountScope(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "video-retry-scope.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	mediaRepo := relational.NewMediaJobRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+	key, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "video-scope-test", Prefix: "video-scope-test", SecretHash: strings.Repeat("b", 64),
+		EncryptedSecret: "encrypted", Enabled: true, RPMLimit: 60, MaxConcurrent: 4,
+		// Restricted to Super-tier Web accounts only.
+		ProviderScope: clientkey.ProviderScopeWeb, TierScope: clientkey.TierScopeSuper,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createAccount := func(name string, tier account.WebTier, priority int) account.Credential {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, WebTier: tier,
+			Name: name, SourceKey: name, EncryptedAccessToken: name + "-token", ExpiresAt: time.Now().Add(time.Hour),
+			Enabled: true, AuthStatus: account.AuthStatusActive, Priority: priority, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		return credential
+	}
+	// pinned is the Super-tier account the job was originally created against
+	// (in scope); outOfScope is a Free-tier account that must never be used
+	// for this key, even as a failover target.
+	pinned := createAccount("pinned-super", account.WebTierSuper, 200)
+	outOfScope := createAccount("free-out-of-scope", account.WebTierBasic, 100)
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderWeb, []string{"grok-imagine-video"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, accountID := range []uint64{pinned.ID, outOfScope.ID} {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, accountID, []string{"grok-imagine-video"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route, err := modelRepo.GetByProviderUpstream(ctx, account.ProviderWeb, "grok-imagine-video")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The pinned account always fails (forbidden), forcing the retry path to
+	// look for a replacement. Without the fix, that replacement search ignores
+	// the client key's scope entirely and would pick the Free-tier account.
+	adapter := &videoCreateFailoverAdapter{
+		failures: map[uint64]int{pinned.ID: 999},
+		status:   http.StatusForbidden,
+	}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(keyRepo, nil, nil, 60, 4, nil), registry, selector, nil, 3)
+	service.ConfigureMedia(mediaRepo, 1)
+	service.UpdateVideoMaxAttempts(3)
+
+	now := time.Now().UTC()
+	job := media.Job{
+		ID: "video_scope_retry", RequestID: "request-video-scope-retry", ClientKeyID: key.ID, ClientKeyName: key.Name,
+		AccountID: pinned.ID, AccountName: pinned.Name, Provider: string(account.ProviderWeb),
+		Model: route.PublicID, ModelRouteID: route.ID, UpstreamModel: route.UpstreamModel,
+		Operation: provider.VideoOperationGenerate, Prompt: "test", Seconds: 5, Quality: "720p",
+		Status: media.StatusInProgress, InputJSON: `{}`, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := mediaRepo.CreateMediaJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	service.runVideoJob(ctx, job, route)
+
+	for _, attemptedAccountID := range adapter.Attempts() {
+		if attemptedAccountID == outOfScope.ID {
+			t.Fatalf("out-of-scope Free-tier account %d was used for a key scoped to Super tier only", outOfScope.ID)
+		}
+	}
+	stored, err := mediaRepo.GetMediaJob(ctx, job.ID, job.ClientKeyID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != media.StatusFailed {
+		t.Fatalf("expected the job to fail rather than complete via an out-of-scope account, got %#v", stored)
+	}
+}
