@@ -65,6 +65,7 @@ type imagineSlot struct {
 }
 
 type imagineCollector struct {
+	requestID     string
 	slots         map[string]*imagineSlot
 	terminalCount int
 }
@@ -88,14 +89,29 @@ func imageGenerationUserError(message, param, code string) (*provider.Response, 
 	}}), nil
 }
 
-func newImagineCollector() *imagineCollector {
-	return &imagineCollector{slots: make(map[string]*imagineSlot)}
+func newImagineCollector(requestID ...string) *imagineCollector {
+	var reqID string
+	if len(requestID) > 0 {
+		reqID = strings.TrimSpace(requestID[0])
+	}
+	return &imagineCollector{requestID: reqID, slots: make(map[string]*imagineSlot)}
 }
 
 func (c *imagineCollector) Accept(message map[string]any) {
 	typeName, _ := message["type"].(string)
 	if typeName != "image" && typeName != "json" {
 		return
+	}
+	if c.requestID != "" {
+		msgReqID := firstString(message, "requestId", "request_id", "req_id", "reqId")
+		if msgReqID == "" {
+			if item, ok := message["item"].(map[string]any); ok {
+				msgReqID = firstString(item, "requestId", "request_id")
+			}
+		}
+		if msgReqID != "" && msgReqID != c.requestID {
+			return
+		}
 	}
 	rawURL, _ := message["url"].(string)
 	imageID := firstString(message, "image_id", "job_id", "id")
@@ -706,7 +722,8 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return nil, err
 	}
-	if err := connection.WriteJSON(imagineRequestMessage(newWebID("img"), request.Prompt, ratio, cfg.AllowNSFW, modelConfig.Pro, modelConfig.ExpectedCount)); err != nil {
+	reqID := newWebID("img")
+	if err := connection.WriteJSON(imagineRequestMessage(reqID, request.Prompt, ratio, cfg.AllowNSFW, modelConfig.Pro, modelConfig.ExpectedCount)); err != nil {
 		a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 		return nil, err
 	}
@@ -715,11 +732,11 @@ func (a *Adapter) generateWSImageAttempt(ctx context.Context, request provider.I
 		streamCtx, cancel := context.WithCancel(ctx)
 		leaseOwned = false
 		connectionOwned = false
-		go a.streamImagineImages(streamCtx, writer, connection, lease, request.Credential, count, request.PartialImages, modelConfig)
+		go a.streamImagineImages(streamCtx, writer, connection, lease, request.Credential, count, request.PartialImages, modelConfig, reqID)
 		return &provider.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: streamHeaders(), Body: &cancelBody{ReadCloser: reader, cancel: cancel}, QuotaUnits: count}, nil
 	}
 
-	collector := newImagineCollector()
+	collector := newImagineCollector(reqID)
 	for collector.UsableCount() < count && !collector.Done(modelConfig.ExpectedCount) {
 		messageType, data, readErr := connection.ReadMessage()
 		if readErr != nil {
@@ -1521,7 +1538,7 @@ func (a *Adapter) imageBytes(ctx context.Context, credential account.Credential,
 	return a.downloadImage(ctx, credential, image.URL)
 }
 
-func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter, connection *websocket.Conn, lease *egress.Lease, credential account.Credential, count, partialImages int, modelConfig imagineModelConfig) {
+func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter, connection *websocket.Conn, lease *egress.Lease, credential account.Credential, count, partialImages int, modelConfig imagineModelConfig, requestID ...string) {
 	defer lease.Release()
 	defer connection.Close()
 	done := make(chan struct{})
@@ -1533,7 +1550,7 @@ func (a *Adapter) streamImagineImages(ctx context.Context, writer *io.PipeWriter
 		case <-done:
 		}
 	}()
-	collector := newImagineCollector()
+	collector := newImagineCollector(requestID...)
 	emitted := 0
 	partialIndex := 0
 	for emitted < count {
