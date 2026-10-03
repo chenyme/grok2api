@@ -436,6 +436,18 @@ export function SettingsPage() {
           </SettingsPane>
 
           <SettingsPane value="accounts">
+            <SettingsSection title={t("settings.accounts.degradedAccountTitle")}>
+              <div className="space-y-0">
+                <SettingsField controlId="accounts-auto-disable-degraded" label={t("settings.accounts.autoDisableDegradedAccounts")} description={t("settings.accounts.autoDisableDegradedAccountsHelp")}>
+                  <Controller control={form.control} name="accounts.autoDisableDegradedAccounts" render={({ field }) => (
+                    <div className="flex h-9 items-center">
+                      <Switch id="accounts-auto-disable-degraded" checked={Boolean(field.value)} onCheckedChange={field.onChange} />
+                    </div>
+                  )} />
+                </SettingsField>
+              </div>
+            </SettingsSection>
+
             <SettingsSection title={t("settings.accounts.invalidationTitle")}>
               <div className="space-y-0">
                 <SettingsField controlId="accounts-mark-build-forbidden-reauth" label={t("settingsBuildForbidden.markInvalid")} description={t("settingsBuildForbidden.markInvalidHelp")}>
