@@ -147,6 +147,9 @@ type ClientKeyDefaultsConfig struct {
 
 // AccountsConfig 定义账号池后台维护策略；默认全部关闭。
 type AccountsConfig struct {
+	// AutoDisableDegradedAccounts is optional so legacy persisted settings keep
+	// the qualityGuard.requestRetry.autoDisable value supplied by config.yaml.
+	AutoDisableDegradedAccounts *bool
 	// MarkBuildForbiddenReauth marks high-confidence Grok Build permission denials as requiring reauthorization.
 	MarkBuildForbiddenReauth bool
 	// BuildForbiddenReauthCodes contains exact upstream error codes that opt into account invalidation.

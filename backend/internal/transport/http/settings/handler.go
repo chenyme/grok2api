@@ -130,6 +130,7 @@ type clientKeyDefaultsConfigDTO struct {
 }
 
 type accountsConfigDTO struct {
+	AutoDisableDegradedAccounts          *bool     `json:"autoDisableDegradedAccounts,omitempty"`
 	MarkBuildForbiddenReauth             *bool     `json:"markBuildForbiddenReauth,omitempty"`
 	BuildForbiddenReauthCodes            *[]string `json:"buildForbiddenReauthCodes,omitempty"`
 	ExcludeBuildBotFlaggedFromScheduling *bool     `json:"excludeBuildBotFlaggedFromScheduling,omitempty"`
@@ -252,6 +253,8 @@ func (value settingsConfigDTO) toApplication() settingsapp.EditableConfig {
 	}
 	if value.Accounts != nil {
 		result.Accounts = settingsapp.AccountsConfig{
+			AutoDisableDegradedAccounts:                  boolValue(value.Accounts.AutoDisableDegradedAccounts),
+			AutoDisableDegradedAccountsProvided:          value.Accounts.AutoDisableDegradedAccounts != nil,
 			MarkBuildForbiddenReauth:                     boolValue(value.Accounts.MarkBuildForbiddenReauth),
 			BuildForbiddenReauthCodes:                    stringSliceValue(value.Accounts.BuildForbiddenReauthCodes),
 			ExcludeBuildBotFlaggedFromScheduling:         boolValue(value.Accounts.ExcludeBuildBotFlaggedFromScheduling),
@@ -329,6 +332,7 @@ func newSettingsResponse(value settingsapp.Snapshot) settingsResponse {
 				RPMLimit: config.ClientKeyDefaults.RPMLimit, MaxConcurrent: config.ClientKeyDefaults.MaxConcurrent,
 			},
 			Accounts: &accountsConfigDTO{
+				AutoDisableDegradedAccounts:          boolPointer(config.Accounts.AutoDisableDegradedAccounts),
 				MarkBuildForbiddenReauth:             boolPointer(config.Accounts.MarkBuildForbiddenReauth),
 				BuildForbiddenReauthCodes:            stringSlicePointer(config.Accounts.BuildForbiddenReauthCodes),
 				ExcludeBuildBotFlaggedFromScheduling: boolPointer(config.Accounts.ExcludeBuildBotFlaggedFromScheduling),

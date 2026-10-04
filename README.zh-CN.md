@@ -373,11 +373,13 @@ qualityGuard:
     holdTimeout: 30s
     minOutputTokens: 8
     onExhausted: fail_closed # fail_open | fail_closed
+    # 首次确认缺 thinking 或吞吐降智（soft/hard/burst）时立即禁用账号。
+    autoDisable: true
     accountCooldown: 12h
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。`config.example.yaml` 里 `enabled` 仍为 false，打开后才拦截。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**；只有可安全重放的无状态请求才会排除账号重试。TUI 续聊（`previous_response_id`）和 hosted tools 仍会进入 hold 检测，但质量拦截不会把账号绑定状态或有副作用的工具跨账号重放，最终按 `onExhausted` 返回 `503 quality_degraded` 或放出当前响应。上下文压缩、图片、视频和 ForcedEgress 探针不受影响。
+`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。示例配置默认开启。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**，排除该账号再试；`autoDisable: true` 会在首次确认缺 thinking 或吞吐降智（soft/hard/burst）时直接禁用账号。全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。不处理图/视频、stored response 钉账号和 ForcedEgress 探针。Grok TUI 带 tools 的回合仍会 hold，避免 0-thinking 降智流跳过闸门。
 
 ```bash
 docker compose --profile quality-guard up -d --build

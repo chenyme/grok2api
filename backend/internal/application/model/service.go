@@ -377,8 +377,12 @@ func (s *Service) validateBoundAccounts(ctx context.Context, providerValue accou
 		return result, nil
 	}
 	values, _, err := s.accounts.List(ctx, repository.AccountListQuery{
-		Page:   repository.PageQuery{Offset: 0, Limit: 1000},
-		Filter: repository.AccountListFilter{Provider: string(providerValue)},
+		Page: repository.PageQuery{Offset: 0, Limit: len(result)},
+		Filter: repository.AccountListFilter{
+			Provider:    string(providerValue),
+			RestrictIDs: true,
+			AccountIDs:  result,
+		},
 	})
 	if err != nil {
 		return nil, err

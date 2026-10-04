@@ -295,6 +295,7 @@ type QualityGuardRequestRetryConfig struct {
 	HoldTimeout     Duration `yaml:"holdTimeout"`
 	MinOutputTokens int      `yaml:"minOutputTokens"`
 	OnExhausted     string   `yaml:"onExhausted"`
+	AutoDisable     bool     `yaml:"autoDisable"`
 	AccountCooldown Duration `yaml:"accountCooldown"`
 	// IdleAccountCooldown cools an account after a truly empty upstream
 	// stream. Independent of accountCooldown (missing-thinking). Zero uses 15m.

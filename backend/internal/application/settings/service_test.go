@@ -835,6 +835,50 @@ func TestUpdateAccountsAutoCleanRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUpdateAutoDisableDegradedAccountsRoundTrip(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.QualityGuard.RequestRetry.AutoDisable = false
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	input := service.Get().Config
+	input.Accounts.AutoDisableDegradedAccounts = true
+	input.Accounts.AutoDisableDegradedAccountsProvided = true
+
+	snapshot, err := service.Update(context.Background(), 0, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.QualityGuard.RequestRetry.AutoDisable || !snapshot.Config.Accounts.AutoDisableDegradedAccounts {
+		t.Fatalf("auto-disable switch was not applied: applied=%v snapshot=%#v", applied.QualityGuard.RequestRetry.AutoDisable, snapshot.Config.Accounts)
+	}
+	if repo.value.Accounts.AutoDisableDegradedAccounts == nil || !*repo.value.Accounts.AutoDisableDegradedAccounts {
+		t.Fatalf("auto-disable switch was not persisted: %#v", repo.value.Accounts)
+	}
+	reloaded, _, _, err := LoadPersisted(context.Background(), cfg, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reloaded.QualityGuard.RequestRetry.AutoDisable {
+		t.Fatal("persisted auto-disable switch was not restored")
+	}
+}
+
+func TestLoadPersistedKeepsYAMLAutoDisableForOlderPayload(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.QualityGuard.RequestRetry.AutoDisable = true
+	value := toDomainConfig(cfg)
+	value.Accounts.AutoDisableDegradedAccounts = nil
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, &runtimeSettingsRepositoryStub{value: value, found: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.QualityGuard.RequestRetry.AutoDisable {
+		t.Fatal("legacy runtime settings overrode config.yaml autoDisable")
+	}
+}
+
 func TestUpdateWithoutAccountsPreservesCurrentAutoCleanConfig(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Accounts.AutoCleanReauthEnabled = true
