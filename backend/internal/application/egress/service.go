@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1341,6 +1343,9 @@ func NormalizeProxyURL(value string) (string, error) {
 	if len(value) > maxProxyURLBytes || strings.IndexFunc(value, func(character rune) bool { return character < 0x20 || character == 0x7f }) >= 0 {
 		return "", errors.New("代理地址过长或包含控制字符")
 	}
+	if normalized, ok := normalizeLegacyHTTPProxy(value); ok {
+		value = normalized
+	}
 	hasAccountPlaceholder := strings.Contains(value, ProxyAccountPlaceholder)
 	if strings.Count(value, ProxyAccountPlaceholder) > 1 {
 		return "", errors.New("代理地址最多包含一个 {account} 占位符")
@@ -1382,6 +1387,22 @@ func NormalizeProxyURL(value string) (string, error) {
 		return strings.ReplaceAll(parsed.String(), proxyAccountSentinel, ProxyAccountPlaceholder), nil
 	}
 	return parsed.String(), nil
+}
+
+func normalizeLegacyHTTPProxy(value string) (string, bool) {
+	parts := strings.SplitN(value, ":", 4)
+	if len(parts) != 4 || net.ParseIP(parts[0]).To4() == nil || parts[2] == "" || parts[3] == "" {
+		return "", false
+	}
+	port, err := strconv.ParseUint(parts[1], 10, 16)
+	if err != nil || port == 0 {
+		return "", false
+	}
+	return (&url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort(parts[0], strconv.FormatUint(port, 10)),
+		User:   url.UserPassword(parts[2], parts[3]),
+	}).String(), true
 }
 
 func SanitizeCloudflareCookies(value string) string {
