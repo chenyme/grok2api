@@ -261,7 +261,14 @@ func (s *Service) OpenVoiceWebSocket(ctx context.Context, input VoiceWebSocketIn
 				record.AccountID = &accountID
 				record.AccountName = accountCredential.Name
 				applyAuditEgress(&record, egressTrace, route.Provider)
-				if successful && operation == audit.OperationSTT {
+				// Bill whenever the upstream returned a confirmed duration,
+				// independent of how the downstream client's connection later
+				// ended. A positive AudioDurationSeconds only ever comes from
+				// a transcript.done event the upstream already sent, so the
+				// cost is incurred the moment that happens; a client
+				// disconnecting afterward (successful == false) must not
+				// erase already-confirmed usage.
+				if operation == audit.OperationSTT && outcome.AudioDurationSeconds > 0 {
 					if pricing, priced := audit.EstimateOfficialSTTCost(outcome.AudioDurationSeconds, true); priced {
 						record.EstimatedCostInUSDTicks = pricing.CostInUSDTicks
 						record.PricingModel = pricing.Model
