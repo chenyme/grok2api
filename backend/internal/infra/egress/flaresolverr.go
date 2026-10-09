@@ -46,7 +46,8 @@ type clearanceSolver interface {
 type flaresolverrSolver struct{}
 
 func (flaresolverrSolver) Solve(ctx context.Context, cfg ClearanceConfig, proxyURL string) (clearanceSolution, error) {
-	if parsedProxy, parseErr := url.Parse(proxyURL); parseErr == nil && tunnelproxy.IsSupportedScheme(parsedProxy.Scheme) {
+	parsedProxy, parseErr := url.Parse(proxyURL)
+	if parseErr == nil && tunnelproxy.IsSupportedScheme(parsedProxy.Scheme) {
 		return clearanceSolution{}, errors.New("FlareSolverr 暂不支持 Trojan、VLESS、SS 或 VMess 隧道代理")
 	}
 	endpoint, err := flaresolverrEndpoint(cfg.FlareSolverrURL)
@@ -63,7 +64,17 @@ func (flaresolverrSolver) Solve(ctx context.Context, cfg ClearanceConfig, proxyU
 		"maxTimeout": cfg.Timeout.Milliseconds(),
 	}
 	if proxyURL != "" {
-		payload["proxy"] = map[string]string{"url": proxyURL}
+		proxy := map[string]string{"url": proxyURL}
+		// FlareSolverr accepts proxy credentials as separate fields. Do not pass
+		// URL userinfo to Chromium as part of the proxy-server address.
+		if parseErr == nil && parsedProxy != nil && parsedProxy.User != nil {
+			proxy["url"] = withoutProxyCredentials(parsedProxy)
+			proxy["username"] = parsedProxy.User.Username()
+			if password, ok := parsedProxy.User.Password(); ok {
+				proxy["password"] = password
+			}
+		}
+		payload["proxy"] = proxy
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -128,6 +139,12 @@ func (flaresolverrSolver) Solve(ctx context.Context, cfg ClearanceConfig, proxyU
 		return clearanceSolution{}, errors.New("FlareSolverr 返回的 User-Agent 无效")
 	}
 	return clearanceSolution{Cookies: cookies, UserAgent: userAgent}, nil
+}
+
+func withoutProxyCredentials(value *url.URL) string {
+	copy := *value
+	copy.User = nil
+	return copy.String()
 }
 
 func sanitizeFlareSolverrMessage(value string) string {
