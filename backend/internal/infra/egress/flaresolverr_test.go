@@ -42,6 +42,67 @@ func TestFlareSolverrSolveUsesNodeProxyAndFiltersCookies(t *testing.T) {
 	}
 }
 
+func TestFlareSolverrSolvePassesProxyCredentialsAndPreservesURL(t *testing.T) {
+	var requestPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&requestPayload); err != nil {
+			t.Fatal(err)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"status":"ok","solution":{"userAgent":"Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36","cookies":[]}}`))
+	}))
+	defer server.Close()
+
+	_, err := (flaresolverrSolver{}).Solve(context.Background(), ClearanceConfig{
+		FlareSolverrURL: server.URL, TargetURL: "https://grok.com", Timeout: time.Second,
+	}, "http://user:password@proxy.example:11080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, ok := requestPayload["proxy"].(map[string]any)
+	if !ok || proxy["url"] != "http://user:password@proxy.example:11080" || proxy["username"] != "user" || proxy["password"] != "password" {
+		t.Fatalf("proxy payload = %#v", requestPayload["proxy"])
+	}
+}
+
+func TestFlareSolverrSolveKeepsCredentialedSOCKSProxyURLOnly(t *testing.T) {
+	for _, proxyURL := range []string{
+		"socks4://user:password@proxy.example:1080",
+		"socks4a://user:password@proxy.example:1080",
+		"socks5://user:password@proxy.example:1080",
+		"socks5h://user:password@proxy.example:1080",
+	} {
+		t.Run(proxyURL, func(t *testing.T) {
+			var requestPayload map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				if err := json.NewDecoder(request.Body).Decode(&requestPayload); err != nil {
+					t.Fatal(err)
+				}
+				response.Header().Set("Content-Type", "application/json")
+				_, _ = response.Write([]byte(`{"status":"ok","solution":{"userAgent":"Mozilla/5.0 Chrome/146.0.0.0 Safari/537.36","cookies":[]}}`))
+			}))
+			defer server.Close()
+
+			_, err := (flaresolverrSolver{}).Solve(context.Background(), ClearanceConfig{
+				FlareSolverrURL: server.URL, TargetURL: "https://grok.com", Timeout: time.Second,
+			}, proxyURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxy, ok := requestPayload["proxy"].(map[string]any)
+			if !ok || proxy["url"] != proxyURL {
+				t.Fatalf("proxy payload = %#v", requestPayload["proxy"])
+			}
+			if _, exists := proxy["username"]; exists {
+				t.Fatalf("SOCKS proxy received proxy username: %#v", proxy)
+			}
+			if _, exists := proxy["password"]; exists {
+				t.Fatalf("SOCKS proxy received proxy password: %#v", proxy)
+			}
+		})
+	}
+}
+
 func TestFlareSolverrSolveAcceptsNoChallengeWithoutCloudflareCookies(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		response.Header().Set("Content-Type", "application/json")

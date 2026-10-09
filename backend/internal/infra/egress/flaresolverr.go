@@ -46,7 +46,8 @@ type clearanceSolver interface {
 type flaresolverrSolver struct{}
 
 func (flaresolverrSolver) Solve(ctx context.Context, cfg ClearanceConfig, proxyURL string) (clearanceSolution, error) {
-	if parsedProxy, parseErr := url.Parse(proxyURL); parseErr == nil && tunnelproxy.IsSupportedScheme(parsedProxy.Scheme) {
+	parsedProxy, parseErr := url.Parse(proxyURL)
+	if parseErr == nil && tunnelproxy.IsSupportedScheme(parsedProxy.Scheme) {
 		return clearanceSolution{}, errors.New("FlareSolverr 暂不支持 Trojan、VLESS、SS 或 VMess 隧道代理")
 	}
 	endpoint, err := flaresolverrEndpoint(cfg.FlareSolverrURL)
@@ -63,7 +64,19 @@ func (flaresolverrSolver) Solve(ctx context.Context, cfg ClearanceConfig, proxyU
 		"maxTimeout": cfg.Timeout.Milliseconds(),
 	}
 	if proxyURL != "" {
-		payload["proxy"] = map[string]string{"url": proxyURL}
+		proxy := map[string]string{"url": proxyURL}
+		// FlareSolverr uses Chromium for proxying. Chromium does not reliably
+		// perform username/password authentication for SOCKS proxies, so send
+		// separate credentials only for HTTP proxies. Retain the original URL for
+		// every scheme so deployments that only consume proxy.url preserve their
+		// existing behavior.
+		if parseErr == nil && parsedProxy != nil && parsedProxy.User != nil && flaresolverrSupportsProxyAuth(parsedProxy.Scheme) {
+			proxy["username"] = parsedProxy.User.Username()
+			if password, ok := parsedProxy.User.Password(); ok {
+				proxy["password"] = password
+			}
+		}
+		payload["proxy"] = proxy
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -128,6 +141,10 @@ func (flaresolverrSolver) Solve(ctx context.Context, cfg ClearanceConfig, proxyU
 		return clearanceSolution{}, errors.New("FlareSolverr 返回的 User-Agent 无效")
 	}
 	return clearanceSolution{Cookies: cookies, UserAgent: userAgent}, nil
+}
+
+func flaresolverrSupportsProxyAuth(scheme string) bool {
+	return strings.EqualFold(strings.TrimSpace(scheme), "http")
 }
 
 func sanitizeFlareSolverrMessage(value string) string {
