@@ -97,6 +97,24 @@ func TestSSOBuildFlowConvertsEndToEndWithConsentToken(t *testing.T) {
 	if client.requests[3].URL.RawQuery != "" {
 		t.Fatalf("approve must post a form body, got query %q", client.requests[3].URL.RawQuery)
 	}
+	approve := client.requests[3]
+	if approve.Method != http.MethodPost {
+		t.Fatalf("approve method = %q, want POST", approve.Method)
+	}
+	wantHeaders := map[string]string{
+		"Origin":                    "https://accounts.x.ai",
+		"Referer":                   "https://accounts.x.ai/oauth2/device/consent",
+		"Sec-Fetch-Dest":            "document",
+		"Sec-Fetch-Mode":            "navigate",
+		"Sec-Fetch-Site":            "same-site",
+		"Sec-Fetch-User":            "?1",
+		"Upgrade-Insecure-Requests": "1",
+	}
+	for name, want := range wantHeaders {
+		if got := approve.Header.Get(name); got != want {
+			t.Errorf("approve %s = %q, want %q", name, got, want)
+		}
+	}
 	consentCookie := client.requests[2].Header.Get("Cookie")
 	if !strings.Contains(consentCookie, "sso=live") || !strings.Contains(consentCookie, "cf_clearance=clearance") {
 		t.Fatalf("consent request cookies = %q", consentCookie)

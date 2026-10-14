@@ -123,11 +123,12 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		}
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动验证 Device Flow 失败")
 	}
+	consentPageURL := finalURL
 
 	// verify 以 3xx 跳转到 consent 时响应体为空，需要 GET consent 页面本身来解析 consent_token。
 	consentToken := extractConsentToken(verifyBody)
 	if consentToken == "" {
-		consentStatus, _, consentBody, cerr := f.do(ctx, http.MethodGet, finalURL, nil)
+		consentStatus, _, consentBody, cerr := f.do(ctx, http.MethodGet, consentPageURL, nil)
 		if cerr != nil {
 			return provider.CredentialSeed{}, fmt.Errorf("获取 xAI consent 页面失败: %w", cerr)
 		}
@@ -140,10 +141,19 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败：未获取 consent_token")
 	}
 
-	status, finalURL, _, err = f.doWithFollow(ctx, http.MethodPost, ssoApproveURL, url.Values{
+	status, finalURL, _, err = f.doWithFollowHeaders(ctx, http.MethodPost, ssoApproveURL, url.Values{
 		"user_code": {device.UserCode}, "action": {"allow"}, "principal_type": {"User"}, "principal_id": {""},
 		"consent_token": {consentToken},
-	}, false)
+	}, false, map[string]string{
+		"Origin":                    "https://accounts.x.ai",
+		"Referer":                   consentPageURL,
+		"Accept":                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Sec-Fetch-Dest":            "document",
+		"Sec-Fetch-Mode":            "navigate",
+		"Sec-Fetch-Site":            "same-site",
+		"Sec-Fetch-User":            "?1",
+		"Upgrade-Insecure-Requests": "1",
+	})
 	if err != nil {
 		return provider.CredentialSeed{}, err
 	}
@@ -245,6 +255,10 @@ func (f *ssoBuildFlow) do(ctx context.Context, method, endpoint string, form url
 // doWithFollow 在 follow=false 时遇到 3xx 直接返回状态码与解析后的 Location 作为 finalURL，
 // 用于重定向目标域会被 Cloudflare 拦截（accounts.x.ai）的请求。
 func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string, form url.Values, follow bool) (int, string, []byte, error) {
+	return f.doWithFollowHeaders(ctx, method, endpoint, form, follow, nil)
+}
+
+func (f *ssoBuildFlow) doWithFollowHeaders(ctx context.Context, method, endpoint string, form url.Values, follow bool, extraHeaders map[string]string) (int, string, []byte, error) {
 	if !safeXAIURL(endpoint) {
 		return 0, "", nil, fmt.Errorf("xAI OAuth URL 不安全")
 	}
@@ -271,6 +285,9 @@ func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string
 			request.Header.Set("Sec-Fetch-Mode", "navigate")
 			request.Header.Set("Sec-Fetch-Site", "same-site")
 			request.Header.Set("Upgrade-Insecure-Requests", "1")
+		}
+		for key, value := range extraHeaders {
+			request.Header.Set(key, value)
 		}
 		if currentForm != nil {
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
