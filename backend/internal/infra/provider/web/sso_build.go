@@ -20,6 +20,7 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
+	"golang.org/x/net/html"
 )
 
 const (
@@ -63,7 +64,7 @@ func (a *Adapter) ConvertToBuild(ctx context.Context, credential accountdomain.C
 	defer cancel()
 	flow := &ssoBuildFlow{
 		client: lease, userAgent: lease.UserAgent,
-		cookies: map[string]string{"sso": token, "sso-rw": token},
+		cookies: ssoBuildCookies(token, lease.CFCookies),
 	}
 	seed, err := flow.convert(requestCtx, credential)
 	if err != nil {
@@ -126,11 +127,16 @@ func (f *ssoBuildFlow) convert(ctx context.Context, credential accountdomain.Cre
 	// verify 以 3xx 跳转到 consent 时响应体为空，需要 GET consent 页面本身来解析 consent_token。
 	consentToken := extractConsentToken(verifyBody)
 	if consentToken == "" {
-		if _, _, consentBody, cerr := f.do(ctx, http.MethodGet, finalURL, nil); cerr == nil {
-			consentToken = extractConsentToken(consentBody)
+		consentStatus, _, consentBody, cerr := f.do(ctx, http.MethodGet, finalURL, nil)
+		if cerr != nil {
+			return provider.CredentialSeed{}, fmt.Errorf("获取 xAI consent 页面失败: %w", cerr)
 		}
+		if consentStatus < 200 || consentStatus >= 300 {
+			return provider.CredentialSeed{}, fmt.Errorf("获取 xAI consent 页面失败: %w", conversionHTTPError{status: consentStatus})
+		}
+		consentToken = extractConsentToken(consentBody)
 	}
-	if consentToken == "" {
+	if !consentTokenMatchesDevice(consentToken, device.DeviceCode) {
 		return provider.CredentialSeed{}, fmt.Errorf("SSO 自动批准 Device Flow 失败：未获取 consent_token")
 	}
 
@@ -258,6 +264,14 @@ func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string
 		request.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 		request.Header.Set("User-Agent", f.userAgent)
 		request.Header.Set("Cookie", f.cookieHeader())
+		if currentMethod == http.MethodGet && ssoDeviceRedirectState(currentURL) == "consent" {
+			request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+			request.Header.Set("Referer", "https://auth.x.ai/")
+			request.Header.Set("Sec-Fetch-Dest", "document")
+			request.Header.Set("Sec-Fetch-Mode", "navigate")
+			request.Header.Set("Sec-Fetch-Site", "same-site")
+			request.Header.Set("Upgrade-Insecure-Requests", "1")
+		}
 		if currentForm != nil {
 			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
@@ -291,7 +305,7 @@ func (f *ssoBuildFlow) doWithFollow(ctx context.Context, method, endpoint string
 			return response.StatusCode, currentURL, data, fmt.Errorf("xAI OAuth 重定向到非受信域名")
 		}
 		if !follow {
-			return response.StatusCode, currentURL, nil, nil
+			return response.StatusCode, currentURL, data, nil
 		}
 		if response.StatusCode == http.StatusSeeOther || ((response.StatusCode == http.StatusMovedPermanently || response.StatusCode == http.StatusFound) && currentMethod != http.MethodGet && currentMethod != http.MethodHead) {
 			currentMethod = http.MethodGet
@@ -347,6 +361,17 @@ func (f *ssoBuildFlow) cookieHeader() string {
 	return strings.Join(parts, "; ")
 }
 
+func ssoBuildCookies(token, cloudflareCookies string) map[string]string {
+	cookies := make(map[string]string)
+	for _, part := range strings.Split(infraegress.BuildSSOCookie(token, cloudflareCookies), ";") {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if ok && name != "" {
+			cookies[name] = value
+		}
+	}
+	return cookies
+}
+
 func safeXAIURL(raw string) bool {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Hostname() == "" {
@@ -368,20 +393,50 @@ func normalizeSSOToken(value string) string {
 }
 
 var (
-	consentTokenFormRe = regexp.MustCompile(`name="consent_token"[^>]*value="([^"]+)"`)
-	consentTokenJSONRe = regexp.MustCompile(`consentToken["\\:= ]{1,6}(eyJ[A-Za-z0-9._-]+)`)
+	consentTokenJSONRe = regexp.MustCompile(`(?i)\\?["']?(?:consentToken|consent_token)\\?["']?\s*[:=]\s*\\?["'](eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\\?["']`)
 )
 
 // extractConsentToken 从 consent 页面 HTML 中解析一次性 consent_token：
 // 优先取表单隐藏字段 name="consent_token"，回退到 RSC/JSON 里的 consentToken。
 func extractConsentToken(body []byte) string {
-	if m := consentTokenFormRe.FindSubmatch(body); m != nil {
-		return string(m[1])
+	tokenizer := html.NewTokenizer(strings.NewReader(string(body)))
+	for {
+		tokenType := tokenizer.Next()
+		if tokenType == html.ErrorToken {
+			break
+		}
+		if tokenType != html.StartTagToken {
+			continue
+		}
+		token := tokenizer.Token()
+		if !strings.EqualFold(token.Data, "input") {
+			continue
+		}
+		var name, value string
+		for _, attribute := range token.Attr {
+			switch strings.ToLower(attribute.Key) {
+			case "name":
+				name = attribute.Val
+			case "value":
+				value = attribute.Val
+			}
+		}
+		if strings.EqualFold(name, "consent_token") && value != "" {
+			return value
+		}
 	}
 	if m := consentTokenJSONRe.FindSubmatch(body); m != nil {
 		return string(m[1])
 	}
 	return ""
+}
+
+func consentTokenMatchesDevice(token, deviceCode string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
+		return false
+	}
+	return claimString(decodeBuildClaims(token), "dc") == deviceCode && deviceCode != ""
 }
 
 func decodeBuildClaims(token string) map[string]any {
