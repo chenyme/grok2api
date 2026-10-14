@@ -109,7 +109,7 @@ func (c *imagineCollector) Accept(message map[string]any) {
 				msgReqID = firstString(item, "requestId", "request_id")
 			}
 		}
-		if msgReqID != "" && msgReqID != c.requestID {
+		if msgReqID != c.requestID {
 			return
 		}
 	}

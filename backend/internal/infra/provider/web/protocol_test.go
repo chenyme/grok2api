@@ -1787,7 +1787,6 @@ func MarshalJSONBytes(value any) []byte {
 	return data
 }
 
-
 func TestImagineCollectorFiltersMismatchedRequestIDs(t *testing.T) {
 	reqID := "img_target_12345"
 	collector := newImagineCollector(reqID)
@@ -1813,7 +1812,8 @@ func TestImagineCollectorFiltersMismatchedRequestIDs(t *testing.T) {
 	}
 
 	// 2. Nested item.requestId must also be matched
-	collector.Accept(map[string]any{
+	staleNestedCollector := newImagineCollector(reqID)
+	staleNestedCollector.Accept(map[string]any{
 		"type": "image",
 		"id":   "stale-nested-1",
 		"item": map[string]any{
@@ -1822,7 +1822,14 @@ func TestImagineCollectorFiltersMismatchedRequestIDs(t *testing.T) {
 		"url":                 "https://imagine-public.x.ai/imagine-public/images/stale2.jpg",
 		"percentage_complete": 100.0,
 	})
-	if collector.UsableCount() != 0 {
+	staleNestedCollector.Accept(map[string]any{
+		"type":           "json",
+		"image_id":       "stale-nested-1",
+		"item":           map[string]any{"requestId": "img_stale_88888"},
+		"current_status": "completed",
+		"moderated":      false,
+	})
+	if len(staleNestedCollector.Images()) != 0 || staleNestedCollector.Done(1) {
 		t.Fatalf("collector accepted nested stale image")
 	}
 
