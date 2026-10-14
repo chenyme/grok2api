@@ -88,18 +88,33 @@ func TestGenerateWSImageReacquiresAfterChallengeHandshake(t *testing.T) {
 			return
 		}
 		defer connection.Close()
+		var requestIDForResponse string
 		for range 2 {
 			var message map[string]any
 			if err := connection.ReadJSON(&message); err != nil {
 				t.Errorf("read Imagine request: %v", err)
 				return
 			}
+			if item, ok := message["item"].(map[string]any); ok {
+				if content, ok := item["content"].([]any); ok && len(content) > 0 {
+					if first, ok := content[0].(map[string]any); ok {
+						if requestID, ok := first["requestId"].(string); ok && requestID != "" {
+							// The Imagine collector binds response frames to the request ID.
+							requestIDForResponse = requestID
+						}
+					}
+				}
+			}
+		}
+		if requestIDForResponse == "" {
+			t.Error("Imagine request did not include requestId")
+			return
 		}
 		_ = connection.WriteJSON(map[string]any{
-			"type": "image", "id": "image-1", "blob": "aW1hZ2U=", "percentage_complete": 100, "grid_index": 0,
+			"type": "image", "id": "image-1", "requestId": requestIDForResponse, "blob": "aW1hZ2U=", "percentage_complete": 100, "grid_index": 0,
 		})
 		_ = connection.WriteJSON(map[string]any{
-			"type": "json", "id": "image-1", "current_status": "completed", "moderated": false, "order": 0,
+			"type": "json", "id": "image-1", "requestId": requestIDForResponse, "current_status": "completed", "moderated": false, "order": 0,
 		})
 	}))
 	defer server.Close()
