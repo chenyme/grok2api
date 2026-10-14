@@ -51,6 +51,10 @@
 <td width="200" align="center" valign="middle"><a href="https://www.swiftproxy.net/?ref=grok2api"><img src="frontend/public/sponner/swift-proxy.png" alt="Swiftproxy" width="180"></a></td>
 <td valign="middle">Swiftproxy 提供 9000 万+ 纯净住宅 IP，覆盖全球 220+ 个国家和地区，支持 HTTP(S)/SOCKS5、IP 轮换、Sticky Session 及精准地域定位，为 API 服务和自动化工作流提供稳定的全球网络访问，适用于 API 请求、自动化、数据采集及地域访问等场景。住宅代理低至 $0.7/GB，支持免费测试，使用优惠码 PROXY90 可享 9 折优惠。<a href="https://www.swiftproxy.net/?ref=grok2api">立即体验 Swiftproxy</a>。</td>
 </tr>
+<tr>
+<td width="200" align="center" valign="middle"><a href="https://www.rapidproxy.io/?ref=grok2api"><img src="frontend/public/sponner/rapid-proxy.jpg" alt="RapidProxy" width="180"></a></td>
+<td valign="middle">RapidProxy 是面向开发者的数据采集代理方案，提供稳定可靠的住宅代理服务。拥有 9000 万+ 全球住宅 IP，覆盖 200+ 个国家和地区，支持智能轮换与精准地域定位，帮助网页抓取、AI 数据训练、SEO 监控、电商数据分析等项目突破访问限制、提升采集效率。支持 Playwright、Selenium、Puppeteer 等主流自动化框架，价格低至 $0.65/GB，<a href="https://www.rapidproxy.io/?ref=grok2api">立即免费测试</a>。</td>
+</tr>
 </table>
 
 <br>
