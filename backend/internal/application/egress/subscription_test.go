@@ -45,6 +45,7 @@ func TestParseProxySubscriptionAcceptsPlainAndBase64Lists(t *testing.T) {
 	plain, skipped, err := parseProxySubscription(strings.Join([]string{
 		"# proxy list",
 		"http://user:pass@one.example:8080",
+		"127.0.0.1:3128:legacy:password",
 		"socks5h://two.example:1080",
 		"http://user:pass@one.example:8080",
 		"not a proxy",
@@ -52,8 +53,11 @@ func TestParseProxySubscriptionAcceptsPlainAndBase64Lists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plain) != 2 || skipped != 2 {
+	if len(plain) != 3 || skipped != 2 {
 		t.Fatalf("plain entries=%d skipped=%d", len(plain), skipped)
+	}
+	if plain[1].ProxyURL != "http://legacy:password@127.0.0.1:3128" {
+		t.Fatalf("legacy HTTP proxy = %q", plain[1].ProxyURL)
 	}
 	for _, entry := range plain {
 		if entry.ProxyURL == "" || len(entry.Key) != 64 {
@@ -68,6 +72,31 @@ func TestParseProxySubscriptionAcceptsPlainAndBase64Lists(t *testing.T) {
 	}
 	if len(encoded) != 2 || encodedSkipped != 0 {
 		t.Fatalf("base64 entries=%d skipped=%d", len(encoded), encodedSkipped)
+	}
+}
+
+func TestParseProxySubscriptionPreservesLegacyAccountPlaceholder(t *testing.T) {
+	content := strings.Join([]string{
+		"127.0.0.1:8080:Default.{account}:pass:word",
+		"http://Default.{account}:pass%3Aword@127.0.0.1:8080",
+		"127.0.0.1:8080:user:{account}",
+	}, "\n")
+	for name, input := range map[string]string{
+		"plain":  content,
+		"base64": base64.StdEncoding.EncodeToString([]byte(content)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			entries, skipped, err := parseProxySubscription(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || skipped != 2 {
+				t.Fatalf("entries=%d skipped=%d, want one entry, one duplicate and one invalid placeholder", len(entries), skipped)
+			}
+			if entries[0].ProxyURL != "http://Default.{account}:pass%3Aword@127.0.0.1:8080" {
+				t.Fatalf("legacy account proxy = %q", entries[0].ProxyURL)
+			}
+		})
 	}
 }
 
