@@ -493,7 +493,10 @@ func accountAutoCleanConfig(value config.AccountsConfig) accountapp.AutoCleanCon
 func qualityRetryRuntime(value config.QualityGuardConfig) gateway.QualityRetryRuntime {
 	retry := value.RequestRetry
 	return gateway.QualityRetryRuntime{
-		Enabled:                         retry.Enabled,
+		// Auto-disable needs request-path detection even when the YAML retry
+		// switch is off. Derive this at runtime so turning auto-disable off
+		// restores the original policy without persisting a second switch.
+		Enabled:                         retry.Enabled || retry.AutoDisable,
 		MaxAttempts:                     retry.MaxAttempts,
 		HoldTimeout:                     retry.HoldTimeout.Value(),
 		MinOutputTokens:                 int64(retry.MinOutputTokens),

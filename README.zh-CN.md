@@ -379,7 +379,7 @@ qualityGuard:
     idleAccountCooldown: 15m
 ```
 
-`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。示例配置默认开启。开启后，可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**，排除该账号再试；`autoDisable: true` 会在首次确认缺 thinking 或吞吐降智（soft/hard/burst）时直接禁用账号。全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。不处理图/视频、stored response 钉账号和 ForcedEgress 探针。Grok TUI 带 tools 的回合仍会 hold，避免 0-thinking 降智流跳过闸门。
+`requestRetry` 在网关请求路径上生效，与 sidecar 探测/隔离相互独立。上面的示例显式开启；内置默认值和 `config.example.yaml` 均将 `enabled`、`autoDisable` 设为关闭。任一开关开启后都会启用请求内质量检测与重试。可见输出达到 `minOutputTokens` 且全程无流式 reasoning 时**不发给用户**，排除该账号再试；`autoDisable: true` 会在首次确认缺 thinking 或吞吐降智（soft/hard/burst）时直接禁用账号。管理页面的“自动停用降智账号”控制 `autoDisable`，关闭后恢复 YAML 中 `requestRetry.enabled` 的原有策略。全部仍无推理则按 `onExhausted` 返回 `503 quality_degraded` 或放出最后一枪。上下文压缩同时豁免缺 thinking 和输出速度的账号惩罚。不处理图/视频、stored response 钉账号和 ForcedEgress 探针。Grok TUI 带 tools 的回合仍会 hold，避免 0-thinking 降智流跳过闸门。
 
 ```bash
 docker compose --profile quality-guard up -d --build

@@ -231,6 +231,34 @@ func TestDefaultQualityGuardRequestRetryContract(t *testing.T) {
 	}
 }
 
+func TestAutoDisableValidatesRequestPolicyWithoutSidecar(t *testing.T) {
+	t.Parallel()
+	base := defaultConfig().QualityGuard
+	base.RequestRetry.AutoDisable = true
+	if err := validateQualityGuardConfig(base); err != nil {
+		t.Fatalf("auto-disable with default policy: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*QualityGuardConfig)
+	}{
+		{"retry limit", func(c *QualityGuardConfig) { c.RequestRetry.MaxAttempts = 7 }},
+		{"hold timeout", func(c *QualityGuardConfig) { c.RequestRetry.HoldTimeout = Duration(time.Minute) }},
+		{"output floor", func(c *QualityGuardConfig) { c.RequestRetry.MinOutputTokens = 1 }},
+		{"soft TPS", func(c *QualityGuardConfig) { c.SoftTPS = 0 }},
+		{"hard TPS", func(c *QualityGuardConfig) { c.HardTPS = c.SoftTPS }},
+		{"generation window", func(c *QualityGuardConfig) { c.MinimumGenerationWindow = 0 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := base
+			test.change(&cfg)
+			if err := validateQualityGuardConfig(cfg); err == nil {
+				t.Fatal("invalid active request-path policy must be rejected even when the sidecar is disabled")
+			}
+		})
+	}
+}
+
 func TestQualityGuardRequestRetryAccountCooldownBounds(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {

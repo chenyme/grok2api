@@ -596,6 +596,11 @@ func (s *Service) applyMissingThinkingPenalty(ctx context.Context, requestID str
 }
 
 func (s *Service) applyOutputSpeedPenalty(ctx context.Context, record audit.Record, credential accountdomain.Credential, cfg QualityRetryRuntime, forcedEgress bool) error {
+	// Both explicit and TUI compaction are classified in the audit record.
+	// System summaries stay exempt from account quality penalties.
+	if record.Operation == audit.OperationCompaction {
+		return nil
+	}
 	if !cfg.Enabled || !cfg.AutoDisable || forcedEgress || credential.Provider != accountdomain.ProviderBuild || !record.Streaming || record.FirstTokenMS == nil || record.OutputTokens < cfg.MinOutputTokens || !auditRequestSucceeded(record.StatusCode, record.ErrorCode) {
 		return nil
 	}

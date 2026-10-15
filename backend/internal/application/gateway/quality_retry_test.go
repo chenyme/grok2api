@@ -255,6 +255,15 @@ func TestAutoDisableFirstOutputSpeedHit(t *testing.T) {
 		t.Fatalf("below-threshold hit must remain scheduled: %#v, err=%v", healthy, err)
 	}
 	record.DurationMS = 1_200
+	record.Operation = audit.OperationCompaction
+	if err := service.applyOutputSpeedPenalty(ctx, record, credential, cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	compacted, err := accounts.Get(ctx, credential.ID)
+	if err != nil || !compacted.Enabled {
+		t.Fatalf("compaction must remain exempt from speed penalties: %#v, err=%v", compacted, err)
+	}
+	record.Operation = audit.OperationResponses
 	if err := service.applyOutputSpeedPenalty(ctx, record, credential, cfg, false); err != nil {
 		t.Fatal(err)
 	}
