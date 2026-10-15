@@ -75,6 +75,31 @@ func TestParseProxySubscriptionAcceptsPlainAndBase64Lists(t *testing.T) {
 	}
 }
 
+func TestParseProxySubscriptionPreservesLegacyAccountPlaceholder(t *testing.T) {
+	content := strings.Join([]string{
+		"127.0.0.1:8080:Default.{account}:pass:word",
+		"http://Default.{account}:pass%3Aword@127.0.0.1:8080",
+		"127.0.0.1:8080:user:{account}",
+	}, "\n")
+	for name, input := range map[string]string{
+		"plain":  content,
+		"base64": base64.StdEncoding.EncodeToString([]byte(content)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			entries, skipped, err := parseProxySubscription(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || skipped != 2 {
+				t.Fatalf("entries=%d skipped=%d, want one entry, one duplicate and one invalid placeholder", len(entries), skipped)
+			}
+			if entries[0].ProxyURL != "http://Default.{account}:pass%3Aword@127.0.0.1:8080" {
+				t.Fatalf("legacy account proxy = %q", entries[0].ProxyURL)
+			}
+		})
+	}
+}
+
 func TestParseProxySubscriptionRejectsNoUsableEntries(t *testing.T) {
 	if _, _, err := parseProxySubscription("# only comments\nfile:///tmp/proxies\n"); err == nil {
 		t.Fatal("invalid proxy subscription was accepted")

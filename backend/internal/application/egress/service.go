@@ -1343,9 +1343,6 @@ func NormalizeProxyURL(value string) (string, error) {
 	if len(value) > maxProxyURLBytes || strings.IndexFunc(value, func(character rune) bool { return character < 0x20 || character == 0x7f }) >= 0 {
 		return "", errors.New("代理地址过长或包含控制字符")
 	}
-	if normalized, ok := normalizeLegacyHTTPProxy(value); ok {
-		value = normalized
-	}
 	hasAccountPlaceholder := strings.Contains(value, ProxyAccountPlaceholder)
 	if strings.Count(value, ProxyAccountPlaceholder) > 1 {
 		return "", errors.New("代理地址最多包含一个 {account} 占位符")
@@ -1354,6 +1351,9 @@ func NormalizeProxyURL(value string) (string, error) {
 		return "", errors.New("代理地址包含保留的账号占位符文本")
 	}
 	parseValue := strings.ReplaceAll(value, ProxyAccountPlaceholder, proxyAccountSentinel)
+	if normalized, ok := normalizeLegacyHTTPProxy(parseValue); ok {
+		parseValue = normalized
+	}
 	parsed, err := url.Parse(parseValue)
 	if err != nil {
 		return "", errors.New("代理地址格式无效")

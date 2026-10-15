@@ -3,6 +3,7 @@ package egress
 import (
 	"encoding/base64"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,27 @@ func TestNormalizeProxyURLAcceptsLegacyHTTPProxyFormat(t *testing.T) {
 	}
 }
 
+func TestNormalizeProxyURLPreservesLegacyCredentials(t *testing.T) {
+	for _, password := range []string{"pass:with:colons", "pass:@/?#%中文"} {
+		t.Run(password, func(t *testing.T) {
+			value, err := NormalizeProxyURL("127.0.0.1:8080:user@domain:" + password)
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := url.Parse(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.Scheme != "http" || parsed.Host != "127.0.0.1:8080" || parsed.User == nil || parsed.User.Username() != "user@domain" {
+				t.Fatalf("unexpected normalized proxy = %q", value)
+			}
+			if got, ok := parsed.User.Password(); !ok || got != password {
+				t.Fatalf("password = %q, want %q", got, password)
+			}
+		})
+	}
+}
+
 func TestNormalizeProxyURLStripsTunnelRemarks(t *testing.T) {
 	base := "trojan://password@proxy.example:443?security=tls&sni=edge.example"
 	one, err := NormalizeProxyURL(base + "#one")
@@ -75,21 +97,32 @@ func TestNormalizeProxyURLStripsTunnelRemarks(t *testing.T) {
 }
 
 func TestNormalizeProxyURLAllowsAccountPlaceholderOnlyInUsername(t *testing.T) {
-	value, err := NormalizeProxyURL("socks5h://Default.{account}:token@resin:2260")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if value != "socks5h://Default.%7Baccount%7D:token@resin:2260" && value != "socks5h://Default.{account}:token@resin:2260" {
-		t.Fatalf("normalized Resin proxy = %q", value)
-	}
-	if !strings.Contains(value, ProxyAccountPlaceholder) {
-		t.Fatalf("account placeholder was lost: %q", value)
+	for _, raw := range []string{
+		"socks5h://Default.{account}:token@resin:2260",
+		"127.0.0.1:8080:Default.{account}:token",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			value, err := NormalizeProxyURL(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(value, ProxyAccountPlaceholder) {
+				t.Fatalf("account placeholder was lost: %q", value)
+			}
+			if again, err := NormalizeProxyURL(value); err != nil || again != value {
+				t.Fatalf("proxy normalization is not stable: %q, err = %v", again, err)
+			}
+		})
 	}
 	for _, invalid := range []string{
 		"socks5h://user:token@{account}:2260",
 		"socks5h://user:{account}@resin:2260",
 		"socks5h://{account}:{account}@resin:2260",
 		"socks5h://grok2api_account_placeholder:token@{account}:2260",
+		"127.0.0.1:8080:user:{account}",
+		"127.0.0.1:8080:{account}:{account}",
+		"127.0.0.1:8080:{account}.{account}:token",
+		"127.0.0.1:8080:grok2api_account_placeholder:{account}",
 	} {
 		if _, err := NormalizeProxyURL(invalid); err == nil {
 			t.Fatalf("invalid account placeholder accepted: %q", invalid)
