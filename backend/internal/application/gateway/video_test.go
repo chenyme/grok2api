@@ -983,6 +983,32 @@ func TestVideoRetryDoesNotEscapeClientKeyAccountScope(t *testing.T) {
 		Operation: provider.VideoOperationGenerate, Prompt: "test", Seconds: 5, Quality: "720p",
 		Status: media.StatusInProgress, InputJSON: `{}`, CreatedAt: now, UpdatedAt: now,
 	}
+	t.Run("worker shutdown during key lookup preserves recovery", func(t *testing.T) {
+		shutdownJob := job
+		shutdownJob.ID = "video_scope_worker_shutdown"
+		shutdownJob.RequestID = "request-video-scope-worker-shutdown"
+		if err := mediaRepo.CreateMediaJob(ctx, shutdownJob); err != nil {
+			t.Fatal(err)
+		}
+		workerCtx, stopWorker := context.WithCancel(ctx)
+		stopWorker()
+		service.runVideoJob(workerCtx, shutdownJob, route)
+
+		stored, err := mediaRepo.GetMediaJob(ctx, shutdownJob.ID, key.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Status != media.StatusInProgress || stored.LeaseUntil == nil || !stored.LeaseUntil.After(time.Now().UTC()) {
+			t.Fatalf("job must remain eligible for recovery after worker shutdown, got %#v", stored)
+		}
+		if stored.ErrorCode != "" || stored.ErrorMessage != "" || stored.CompletedAt != nil || stored.UsageRecordedAt != nil {
+			t.Fatalf("worker shutdown must not finalize the job, got %#v", stored)
+		}
+		if attempts := adapter.Attempts(); len(attempts) != 0 {
+			t.Fatalf("worker shutdown must not invoke the upstream, got attempts %#v", attempts)
+		}
+	})
+
 	if err := mediaRepo.CreateMediaJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}

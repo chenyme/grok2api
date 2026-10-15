@@ -542,6 +542,10 @@ func (s *Service) runVideoJob(parent context.Context, job media.Job, route model
 	if job.ClientKeyID > 0 {
 		key, keyErr := s.clientKeys.Get(ctx, job.ClientKeyID)
 		if keyErr != nil {
+			if parent.Err() != nil {
+				s.deferVideoJob(parent, job)
+				return
+			}
 			s.failVideoJob(ctx, job, "client_key_unavailable", keyErr, 0, nil)
 			return
 		}
