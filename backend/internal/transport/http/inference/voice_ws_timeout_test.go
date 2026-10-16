@@ -59,3 +59,26 @@ func TestWatchRequestTimeoutDoesNotOverwriteAnExistingOutcome(t *testing.T) {
 		t.Fatalf("errorCode = %q, want the pre-existing outcome preserved", got)
 	}
 }
+
+func TestWatchRequestTimeoutDistinguishesRequestCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var mu sync.Mutex
+	errorCode := ""
+	closed := make(chan struct{})
+	go watchRequestTimeout(ctx, &mu, &errorCode, func() { close(closed) })
+	cancel()
+
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("watchRequestTimeout did not close the canceled session")
+	}
+
+	mu.Lock()
+	got := errorCode
+	mu.Unlock()
+	if got != "request_canceled" {
+		t.Fatalf("errorCode = %q, want request_canceled", got)
+	}
+}
