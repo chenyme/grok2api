@@ -285,10 +285,10 @@ Web uses a built-in catalog filtered by account tier; higher tiers inherit lower
 | `grok-chat-auto`          | Conversation | Super                          | Chat Completions, Responses, Messages   |
 | `grok-chat-expert`        | Conversation | Super                          | Chat Completions, Responses, Messages   |
 | `grok-chat-heavy`         | Conversation | Heavy                          | Chat Completions, Responses, Messages   |
-| `grok-imagine-image-lite` | Image        | Basic                          | Images Generations                      |
-| `grok-imagine-image`      | Image        | Basic                          | Images Generations (`enable_pro=false`) |
-| `grok-imagine-image-2.0`  | Image        | Basic                          | Images Generations (`enable_pro=true`)  |
-| `grok-imagine-image-edit` | Image Edit   | Basic                          | Images Edits                            |
+| `grok-imagine-image-lite` | Image, reference editing | Basic                 | Images Generations, Images Edits, Chat, Responses, Messages |
+| `grok-imagine-image`      | Image, reference editing | Basic                 | Images Generations, Images Edits, Chat, Responses, Messages |
+| `grok-imagine-image-2.0`  | Image, reference editing | Basic                 | Images Generations, Images Edits, Chat, Responses, Messages |
+| `grok-imagine-image-edit` | Image Edit               | Basic                 | Images Edits, Chat, Responses, Messages (reference required) |
 | `grok-imagine-video`      | Video        | Basic for 720p; Super for 480p | Videos                                  |
 
 
@@ -317,6 +317,8 @@ Console uses the catalog built into the current release. Conversation forwarding
 
 
 Generation and editing capabilities for the same Console image model are grouped into one logical model row; no separate `-edit` model copy is required.
+
+When a Console conversation has no displayable reasoning, the gateway adds the visible placeholder “深度思考中” to downstream Chat, Responses, and Messages output. This is a UI hint, not upstream reasoning or billed reasoning tokens.
 
 Public names normally omit the Provider. Internally, routes use `Build/`, `Web/`, or `Console/`; qualified names can pin a request to one source.
 
@@ -355,6 +357,8 @@ Authorization: Bearer g2a_xxx_xxx
 
 
 Stored responses and compact depend on the selected Provider. The signed-in admin console provides live examples at `/docs`; Swagger is available only when `server.swaggerEnabled: true`.
+
+Image generation and editing accept both `application/json` and `multipart/form-data`. Supplying `image`, `images`, or `reference_images` to `/v1/images/generations` (a JSON URL/data URL or an uploaded form file) selects the editing capability under the same public model name; ordinary Web image models map to the Web edit upstream. Chat Completions, Responses, and Messages also accept image models directly: text and image parts from the latest user turn become the prompt and references, and the result is returned as a Markdown image. Streaming clients receive protocol-compatible SSE after generation completes. Web editing remains limited to `n=1`; Console editing accepts at most three reference images.
 
 `/v1/audio/transcriptions` supports `json` (default), `verbose_json`, and `text`. Video edit/extension routes must resolve to Console `grok-imagine-video`; custom public model names remain supported. Monetary billing is applied only when the gateway can reliably measure the official pricing unit: TTS is reserved and settled from its input character count, while REST and streaming STT are settled from the actual audio duration returned by a successful response. Because STT duration is known only after completion, concurrent requests may briefly take a billing-limited key beyond its spend limit. Realtime, video edits/extensions, and custom routes without a recognized official price are currently audited as unpriced; they remain callable and do not consume the spend limit.
 

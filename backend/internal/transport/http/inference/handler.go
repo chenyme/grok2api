@@ -132,39 +132,26 @@ type messagesRequest struct {
 	PromptCacheKey string          `json:"prompt_cache_key"`
 }
 
-type imageGenerationRequest struct {
-	Model          string          `json:"model"`
-	Prompt         string          `json:"prompt"`
-	Count          *int            `json:"n"`
-	PartialImages  *int            `json:"partial_images"`
-	Size           string          `json:"size"`
-	AspectRatio    string          `json:"aspect_ratio"`
-	Resolution     string          `json:"resolution"`
-	Quality        string          `json:"quality"`
-	ResponseFormat string          `json:"response_format"`
-	StorageOptions json.RawMessage `json:"storage_options"`
-	Stream         bool            `json:"stream"`
-}
-
 type imageEditJSONImage struct {
 	URL    string `json:"url"`
 	FileID string `json:"file_id"`
 }
 
 type imageEditJSONRequest struct {
-	Model          string               `json:"model"`
-	Prompt         string               `json:"prompt"`
-	Image          *imageEditJSONImage  `json:"image"`
-	Images         []imageEditJSONImage `json:"images"`
-	Count          *int                 `json:"n"`
-	Size           string               `json:"size"`
-	AspectRatio    string               `json:"aspect_ratio"`
-	Resolution     string               `json:"resolution"`
-	Quality        string               `json:"quality"`
-	ResponseFormat string               `json:"response_format"`
-	StorageOptions json.RawMessage      `json:"storage_options"`
-	Stream         bool                 `json:"stream"`
-	PartialImages  *int                 `json:"partial_images"`
+	Model           string               `json:"model"`
+	Prompt          string               `json:"prompt"`
+	Image           *imageEditJSONImage  `json:"image"`
+	Images          []imageEditJSONImage `json:"images"`
+	ReferenceImages []imageEditJSONImage `json:"reference_images"`
+	Count           *int                 `json:"n"`
+	Size            string               `json:"size"`
+	AspectRatio     string               `json:"aspect_ratio"`
+	Resolution      string               `json:"resolution"`
+	Quality         string               `json:"quality"`
+	ResponseFormat  string               `json:"response_format"`
+	StorageOptions  json.RawMessage      `json:"storage_options"`
+	Stream          bool                 `json:"stream"`
+	PartialImages   *int                 `json:"partial_images"`
 }
 
 type videoGenerationImage struct {
@@ -321,6 +308,9 @@ func (h *Handler) createChatCompletion(c *gin.Context) {
 	}
 	requestID, _ := c.Get(middleware.RequestIDKey)
 	requestIDValue, _ := requestID.(string)
+	if h.tryImageConversation(c, body, request.Model, request.Stream, clientKey, requestIDValue, streamProtocolChat) {
+		return
+	}
 	result, err := h.gateway.CreateChatCompletion(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
 		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
@@ -366,6 +356,9 @@ func (h *Handler) createMessage(c *gin.Context) {
 	}
 	requestID, _ := c.Get(middleware.RequestIDKey)
 	requestIDValue, _ := requestID.(string)
+	if h.tryImageConversation(c, body, request.Model, request.Stream, clientKey, requestIDValue, streamProtocolAnthropic) {
+		return
+	}
 	result, err := h.gateway.CreateMessage(c.Request.Context(), gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
 		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
@@ -385,18 +378,17 @@ func (h *Handler) createMessage(c *gin.Context) {
 
 func (h *Handler) generateImage(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodyBytes)
-	if !isJSONRequest(c) {
-		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "图片生成仅支持 application/json")
+	request, imageURLs, inputErr := h.parseImageRequest(c)
+	if inputErr != nil {
+		writeOpenAIError(c, inputErr.status, inputErr.code, inputErr.message)
 		return
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		writeOpenAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过限制")
-		return
-	}
-	var request imageGenerationRequest
-	if decodeSingleJSON(bytes.NewReader(body), &request, false) != nil || strings.TrimSpace(request.Model) == "" || strings.TrimSpace(request.Prompt) == "" {
+	if strings.TrimSpace(request.Model) == "" || strings.TrimSpace(request.Prompt) == "" {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片请求缺少有效 model 或 prompt")
+		return
+	}
+	if len(imageURLs) > 0 {
+		h.executeImageEdit(c, request, imageURLs)
 		return
 	}
 	if value := bytes.TrimSpace(request.StorageOptions); len(value) > 0 && !bytes.Equal(value, []byte("null")) {
@@ -582,20 +574,15 @@ func writeMediaBody(c *gin.Context, source io.Reader, contentType string, status
 
 func (h *Handler) editImage(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, h.maxBodyBytes)
-	if !isJSONRequest(c) {
-		writeOpenAIError(c, http.StatusUnsupportedMediaType, "invalid_request", "图片编辑仅支持 application/json")
+	request, imageURLs, inputErr := h.parseImageRequest(c)
+	if inputErr != nil {
+		writeOpenAIError(c, inputErr.status, inputErr.code, inputErr.message)
 		return
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		writeOpenAIError(c, http.StatusRequestEntityTooLarge, "request_too_large", "请求体超过限制")
-		return
-	}
-	var request imageEditJSONRequest
-	if err := decodeSingleJSON(bytes.NewReader(body), &request, false); err != nil {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "图片编辑 JSON 请求无效")
-		return
-	}
+	h.executeImageEdit(c, request, imageURLs)
+}
+
+func (h *Handler) executeImageEdit(c *gin.Context, request imageEditJSONRequest, imageURLs []string) {
 	if value := bytes.TrimSpace(request.StorageOptions); len(value) > 0 && !bytes.Equal(value, []byte("null")) {
 		writeOpenAIError(c, http.StatusBadRequest, "unsupported_parameter", "当前兼容层暂不支持 storage_options")
 		return
@@ -606,26 +593,8 @@ func (h *Handler) editImage(c *gin.Context) {
 	if request.Count != nil {
 		count = *request.Count
 	}
-	inputs := append([]imageEditJSONImage(nil), request.Images...)
-	if request.Image != nil {
-		inputs = append([]imageEditJSONImage{*request.Image}, inputs...)
-	}
-	if len(inputs) == 0 || len(inputs) > 8 {
+	if len(imageURLs) == 0 || len(imageURLs) > 8 {
 		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "image 或 images 数量必须在 1 到 8 之间")
-		return
-	}
-	imageURLs := make([]string, 0, len(inputs))
-	for _, input := range inputs {
-		if strings.TrimSpace(input.FileID) != "" {
-			writeOpenAIError(c, http.StatusBadRequest, "unsupported_parameter", "当前暂不支持 image.file_id，请使用 image.url")
-			return
-		}
-		if value := strings.TrimSpace(input.URL); value != "" {
-			imageURLs = append(imageURLs, value)
-		}
-	}
-	if len(imageURLs) != len(inputs) {
-		writeOpenAIError(c, http.StatusBadRequest, "invalid_request", "每个 image 都必须提供有效 url")
 		return
 	}
 	if model == "" || prompt == "" {
@@ -1154,6 +1123,9 @@ func (h *Handler) handleCreate(c *gin.Context, compact bool) {
 	}
 	requestID, _ := c.Get(middleware.RequestIDKey)
 	requestIDValue, _ := requestID.(string)
+	if !compact && h.tryImageConversation(c, body, request.Model, request.Stream, clientKey, requestIDValue, streamProtocolResponses) {
+		return
+	}
 	input := gateway.Input{
 		RequestID: requestIDValue, ClientKey: clientKey, PublicModel: request.Model,
 		Body: body, Streaming: request.Stream, PromptCacheKey: request.PromptCacheKey,
@@ -1262,9 +1234,31 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 		return
 	}
 	body := io.Reader(result.Body)
+	if result.Provider == account.ProviderConsole && result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices &&
+		(protocol == streamProtocolChat || protocol == streamProtocolAnthropic || protocol == streamProtocolResponses) {
+		if stream {
+			decorated := newConsolePlaceholderStream(result.Body, protocol)
+			defer decorated.Close()
+			body = decorated
+			result.Header.Del("Content-Length")
+		} else {
+			raw, readErr := io.ReadAll(io.LimitReader(result.Body, maxJSONResponseTransferBytes+1))
+			if readErr != nil || len(raw) > maxJSONResponseTransferBytes {
+				errorCode = "response_too_large"
+				if anthropic {
+					writeAnthropicError(c, http.StatusBadGateway, "api_error", "读取 Console 响应失败或响应过大", "invalid_upstream_response")
+				} else {
+					writeOpenAIError(c, http.StatusBadGateway, "invalid_upstream_response", "读取 Console 响应失败或响应过大")
+				}
+				return
+			}
+			body = bytes.NewReader(addConsolePlaceholderJSON(raw, protocol))
+			result.Header.Del("Content-Length")
+		}
+	}
 	if !stream && result.StatusCode >= http.StatusOK && result.StatusCode < http.StatusMultipleChoices {
 		var peekErr error
-		body, peekErr = peekNonEmptyJSONBody(result.Body)
+		body, peekErr = peekNonEmptyJSONBody(body)
 		if peekErr != nil {
 			status, code, message := http.StatusBadGateway, "stream_interrupted", "读取上游响应失败"
 			switch {
@@ -1318,7 +1312,7 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	c.Status(result.StatusCode)
 	var err error
 	if stream {
-		metadata, copyErr := copyStreamWithFallbackModel(c.Writer, result.Body, protocol, result.MarkFirstToken, fallbackModel)
+		metadata, copyErr := copyStreamWithFallbackModel(c.Writer, body, protocol, result.MarkFirstToken, fallbackModel)
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
 		if metadata.StreamFailure != nil && result.RecordStreamFailure != nil {
 			result.RecordStreamFailure(*metadata.StreamFailure)
