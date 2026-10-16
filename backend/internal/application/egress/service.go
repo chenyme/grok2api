@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1349,6 +1351,9 @@ func NormalizeProxyURL(value string) (string, error) {
 		return "", errors.New("代理地址包含保留的账号占位符文本")
 	}
 	parseValue := strings.ReplaceAll(value, ProxyAccountPlaceholder, proxyAccountSentinel)
+	if normalized, ok := normalizeLegacyHTTPProxy(parseValue); ok {
+		parseValue = normalized
+	}
 	parsed, err := url.Parse(parseValue)
 	if err != nil {
 		return "", errors.New("代理地址格式无效")
@@ -1382,6 +1387,22 @@ func NormalizeProxyURL(value string) (string, error) {
 		return strings.ReplaceAll(parsed.String(), proxyAccountSentinel, ProxyAccountPlaceholder), nil
 	}
 	return parsed.String(), nil
+}
+
+func normalizeLegacyHTTPProxy(value string) (string, bool) {
+	parts := strings.SplitN(value, ":", 4)
+	if len(parts) != 4 || net.ParseIP(parts[0]).To4() == nil || parts[2] == "" || parts[3] == "" {
+		return "", false
+	}
+	port, err := strconv.ParseUint(parts[1], 10, 16)
+	if err != nil || port == 0 {
+		return "", false
+	}
+	return (&url.URL{
+		Scheme: "http",
+		Host:   net.JoinHostPort(parts[0], strconv.FormatUint(port, 10)),
+		User:   url.UserPassword(parts[2], parts[3]),
+	}).String(), true
 }
 
 func SanitizeCloudflareCookies(value string) string {
