@@ -253,6 +253,9 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("ownership = %#v, err = %v", ownership, err)
 	}
 
+	service.UpdateQualityRetry(QualityRetryRuntime{
+		Enabled: true, AutoDisable: true, MinOutputTokens: 32, SoftTPS: 1, HardTPS: 2,
+	})
 	compacted, err := service.CreateResponse(ctx, Input{
 		RequestID: "req-compact", ClientKey: clientKey, PublicModel: "grok-test", PromptCacheSeed: "claude-session",
 		Body: []byte(`{"model":"grok-test","stream":true,"input":[{"role":"user","content":"continue"},{"type":"compaction_trigger"}]}`), Streaming: true,
@@ -265,12 +268,25 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatal("first token marker is nil")
 	}
 	compacted.MarkFirstToken()
-	compacted.Finalize(Usage{}, "resp-compact", "")
+	time.Sleep(2 * time.Millisecond)
+	compacted.Finalize(Usage{Reported: true, OutputTokens: 120}, "resp-compact", "")
 	_ = compacted.Body.Close()
 	logs, total, err = auditRepo.List(ctx, 0, 10)
 	if err != nil || total != 2 || logs[0].Operation != audit.OperationCompaction || !logs[0].Streaming || logs[0].FirstTokenMS == nil {
 		t.Fatalf("compaction audit = %#v, total=%d, err=%v", logs, total, err)
 	}
+	assertCompactionSpeedExempt := func(record audit.Record) {
+		t.Helper()
+		class, _, _ := audit.ClassifyOutputSpeed(record.OutputTokens, record.ReasoningTokens, *record.FirstTokenMS, record.DurationMS, 1, 2, 1000, false)
+		if class == "" {
+			t.Fatal("compaction fixture must exceed the speed threshold")
+		}
+		credential, err := accountRepo.Get(ctx, second.ID)
+		if err != nil || !credential.Enabled {
+			t.Fatalf("compaction must not disable its account: %#v, err=%v", credential, err)
+		}
+	}
+	assertCompactionSpeedExempt(logs[0])
 	if _, err := responseRepo.Get(ctx, "resp-compact", clientKey.ID, time.Now().UTC()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("compaction response ownership err = %v", err)
 	}
@@ -279,7 +295,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	// the quality hold and is labeled compaction only in the audit record, so
 	// Provider routing and stored-response ownership must remain intact.
 	service.UpdateQualityRetry(QualityRetryRuntime{
-		Enabled: true, MaxAttempts: 2, MinOutputTokens: 32,
+		Enabled: true, AutoDisable: true, MaxAttempts: 2, MinOutputTokens: 32, SoftTPS: 1, HardTPS: 2,
 		OnExhausted: qualityRetryFailClosed, HoldTimeout: time.Second,
 	})
 	adapter.resetAttempts()
@@ -298,7 +314,8 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 		t.Fatalf("TUI compaction body = %q", tuiBody)
 	}
 	tuiCompacted.MarkFirstToken()
-	tuiCompacted.Finalize(Usage{}, "resp-tui-compact", "")
+	time.Sleep(2 * time.Millisecond)
+	tuiCompacted.Finalize(Usage{Reported: true, OutputTokens: 120}, "resp-tui-compact", "")
 	_ = tuiCompacted.Body.Close()
 	if len(adapter.attempts) != 1 || adapter.lastOperation != string(audit.OperationResponses) {
 		t.Fatalf("TUI compaction attempts = %#v, Provider operation = %q", adapter.attempts, adapter.lastOperation)
@@ -307,6 +324,7 @@ func TestGatewayFailsOverBeforeReturningBody(t *testing.T) {
 	if err != nil || total != 3 || logs[0].Operation != audit.OperationCompaction {
 		t.Fatalf("TUI compaction audit = %#v, total=%d, err=%v", logs, total, err)
 	}
+	assertCompactionSpeedExempt(logs[0])
 	if ownership, err := responseRepo.Get(ctx, "resp-tui-compact", clientKey.ID, time.Now().UTC()); err != nil || ownership.AccountID != second.ID {
 		t.Fatalf("TUI compaction ownership = %#v, err=%v", ownership, err)
 	}
@@ -1963,7 +1981,7 @@ func TestParseFreeQuotaExhaustionCurrentBuildFreeLimit(t *testing.T) {
 	}
 }
 
-func TestGatewayUnknownBuildForbiddenTraversesAllAccountsWithoutCooldown(t *testing.T) {
+func TestGatewayUnknownBuildForbiddenTraversesAllAccountsWithCooldown(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "systemic-forbidden.db"))
 	if err != nil {
@@ -2033,8 +2051,8 @@ func TestGatewayUnknownBuildForbiddenTraversesAllAccountsWithoutCooldown(t *test
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
-		if observed.FailureCount != 0 || observed.CooldownUntil != nil || observed.AuthStatus != account.AuthStatusActive {
-			t.Fatalf("account %d was penalized after unknown 403: %#v", credential.ID, observed)
+		if observed.FailureCount == 0 || observed.CooldownUntil == nil || observed.AuthStatus != account.AuthStatusActive {
+			t.Fatalf("account %d was not cooled down after unknown Build 403: %#v", credential.ID, observed)
 		}
 	}
 	logs, total, err := auditRepo.List(ctx, 0, 10)
@@ -3946,8 +3964,8 @@ func TestGatewayUnknownBuildForbiddenRotatesWithoutPenalizingAccount(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount != 0 || observed.CooldownUntil != nil {
-		t.Fatalf("unknown 403 penalized first account: %#v", observed)
+	if observed.AuthStatus != account.AuthStatusActive || observed.FailureCount == 0 || observed.CooldownUntil == nil {
+		t.Fatalf("unknown Build 403 did not cool down first account: %#v", observed)
 	}
 	candidates, err := accountRepo.ListRoutingCandidates(ctx, account.ProviderBuild, 0, model, "")
 	if err != nil {
