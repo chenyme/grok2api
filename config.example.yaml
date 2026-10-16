@@ -150,8 +150,8 @@ qualityGuard:
   nodeIDs: []
   rotatableNodeIDs: []
   # Optional request-path withhold/retry for thinking models.
-  # Recommended lab values are filled in; enabled stays false so stock
-  # installs do not intercept. Set enabled: true to turn the hold on.
+  # Recommended lab values are filled in; enabled and autoDisable stay false
+  # so stock installs do not intercept. Either switch enables detection.
   # Observe up to 30s for real reasoning evidence. A reasoning-item stub plus
   # enough visible output at the deadline is withheld (TUI dump after 30s),
   # not released as late ciphertext. Empty stub-only streams keep waiting.
@@ -170,8 +170,12 @@ qualityGuard:
     holdTimeout: 30s
     minOutputTokens: 8
     onExhausted: fail_closed # fail_open | fail_closed
-    # First missing-thinking hit cools the account; a later hit after the
-    # cooldown expires disables it.
+    # Immediately disable an account on its first confirmed missing-thinking
+    # or degraded output-speed hit (soft-TPS, hard-TPS, or buffered-burst).
+    # Also enables request-path detection independently of enabled above.
+    # When false, enabled controls the historical cooldown/second-hit policy.
+    # Context compaction and forced egress probes remain exempt.
+    autoDisable: false
     accountCooldown: 12h
     # Empty SSE / idle-timeout penalty. Independent of accountCooldown.
     # Single-account pools should set this lower; toggling enabled does not

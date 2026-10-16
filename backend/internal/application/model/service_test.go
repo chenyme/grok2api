@@ -111,6 +111,57 @@ func TestNormalizeBatchIDsAllowsGroupedRouteExpansion(t *testing.T) {
 	}
 }
 
+func TestValidateBoundAccountsSupportsAccountsFilteredByIDs(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-bound-accounts.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	modelRepo := relational.NewModelRepository(database)
+	accountRepo := relational.NewAccountRepository(database)
+	registry := provider.NewRegistry(&modelRouteAdapter{modelCapabilityAdapter: &modelCapabilityAdapter{}})
+	service := NewService(modelRepo, accountRepo, nil, registry)
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := cipher.Encrypt("access-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	targetAccount, _, err := accountRepo.UpsertByIdentity(ctx, account.Credential{
+		Provider:             account.ProviderBuild,
+		Name:                 "target-account",
+		SourceKey:            "target-account",
+		EncryptedAccessToken: encrypted,
+		ExpiresAt:            time.Now().Add(time.Hour),
+		AuthStatus:           account.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bound, err := service.validateBoundAccounts(ctx, account.ProviderBuild, []uint64{targetAccount.ID})
+	if err != nil {
+		t.Fatalf("validateBoundAccounts failed: %v", err)
+	}
+	if len(bound) != 1 || bound[0] != targetAccount.ID {
+		t.Fatalf("bound accounts = %v, want [%d]", bound, targetAccount.ID)
+	}
+
+	_, err = service.validateBoundAccounts(ctx, account.ProviderWeb, []uint64{targetAccount.ID})
+	if err == nil {
+		t.Fatal("expected error for mismatched provider, got nil")
+	}
+}
+
+
 func TestSyncAggregatesCapabilitiesFromAllAccounts(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "model-sync.db"))

@@ -1232,27 +1232,19 @@ func (s *Selector) clearQuotaConsumptionAccount(provider account.Provider, accou
 	s.quotaMu.Unlock()
 }
 
-// markMissingThinking cools an account for the first no-thinking hit and
-// disables it if missing thinking appears again after that cooldown.
-func (s *Selector) markMissingThinking(ctx context.Context, credential account.Credential, cooldown time.Duration) (missingThinkingPenaltyResult, error) {
+// markMissingThinking disables immediately when configured; otherwise it
+// cools the first no-thinking hit and disables a later hit after the cooldown.
+func (s *Selector) markMissingThinking(ctx context.Context, credential account.Credential, cooldown time.Duration, autoDisable bool) (missingThinkingPenaltyResult, error) {
 	if cooldown <= 0 {
 		cooldown = defaultMissingThinkingCooldown
 	}
 	now := time.Now().UTC()
 	inCooldown := credential.CooldownUntil != nil && now.Before(*credential.CooldownUntil)
-	if isMissingThinkingStrike(credential.LastError) && !inCooldown {
-		disabled := false
-		if _, err := s.accounts.UpdateMany(ctx, credential.Provider, []uint64{credential.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil {
+	if autoDisable || (isMissingThinkingStrike(credential.LastError) && !inCooldown) {
+		if err := s.disableAccount(ctx, credential); err != nil {
 			return missingThinkingPenaltyUnchanged, err
 		}
 		healthErr := s.accounts.UpdateHealth(ctx, credential.ID, credential.Provider, credential.FailureCount, nil, lastErrorMissingThinkingDisabled, false)
-		s.ApplyInvalidation(repository.InvalidationEvent{
-			Kind: repository.InvalidationAccountStateChanged, Provider: credential.Provider, AccountID: credential.ID,
-		})
-		s.evictCandidate(credential.Provider, credential.ID)
-		if s.sticky != nil {
-			_ = s.sticky.DeleteByAccount(ctx, credential.ID)
-		}
 		return missingThinkingPenaltyDisabled, healthErr
 	}
 	if inCooldown {
@@ -1268,6 +1260,21 @@ func (s *Selector) markMissingThinking(ctx context.Context, credential account.C
 	})
 	s.evictCandidate(credential.Provider, credential.ID)
 	return missingThinkingPenaltyCooled, nil
+}
+
+func (s *Selector) disableAccount(ctx context.Context, credential account.Credential) error {
+	disabled := false
+	if _, err := s.accounts.UpdateMany(ctx, credential.Provider, []uint64{credential.ID}, repository.AccountUpdates{Enabled: &disabled}); err != nil {
+		return err
+	}
+	s.ApplyInvalidation(repository.InvalidationEvent{
+		Kind: repository.InvalidationAccountStateChanged, Provider: credential.Provider, AccountID: credential.ID,
+	})
+	s.evictCandidate(credential.Provider, credential.ID)
+	if s.sticky != nil {
+		_ = s.sticky.DeleteByAccount(ctx, credential.ID)
+	}
+	return nil
 }
 
 func (s *Selector) MarkFailure(ctx context.Context, credential account.Credential, status int, retryAfter time.Duration) {
