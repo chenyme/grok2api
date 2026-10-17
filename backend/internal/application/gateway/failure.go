@@ -177,6 +177,12 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.FreeQuotaExhausted = isFreeQuotaExhaustion(metadataText)
 		failure.ModelQuotaExhausted = isModelQuotaExhaustion(metadataText)
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isPaidQuotaExhaustion(metadataText)
+	case http.StatusUpgradeRequired:
+		failure.Code = "upstream_upgrade_required"
+		failure.PublicMessage = "上游拒绝请求：CLI客户端版本过低，需要升级 Build 客户端版本至 1.0.13 及以上"
+		if upstreamMessage != "" {
+			failure.PublicMessage = upstreamMessage
+		}
 	default:
 		if status >= 400 && status < 500 {
 			failure.Code = "upstream_error"

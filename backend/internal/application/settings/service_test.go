@@ -286,6 +286,25 @@ func TestLoadPersistedKeepsFreeVideoDurationCapForOlderPayload(t *testing.T) {
 	}
 }
 
+func TestLoadPersistedUpgradesOutdatedBuildClientVersion(t *testing.T) {
+	cfg := testConfig(t)
+	persisted := toDomainConfig(cfg)
+	persisted.ProviderBuild.ClientVersion = "1.0.4"
+	persisted.ProviderBuild.UserAgent = "grok-shell/1.0.4 (linux; x86_64)"
+	repository := &runtimeSettingsRepositoryStub{value: persisted, found: true}
+
+	loaded, _, _, err := LoadPersisted(context.Background(), cfg, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Provider.Build.ClientVersion != config.RecommendedBuildClientVersion {
+		t.Fatalf("clientVersion = %q, want %q", loaded.Provider.Build.ClientVersion, config.RecommendedBuildClientVersion)
+	}
+	if loaded.Provider.Build.UserAgent != config.RecommendedBuildUserAgent {
+		t.Fatalf("userAgent = %q, want %q", loaded.Provider.Build.UserAgent, config.RecommendedBuildUserAgent)
+	}
+}
+
 func TestLoadPersistedKeepsAccountIsolationDefaultForOlderPayload(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Routing.AccountIsolatedConnections = true

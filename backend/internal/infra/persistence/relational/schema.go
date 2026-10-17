@@ -175,6 +175,9 @@ func (d *Database) initializeSchema(ctx context.Context) error {
 	if err := d.migrateProviderStreamIdleTimeouts(ctx); err != nil {
 		return fmt.Errorf("迁移 Provider 流式空闲超时: %w", err)
 	}
+	if err := d.migrateBuildClientVersion(ctx); err != nil {
+		return fmt.Errorf("迁移 Grok Build 客户端版本: %w", err)
+	}
 	if err := d.ensureConsoleConstraints(ctx); err != nil {
 		return fmt.Errorf("迁移 Console 数据库约束: %w", err)
 	}
@@ -443,6 +446,44 @@ func (d *Database) migrateProviderStreamIdleTimeouts(ctx context.Context) error 
 		if !changed {
 			return nil
 		}
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("encode runtime settings: %w", err)
+		}
+		result := db.Model(&runtimeSettingsModel{}).
+			Where("key = ? AND revision = ?", row.Key, row.Revision).
+			UpdateColumn("value_json", string(encoded))
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 1 {
+			return nil
+		}
+	}
+	return errors.New("runtime settings changed repeatedly during migration")
+}
+
+// migrateBuildClientVersion upgrades legacy Build clientVersion and userAgent in runtime_settings
+// if they are outdated (< 1.0.13), protecting grok-4.7 and new upstream models against 426 rejections.
+func (d *Database) migrateBuildClientVersion(ctx context.Context) error {
+	db := d.db.WithContext(ctx)
+	for range 4 {
+		var row runtimeSettingsModel
+		if err := db.Where("key = ?", runtimeSettingsKey).First(&row).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		var payload runtimeSettingsPayload
+		if err := json.Unmarshal([]byte(row.ValueJSON), &payload); err != nil {
+			return fmt.Errorf("decode runtime settings: %w", err)
+		}
+		if !settingsdomain.IsBuildClientVersionOutdated(payload.Config.ProviderBuild.ClientVersion) {
+			return nil
+		}
+		payload.Config.ProviderBuild.ClientVersion = settingsdomain.RecommendedBuildClientVersion
+		payload.Config.ProviderBuild.UserAgent = settingsdomain.RecommendedBuildUserAgent
 		encoded, err := json.Marshal(payload)
 		if err != nil {
 			return fmt.Errorf("encode runtime settings: %w", err)
