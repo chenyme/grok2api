@@ -134,3 +134,48 @@ func TestSchemaBackfillsConsoleStreamIdleTimeoutWhenSectionExists(t *testing.T) 
 		t.Fatalf("Console section = %#v", payload.Config.ProviderConsole)
 	}
 }
+
+func TestSchemaUpgradesOutdatedBuildClientVersion(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "upgrade-build-version.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate legacy settings with outdated 1.0.4 client version
+	legacy, err := json.Marshal(runtimeSettingsPayload{Config: settingsdomain.Config{
+		ProviderBuild: settingsdomain.ProviderBuildConfig{
+			BaseURL:       "https://cli-chat-proxy.grok.com/v1",
+			ClientVersion: "1.0.4",
+			UserAgent:     "grok-shell/1.0.4 (linux; x86_64)",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.db.WithContext(ctx).Create(&runtimeSettingsModel{
+		Key: runtimeSettingsKey, ValueJSON: string(legacy), Revision: 2, UpdatedAt: time.Now().UTC(),
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var migrated runtimeSettingsModel
+	if err := database.db.WithContext(ctx).Where("key = ?", runtimeSettingsKey).First(&migrated).Error; err != nil {
+		t.Fatal(err)
+	}
+	var payload runtimeSettingsPayload
+	if err := json.Unmarshal([]byte(migrated.ValueJSON), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Config.ProviderBuild.ClientVersion != settingsdomain.RecommendedBuildClientVersion {
+		t.Fatalf("expected clientVersion = %q, got %q", settingsdomain.RecommendedBuildClientVersion, payload.Config.ProviderBuild.ClientVersion)
+	}
+	if payload.Config.ProviderBuild.UserAgent != settingsdomain.RecommendedBuildUserAgent {
+		t.Fatalf("expected userAgent = %q, got %q", settingsdomain.RecommendedBuildUserAgent, payload.Config.ProviderBuild.UserAgent)
+	}
+}
