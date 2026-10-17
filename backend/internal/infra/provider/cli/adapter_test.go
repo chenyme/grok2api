@@ -837,10 +837,46 @@ func TestNormalizeAccountModelCapabilitiesKeepsGrok45ForBuildGrok46(t *testing.T
 		t.Fatalf("Build Grok 4.5 compatibility was not deduplicated: %#v", got)
 	}
 
+	got47 := adapter.NormalizeAccountModelCapabilities([]string{buildGrok47Model}, nil, build)
+	if len(got47) != 3 || got47[0] != buildGrok47Model || got47[1] != buildGrok46Model || got47[2] != buildGrok45Model {
+		t.Fatalf("Build Grok 4.7 compatibility capabilities = %#v", got47)
+	}
+
 	console := account.Credential{Provider: account.ProviderConsole}
 	got = adapter.NormalizeAccountModelCapabilities([]string{buildGrok46Model}, nil, console)
 	if len(got) != 1 || got[0] != buildGrok46Model {
 		t.Fatalf("Build compatibility leaked to Console: %#v", got)
+	}
+}
+
+func TestApplyHeadersAutoUpgradesForGrok47(t *testing.T) {
+	// Adapter configured with legacy outdated 1.0.4 client version
+	adapter := NewAdapter(Config{
+		ClientVersion:    "1.0.4",
+		ClientIdentifier: "grok-shell",
+		TokenAuth:        "xai-grok-cli",
+		UserAgent:        "grok-shell/1.0.4 (linux; x86_64)",
+	}, nil)
+
+	// When requesting grok-4.7 with outdated version, headers must automatically upgrade to avoid 426
+	reqGrok47 := httptest.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
+	if err := adapter.applyHeaders(reqGrok47, account.Credential{ID: 1}, "token", "grok-4.7", "cache-key", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := reqGrok47.Header.Get("x-grok-client-version"); got != settingsdomain.RecommendedBuildClientVersion {
+		t.Fatalf("grok-4.7 client version = %q, want %q", got, settingsdomain.RecommendedBuildClientVersion)
+	}
+	if got := reqGrok47.Header.Get("User-Agent"); got != settingsdomain.RecommendedBuildUserAgent {
+		t.Fatalf("grok-4.7 user agent = %q, want %q", got, settingsdomain.RecommendedBuildUserAgent)
+	}
+
+	// When requesting grok-4.5 with explicit config, old version is preserved for non-4.7 requests to ensure transparency
+	reqGrok45 := httptest.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/responses", nil)
+	if err := adapter.applyHeaders(reqGrok45, account.Credential{ID: 1}, "token", "grok-4.5", "cache-key", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := reqGrok45.Header.Get("x-grok-client-version"); got != "1.0.4" {
+		t.Fatalf("grok-4.5 client version = %q, want %q", got, "1.0.4")
 	}
 }
 

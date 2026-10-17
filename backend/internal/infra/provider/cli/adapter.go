@@ -51,6 +51,7 @@ const (
 	buildControlTimeout     = 30 * time.Second
 	buildGrok45Model        = "grok-4.5"
 	buildGrok46Model        = "grok-4.6"
+	buildGrok47Model        = "grok-4.7"
 )
 
 // Adapter implements the Grok Build CLI Responses, model, Billing, and OAuth protocols.
@@ -764,6 +765,7 @@ func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *ac
 	seen := make(map[string]struct{}, len(models)+2)
 	hasVideo15 := false
 	hasGrok46 := false
+	hasGrok47 := false
 	for _, model := range models {
 		model = strings.TrimSpace(model)
 		if model == "" {
@@ -781,10 +783,17 @@ func (a *Adapter) NormalizeAccountModelCapabilities(models []string, billing *ac
 		if model == buildGrok46Model {
 			hasGrok46 = true
 		}
+		if model == buildGrok47Model {
+			hasGrok47 = true
+		}
 		seen[model] = struct{}{}
 		result = append(result, model)
 	}
-	if credential.Provider == account.ProviderBuild && hasGrok46 {
+	if credential.Provider == account.ProviderBuild && (hasGrok46 || hasGrok47) {
+		if _, exists := seen[buildGrok46Model]; !exists && hasGrok47 {
+			seen[buildGrok46Model] = struct{}{}
+			result = append(result, buildGrok46Model)
+		}
 		if _, exists := seen[buildGrok45Model]; !exists {
 			seen[buildGrok45Model] = struct{}{}
 			result = append(result, buildGrok45Model)
@@ -1110,9 +1119,18 @@ func (a *Adapter) MarshalCredentials(values []provider.CredentialSeed) ([]byte, 
 
 func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential, accessToken, model, promptCacheKey string, trace bool) error {
 	cfg := a.config()
+	clientVersion := cfg.ClientVersion
+	userAgent := cfg.UserAgent
+	// grok-4.7 requires CLI version >= 1.0.13 upstream; auto-upgrade outdated versions to RecommendedBuildClientVersion.
+	if clientVersion == "" || (strings.HasPrefix(model, "grok-4.7") && settingsdomain.IsBuildClientVersionOutdated(clientVersion)) {
+		clientVersion = settingsdomain.RecommendedBuildClientVersion
+		if userAgent == "" || settingsdomain.IsBuildClientVersionOutdated(cfg.ClientVersion) {
+			userAgent = settingsdomain.RecommendedBuildUserAgent
+		}
+	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("X-XAI-Token-Auth", cfg.TokenAuth)
-	req.Header.Set("x-grok-client-version", cfg.ClientVersion)
+	req.Header.Set("x-grok-client-version", clientVersion)
 	req.Header.Set("x-grok-client-identifier", cfg.ClientIdentifier)
 	req.Header.Set("x-grok-client-mode", "headless")
 
@@ -1158,7 +1176,7 @@ func (a *Adapter) applyHeaders(req *http.Request, credential account.Credential,
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Accept-Encoding", "gzip")
-	req.Header.Set("User-Agent", cfg.UserAgent)
+	req.Header.Set("User-Agent", userAgent)
 	if model != "" {
 		req.Header.Set("x-grok-model-override", model)
 	}

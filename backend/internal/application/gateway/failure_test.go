@@ -457,3 +457,14 @@ func TestTerminalRequestForbiddenRequiresExplicitRequestSignal(t *testing.T) {
 		}
 	}
 }
+
+func TestUpgradeRequiredFailureClassification(t *testing.T) {
+	body := []byte(`{"error":"cli版本过低，需要更新至1.0.13及以上"}`)
+	failure := newHTTPUpstreamFailure(http.StatusUpgradeRequired, body, 1, "account-1")
+	if failure.HTTPStatus != http.StatusUpgradeRequired || failure.Code != "upstream_upgrade_required" {
+		t.Fatalf("unexpected failure: %#v", failure)
+	}
+	if failure.PublicMessage != "cli版本过低，需要更新至1.0.13及以上" {
+		t.Fatalf("unexpected public message: %q", failure.PublicMessage)
+	}
+}
