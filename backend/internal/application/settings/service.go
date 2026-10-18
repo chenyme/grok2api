@@ -315,10 +315,14 @@ func applyDomainConfig(base config.Config, value settingsdomain.Config) config.C
 	if capacityWait <= 0 {
 		capacityWait = base.Routing.CapacityWait.Value()
 	}
+	buildClientVersion, buildUserAgent := settingsdomain.NormalizeBuildClientVersionAndUserAgent(
+		value.ProviderBuild.ClientVersion,
+		value.ProviderBuild.UserAgent,
+	)
 	base.Provider.Build = config.BuildProviderConfig{
 		BaseURL: value.ProviderBuild.BaseURL, FallbackBaseURL: config.NormalizeBuildFallbackBaseURL(value.ProviderBuild.FallbackBaseURL),
-		ClientVersion: value.ProviderBuild.ClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
-		TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: value.ProviderBuild.UserAgent,
+		ClientVersion: buildClientVersion, ClientIdentifier: value.ProviderBuild.ClientIdentifier,
+		TokenAuth: value.ProviderBuild.TokenAuth, UserAgent: buildUserAgent,
 		ResponseHeaderTimeout: config.Duration(value.ProviderBuild.ResponseHeaderTimeout),
 		StreamIdleTimeout:     config.Duration(value.ProviderBuild.StreamIdleTimeout),
 	}
@@ -549,12 +553,16 @@ func mergeEditable(current config.Config, input EditableConfig) (config.Config, 
 	next.Server.MaxConcurrentRequests = input.Server.MaxConcurrentRequests
 	next.Provider.Build.BaseURL = strings.TrimSpace(input.ProviderBuild.BaseURL)
 	next.Provider.Build.FallbackBaseURL = config.NormalizeBuildFallbackBaseURL(input.ProviderBuild.FallbackBaseURL)
-	next.Provider.Build.ClientVersion = strings.TrimSpace(input.ProviderBuild.ClientVersion)
+	clientVersion, userAgent := settingsdomain.NormalizeBuildClientVersionAndUserAgent(
+		input.ProviderBuild.ClientVersion,
+		input.ProviderBuild.UserAgent,
+	)
+	next.Provider.Build.ClientVersion = clientVersion
 	next.Provider.Build.ClientIdentifier = strings.TrimSpace(input.ProviderBuild.ClientIdentifier)
 	if tokenAuth := strings.TrimSpace(input.ProviderBuild.TokenAuth); tokenAuth != "" {
 		next.Provider.Build.TokenAuth = tokenAuth
 	}
-	next.Provider.Build.UserAgent = strings.TrimSpace(input.ProviderBuild.UserAgent)
+	next.Provider.Build.UserAgent = userAgent
 	next.Provider.Web.BaseURL = strings.TrimSpace(input.ProviderWeb.BaseURL)
 	next.Provider.Web.StatsigMode = strings.TrimSpace(input.ProviderWeb.StatsigMode)
 	next.Provider.Web.StatsigSignerURL = strings.TrimSpace(input.ProviderWeb.StatsigSignerURL)
