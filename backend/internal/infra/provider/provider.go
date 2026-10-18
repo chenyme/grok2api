@@ -360,10 +360,13 @@ type ResponseResourceRequest struct {
 	AllowClientToolCacheRoute bool
 	// GrokTurnIndex is the explicit Grok Shell client turn; it is validated before Build egress and never fabricated by the server.
 	GrokTurnIndex string
-	IdempotencyID string
-	Streaming     bool
-	NormalizeBody bool
-	Operation     string
+	// TransientRetry is the one-based turn resubmission attempt. Zero marks the
+	// initial submission and is omitted from the upstream request.
+	TransientRetry int
+	IdempotencyID  string
+	Streaming      bool
+	NormalizeBody  bool
+	Operation      string
 	// NormalizedMetadata receives non-sensitive metadata from the exact payload
 	// normalization used for the physical upstream request. The caller owns the
 	// value; adapters update it synchronously before network I/O.

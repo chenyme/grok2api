@@ -620,6 +620,9 @@ func (a *Adapter) doResponseRequest(ctx context.Context, request provider.Respon
 		return call
 	}
 	applyGrokTurnIndexHeader(req, request.GrokTurnIndex)
+	if request.TransientRetry > 0 {
+		req.Header.Set("x-grok-transient-retry", strconv.Itoa(request.TransientRetry))
+	}
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}

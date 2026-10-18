@@ -1046,11 +1046,12 @@ func (s *Service) createResponseAt(ctx context.Context, input Input, path string
 	failureAttempts := newFailureAttemptRecorder(http.MethodPost, path)
 	normalizedMetadata := &provider.NormalizedRequestMetadata{}
 	responseStartedAt := startedAt
+	transientRetry := 0
 	forwardResponse := func(lease *accountLease, credential accountdomain.Credential, billing *accountdomain.Billing) (*provider.Response, error) {
 		started := time.Now()
 		responseStartedAt = started
 		lease.markSelectorUpstreamStarted()
-		response, err := adapter.ForwardResponse(physicalCallCtx, provider.ResponseResourceRequest{Credential: credential, ForcedEgressNodeID: input.ForcedEgressNodeID, Billing: billing, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, ReasoningReplayKey: reasoningReplayKey, AllowClientToolCacheRoute: input.AllowClientToolCacheRoute, GrokTurnIndex: input.GrokTurnIndex, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation), NormalizedMetadata: normalizedMetadata})
+		response, err := adapter.ForwardResponse(physicalCallCtx, provider.ResponseResourceRequest{Credential: credential, ForcedEgressNodeID: input.ForcedEgressNodeID, Billing: billing, Method: http.MethodPost, Path: path, Model: route.UpstreamModel, PromptCacheKey: input.PromptCacheKey, ReasoningReplayKey: reasoningReplayKey, AllowClientToolCacheRoute: input.AllowClientToolCacheRoute, GrokTurnIndex: input.GrokTurnIndex, TransientRetry: transientRetry, IdempotencyID: idempotencyID, Body: input.Body, Streaming: input.Streaming, NormalizeBody: true, Operation: string(operation), NormalizedMetadata: normalizedMetadata})
 		auditBase.ReasoningEffort = normalizedMetadata.ReasoningEffort
 		err = failureAttempts.captureResponse(credential, started, response, err)
 		timing.markUpstream(time.Since(started))
@@ -1343,6 +1344,9 @@ attemptLoop:
 			if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 				break
 			}
+			if isBuildTransientRetryError(err) {
+				transientRetry++
+			}
 			continue
 		}
 	handleResponse:
@@ -1388,6 +1392,9 @@ attemptLoop:
 					}
 					if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 						break attemptLoop
+					}
+					if isBuildTransientRetryError(err) {
+						transientRetry++
 					}
 				}
 				continue
@@ -1508,6 +1515,9 @@ attemptLoop:
 					if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 						break attemptLoop
 					}
+					if isBuildTransientRetryError(err) {
+						transientRetry++
+					}
 					continue attemptLoop
 				}
 				goto handleResponse
@@ -1576,6 +1586,9 @@ attemptLoop:
 			if shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 				break
 			}
+			if isBuildTransientRetryStatus(response.StatusCode) {
+				transientRetry++
+			}
 			continue
 		}
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
@@ -1610,6 +1623,9 @@ attemptLoop:
 					}
 					if !qualityCrossAccountReplay || shouldStopForNonAccountFingerprint(failureFingerprints, lastFailure) {
 						break
+					}
+					if isBuildTransientRetryError(peekErr) {
+						transientRetry++
 					}
 					continue
 				}
@@ -2100,12 +2116,31 @@ func isRetryable(status int) bool {
 	return status == 402 || status == 403 || status == 429 || status >= 500
 }
 
+// isBuildTransientRetryStatus mirrors the Grok Build client's turn-level
+// resubmit classification. Cloudflare 525/526 report an origin TLS
+// configuration failure and are deliberately excluded from transient traffic.
+func isBuildTransientRetryStatus(status int) bool {
+	return status >= http.StatusInternalServerError && status <= 599 && status != 525 && status != 526
+}
+
+func isBuildTransientRetryError(err error) bool {
+	return err != nil &&
+		!neterrorpkg.IsUpstreamResponseEmpty(err) &&
+		!errors.Is(err, errQualityEmptyStream) &&
+		!neterrorpkg.IsUpstreamOutputLoop(err)
+}
+
 func isReasoningRecoveryFailedResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
 	return upstreamProvider == accountdomain.ProviderBuild && response != nil && response.ReasoningRecoveryFailed
 }
 
 func isRetryableResponse(response *provider.Response, upstreamProvider accountdomain.Provider) bool {
 	if response == nil {
+		return false
+	}
+	// The official Build client treats Cloudflare origin-TLS failures as fatal,
+	// even when the edge asks clients to retry. Account rotation cannot repair them.
+	if upstreamProvider == accountdomain.ProviderBuild && (response.StatusCode == 525 || response.StatusCode == 526) {
 		return false
 	}
 	if response.StatusCode == http.StatusBadRequest && isReasoningRecoveryFailedResponse(response, upstreamProvider) {

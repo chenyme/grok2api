@@ -1770,6 +1770,9 @@ func TestAttemptLoopQualityHold(t *testing.T) {
 	if len(attempts) != 3 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID || attempts[2] != credentials[2].ID {
 		t.Fatalf("expected empty+no-think account exclusion and retry, attempts=%#v", attempts)
 	}
+	if got := adapter.TransientRetries(); len(got) != 3 || got[0] != 0 || got[1] != 0 || got[2] != 0 {
+		t.Fatalf("quality retries must not be reported as transient retries: %#v", got)
+	}
 	emptyAccount, err := accountRepo.Get(ctx, credentials[0].ID)
 	if err != nil {
 		t.Fatal(err)

@@ -74,6 +74,48 @@ func TestResponseRequestForcedEgressOverridesCredentialBinding(t *testing.T) {
 	}
 }
 
+func TestResponseRequestSendsTransientRetryHeaderOnlyForResubmissions(t *testing.T) {
+	tests := []struct {
+		name  string
+		retry int
+		want  string
+	}{
+		{name: "initial submission", retry: 0},
+		{name: "invalid negative value", retry: -1},
+		{name: "first resubmission", retry: 1, want: "1"},
+		{name: "second resubmission", retry: 2, want: "2"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var got string
+			adapter := NewAdapter(Config{BaseURL: "https://cli-chat-proxy.grok.com/v1"}, nil)
+			adapter.http.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				got = request.Header.Get("x-grok-transient-retry")
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{}`)),
+					Request:    request,
+				}, nil
+			})
+			call := adapter.doResponseRequest(context.Background(), provider.ResponseResourceRequest{
+				Credential:     account.Credential{ID: 7, Provider: account.ProviderBuild},
+				Method:         http.MethodPost,
+				Path:           "/responses",
+				TransientRetry: test.retry,
+			}, "access-token", nil, "https://cli-chat-proxy.grok.com/v1")
+			if call.err != nil {
+				t.Fatal(call.err)
+			}
+			_ = call.response.Body.Close()
+			if got != test.want {
+				t.Fatalf("x-grok-transient-retry = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAdapterHotUpdatesDirectResponseHeaderTimeout(t *testing.T) {
 	adapter := NewAdapter(Config{ResponseHeaderTimeout: 2 * time.Minute, StreamIdleTimeout: 3 * time.Minute}, nil)
 	before := adapter.base.current.Load()
