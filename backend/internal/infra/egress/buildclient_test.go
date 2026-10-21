@@ -26,7 +26,10 @@ func TestBuildClientUsesConfiguredResponseHeaderTimeout(t *testing.T) {
 	if transport.ResponseHeaderTimeout != 7*time.Minute {
 		t.Fatalf("response header timeout = %s", transport.ResponseHeaderTimeout)
 	}
-	if transport.IdleConnTimeout != buildtransport.IdleConnTimeout || transport.TLSNextProto["h2"] == nil {
+	// Go 1.27 moved the HTTP/2 switch from TLSNextProto["h2"] to the public
+	// Transport.Protocols field; accept whichever one is enabled.
+	http2Enabled := transport.Protocols != nil && transport.Protocols.HTTP2()
+	if transport.IdleConnTimeout != buildtransport.IdleConnTimeout || (!http2Enabled && transport.TLSNextProto["h2"] == nil) {
 		t.Fatalf("Build HTTP/2 health transport not configured: %#v", transport)
 	}
 }
@@ -113,7 +116,9 @@ func TestNewBuildClientUsesStandardTransportForEveryProxyFamily(t *testing.T) {
 			if !ok {
 				t.Fatalf("transport = %T, want *http.Transport", client.Transport)
 			}
-			if transport.ForceAttemptHTTP2 != true || transport.DialContext == nil || transport.TLSNextProto["h2"] == nil {
+			// Go 1.27 moved the HTTP/2 switch from TLSNextProto["h2"] to Transport.Protocols.
+			http2Enabled := transport.Protocols != nil && transport.Protocols.HTTP2()
+			if transport.ForceAttemptHTTP2 != true || transport.DialContext == nil || (!http2Enabled && transport.TLSNextProto["h2"] == nil) {
 				t.Fatalf("standard transport not fully configured: %#v", transport)
 			}
 			if (transport.Proxy != nil) != test.httpProxy {

@@ -19,6 +19,10 @@ type ModelSpec struct {
 	SupportsReasoningEffort bool
 	DefaultReasoningEffort  string
 	MaxOutputTokens         int
+	// NoSearchTools marks models whose upstream ignores the built-in
+	// web_search / x_search tools (live 2026-10-20 on grok-4.5: tool_choice
+	// "auto" → 200 with zero tool calls; "required" → 500 after ~40s).
+	NoSearchTools bool
 }
 
 var catalog = []ModelSpec{
@@ -26,7 +30,7 @@ var catalog = []ModelSpec{
 	{PublicID: "grok-4.20-0309-reasoning", UpstreamModel: "grok-4.20-0309-reasoning", SupportsReasoning: true, MaxOutputTokens: 1_000_000},
 	{PublicID: "grok-4.20-0309-non-reasoning", UpstreamModel: "grok-4.20-0309-non-reasoning", MaxOutputTokens: 1_000_000},
 	{PublicID: "grok-4.20-multi-agent-0309", UpstreamModel: "grok-4.20-multi-agent-0309", SupportsReasoning: true, SupportsReasoningEffort: true, MaxOutputTokens: 1_000_000},
-	{PublicID: "grok-4.5", UpstreamModel: "grok-4.5", SupportsReasoning: true, SupportsReasoningEffort: true, DefaultReasoningEffort: "medium", MaxOutputTokens: 1_000_000},
+	{PublicID: "grok-4.5", UpstreamModel: "grok-4.5", SupportsReasoning: true, SupportsReasoningEffort: true, DefaultReasoningEffort: "medium", MaxOutputTokens: 1_000_000, NoSearchTools: true},
 	{PublicID: "grok-build-0.1", UpstreamModel: "grok-build-0.1", MaxOutputTokens: 256_000},
 }
 

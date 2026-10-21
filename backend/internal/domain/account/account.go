@@ -118,6 +118,11 @@ const (
 	LastErrorMissingThinkingDisabled = "missing_thinking_disabled"
 )
 
+// LastErrorConsoleUnlinked is the reauth reason recorded for grok_console
+// accounts created before the Grok/Cursor unification: they are not linked to
+// Cursor and have no Console credits (403 "no credits or licenses yet").
+const LastErrorConsoleUnlinked = "grok_console account has no credits or licenses (not linked to Cursor)"
+
 // NormalizeHealthMarker admits only durable non-sensitive health markers.
 func NormalizeHealthMarker(value string) string {
 	switch value {
@@ -155,10 +160,16 @@ type Credential struct {
 	EncryptedAccessToken      string
 	EncryptedRefreshToken     string
 	EncryptedCloudflareCookie string
-	ExpiresAt                 time.Time
-	RefreshDueAt              *time.Time
-	LastRefreshAt             *time.Time
-	RefreshFailureCount       int
+	// ConsoleAPIKeyID caches the Console team apiKeyId sent as x-apikey.
+	// EncryptedConsoleWorkOSSession caches the WorkOS cookie triple used only
+	// by the Console usage panel. Both are grok_console-only acceleration
+	// caches that the SSO alone can rebuild; they are never exported.
+	ConsoleAPIKeyID               string
+	EncryptedConsoleWorkOSSession string
+	ExpiresAt                     time.Time
+	RefreshDueAt                  *time.Time
+	LastRefreshAt                 *time.Time
+	RefreshFailureCount           int
 	// RefreshUnclassifiedAuthCount counts consecutive OAuth 400/401 rejections
 	// that cannot be classified from a machine-readable error code.
 	RefreshUnclassifiedAuthCount int
@@ -227,24 +238,27 @@ type Credential struct {
 // CredentialMaterial contains the encrypted provider secrets and refresh
 // metadata loaded only after routing selects an account.
 type CredentialMaterial struct {
-	AccountID                    uint64
-	Provider                     Provider
-	AuthType                     AuthType
-	OIDCClientID                 string
-	EncryptedAccessToken         string
-	EncryptedRefreshToken        string
-	EncryptedCloudflareCookie    string
-	ExpiresAt                    time.Time
-	RefreshDueAt                 *time.Time
-	LastRefreshAt                *time.Time
-	RefreshFailureCount          int
-	RefreshUnclassifiedAuthCount int
-	LastRefreshErrorStatus       int
-	LastRefreshErrorCode         string
-	LastRefreshErrorMessage      string
-	LastRefreshErrorResponse     string
-	RefreshPermanent             bool
-	UpdatedAt                    time.Time
+	AccountID                 uint64
+	Provider                  Provider
+	AuthType                  AuthType
+	OIDCClientID              string
+	EncryptedAccessToken      string
+	EncryptedRefreshToken     string
+	EncryptedCloudflareCookie string
+	ConsoleAPIKeyID           string
+	// EncryptedConsoleWorkOSSession is grok_console-only; see Credential.
+	EncryptedConsoleWorkOSSession string
+	ExpiresAt                     time.Time
+	RefreshDueAt                  *time.Time
+	LastRefreshAt                 *time.Time
+	RefreshFailureCount           int
+	RefreshUnclassifiedAuthCount  int
+	LastRefreshErrorStatus        int
+	LastRefreshErrorCode          string
+	LastRefreshErrorMessage       string
+	LastRefreshErrorResponse      string
+	RefreshPermanent              bool
+	UpdatedAt                     time.Time
 }
 
 // ApplyTo merges credential material into the matching routing account.
@@ -259,6 +273,8 @@ func (m CredentialMaterial) ApplyTo(value Credential) (Credential, bool) {
 	value.EncryptedAccessToken = m.EncryptedAccessToken
 	value.EncryptedRefreshToken = m.EncryptedRefreshToken
 	value.EncryptedCloudflareCookie = m.EncryptedCloudflareCookie
+	value.ConsoleAPIKeyID = m.ConsoleAPIKeyID
+	value.EncryptedConsoleWorkOSSession = m.EncryptedConsoleWorkOSSession
 	value.ExpiresAt = m.ExpiresAt
 	value.RefreshDueAt = m.RefreshDueAt
 	value.LastRefreshAt = m.LastRefreshAt

@@ -108,3 +108,66 @@ func TestHasQuotaWindowsRejectsLegacyConsoleSnapshot(t *testing.T) {
 		t.Fatal("legacy synthetic Console quota must require /usage migration")
 	}
 }
+
+func TestConsoleCredentialCachesPersistAndSurviveReimport(t *testing.T) {
+	ctx := context.Background()
+	database, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "console-cache.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repository := NewAccountRepository(database)
+	seed := account.Credential{
+		Provider: account.ProviderConsole, AuthType: account.AuthTypeSSO, Name: "console", SourceKey: "console:cache",
+		EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	}
+	credential, _, err := repository.UpsertByIdentity(ctx, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	web, _, err := repository.UpsertByIdentity(ctx, account.Credential{
+		Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: "web", SourceKey: "web:cache",
+		EncryptedAccessToken: "encrypted", Enabled: true, AuthStatus: account.AuthStatusActive, MaxConcurrent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const keyID = "11111111-2222-4333-8444-555555555555"
+	if err := repository.UpdateConsoleAPIKeyID(ctx, credential.ID, keyID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateConsoleWorkOSSession(ctx, credential.ID, "encrypted-workos"); err != nil {
+		t.Fatal(err)
+	}
+	// The caches are Console-only; a Web row is never touched.
+	if err := repository.UpdateConsoleAPIKeyID(ctx, web.ID, keyID); err != nil {
+		t.Fatal(err)
+	}
+	material, err := repository.GetCredentialMaterial(ctx, credential.ID, account.ProviderConsole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if material.ConsoleAPIKeyID != keyID || material.EncryptedConsoleWorkOSSession != "encrypted-workos" {
+		t.Fatalf("material = %#v", material)
+	}
+	if _, _, err := repository.UpsertByIdentity(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := repository.Get(ctx, credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ConsoleAPIKeyID != keyID || reloaded.EncryptedConsoleWorkOSSession != "encrypted-workos" {
+		t.Fatalf("re-import dropped caches: %#v", reloaded)
+	}
+	webMaterial, err := repository.GetCredentialMaterial(ctx, web.ID, account.ProviderWeb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if webMaterial.ConsoleAPIKeyID != "" {
+		t.Fatalf("web material = %#v", webMaterial)
+	}
+}

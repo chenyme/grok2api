@@ -30,6 +30,9 @@ type UpstreamFailure struct {
 	// SpendingLimitBlocked 表示付费账号被 spending-limit 永久阻断（402 personal-team-blocked:spending-limit），
 	// 账单周期内不会自动恢复，适合直接标 reauthRequired 出池。
 	SpendingLimitBlocked bool
+	// NoCreditsOrLicenses marks Console's 403 for accounts that were never
+	// granted credits. It is permanent for Console and handled as a dead account.
+	NoCreditsOrLicenses bool
 	// SafetyRejection marks a request-level content safety denial. It must not
 	// refresh OAuth, retry, switch accounts, cool down, or invalidate credentials.
 	SafetyRejection bool
@@ -152,7 +155,8 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.QuotaExhausted = failure.FreeQuotaExhausted || isCreditQuotaExhaustion(metadataText)
 		failure.SpendingLimitBlocked = isPaidQuotaExhaustion(metadataText)
 		failure.CredentialRejected = !failure.QuotaExhausted && containsAny(metadataText, "authentication", "unauthorized", "invalid token", "token expired")
-		failure.AccountScoped = failure.AccountBlocked || failure.PermanentAccountDenial || failure.QuotaExhausted || failure.CredentialRejected || isAccountScopedForbidden(metadataText)
+		failure.NoCreditsOrLicenses = provider.IsConsoleNoCreditsText(metadataText) || provider.IsConsoleNoCreditsText(string(body))
+		failure.AccountScoped = failure.NoCreditsOrLicenses || failure.AccountBlocked || failure.PermanentAccountDenial || failure.QuotaExhausted || failure.CredentialRejected || isAccountScopedForbidden(metadataText)
 	case http.StatusBadRequest:
 		if isRequestScopedForbidden(upstreamCode, metadataText) {
 			failure.Code = "invalid_argument"

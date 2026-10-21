@@ -34,7 +34,10 @@ func toAccountDomain(value accountModel) account.Credential {
 	var refreshPermanent bool
 	var authType account.AuthType
 	var clientID, encryptedPrimary, encryptedRefresh, encryptedCloudflareCookie string
+	var consoleAPIKeyID, encryptedConsoleWorkOSSession string
 	if value.Credential != nil {
+		consoleAPIKeyID = value.Credential.ConsoleAPIKeyID
+		encryptedConsoleWorkOSSession = value.Credential.EncryptedConsoleWorkOSSession
 		authType = account.AuthType(value.Credential.AuthType)
 		clientID = value.Credential.ClientID
 		encryptedPrimary = value.Credential.EncryptedPrimary
@@ -81,6 +84,7 @@ func toAccountDomain(value accountModel) account.Credential {
 		ID: value.ID, Provider: account.Provider(value.Provider), AuthType: authType, Name: value.Name, Email: value.Email,
 		UserID: value.UserID, TeamID: value.TeamID, SourceKey: value.SourceKey, OIDCClientID: clientID,
 		EncryptedAccessToken: encryptedPrimary, EncryptedRefreshToken: encryptedRefresh, EncryptedCloudflareCookie: encryptedCloudflareCookie,
+		ConsoleAPIKeyID: consoleAPIKeyID, EncryptedConsoleWorkOSSession: encryptedConsoleWorkOSSession,
 		ExpiresAt: expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: lastRefreshAt,
 		RefreshFailureCount: refreshFailures, RefreshUnclassifiedAuthCount: refreshUnclassifiedAuthFailures, LastRefreshErrorStatus: lastRefreshErrorStatus, LastRefreshErrorCode: lastRefreshError, LastRefreshErrorMessage: lastRefreshErrorMessage, LastRefreshErrorResponse: lastRefreshErrorResponse, RefreshPermanent: refreshPermanent,
 		Enabled: value.Enabled, AuthStatus: account.AuthStatus(value.AuthStatus), ReauthMarkedAt: value.ReauthMarkedAt, Priority: value.Priority,
@@ -105,6 +109,7 @@ func toCredentialMaterialDomain(value accountCredentialModel, provider account.P
 		AccountID: value.AccountID, Provider: provider, AuthType: account.AuthType(value.AuthType), OIDCClientID: value.ClientID,
 		EncryptedAccessToken: value.EncryptedPrimary, EncryptedRefreshToken: value.EncryptedRefresh,
 		EncryptedCloudflareCookie: value.EncryptedCloudflareCookie, ExpiresAt: expiresAt,
+		ConsoleAPIKeyID: value.ConsoleAPIKeyID, EncryptedConsoleWorkOSSession: value.EncryptedConsoleWorkOSSession,
 		RefreshDueAt: value.RefreshDueAt, LastRefreshAt: value.LastRefreshAt,
 		RefreshFailureCount: value.RefreshFailures, RefreshUnclassifiedAuthCount: value.RefreshUnclassifiedAuthFailures, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshErrorCode: value.LastRefreshError, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse,
 		RefreshPermanent: value.RefreshPermanent, UpdatedAt: value.UpdatedAt,
@@ -169,8 +174,10 @@ func fromAccountCredentialDomain(value account.Credential) accountCredentialMode
 	return accountCredentialModel{
 		AccountID: value.ID, AuthType: string(authType), ClientID: value.OIDCClientID,
 		EncryptedPrimary: value.EncryptedAccessToken, EncryptedRefresh: value.EncryptedRefreshToken,
-		EncryptedCloudflareCookie: value.EncryptedCloudflareCookie,
-		ExpiresAt:                 expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
+		EncryptedCloudflareCookie:     value.EncryptedCloudflareCookie,
+		ConsoleAPIKeyID:               consoleCacheValue(value.Provider, value.ConsoleAPIKeyID),
+		EncryptedConsoleWorkOSSession: consoleCacheValue(value.Provider, value.EncryptedConsoleWorkOSSession),
+		ExpiresAt:                     expiresAt, RefreshDueAt: refreshDueAt, LastRefreshAt: value.LastRefreshAt,
 		RefreshFailures: value.RefreshFailureCount, RefreshUnclassifiedAuthFailures: value.RefreshUnclassifiedAuthCount, LastRefreshErrorStatus: value.LastRefreshErrorStatus, LastRefreshError: value.LastRefreshErrorCode, LastRefreshErrorMessage: value.LastRefreshErrorMessage, LastRefreshErrorResponse: value.LastRefreshErrorResponse, RefreshPermanent: value.RefreshPermanent,
 		BuildBotFlagSource: normalizeBuildBotFlagSource(value.Provider, value.BuildBotFlagSource),
 		UpdatedAt:          time.Now().UTC(),
@@ -304,4 +311,12 @@ func toAuditAttemptDomain(value requestAuditAttemptModel) (audit.Attempt, error)
 		TransportError:        value.TransportError,
 		ErrorChain:            errorChain,
 	}, nil
+}
+
+// consoleCacheValue keeps Console-only caches off other providers' rows.
+func consoleCacheValue(provider account.Provider, value string) string {
+	if provider != account.ProviderConsole {
+		return ""
+	}
+	return value
 }

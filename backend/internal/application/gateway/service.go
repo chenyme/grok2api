@@ -1430,8 +1430,12 @@ attemptLoop:
 					s.logger.Warn("upstream_request_scoped_forbidden", "request_id", input.RequestID, "account_id", credential.ID, "provider", credential.Provider, "status", response.StatusCode, "upstream_code", lastFailure.UpstreamCode)
 				}
 				// Fall through to the common success/error response path so the client receives the original 403.
-			} else if lastFailure.AccountBlocked {
-				failureHandled := s.markReauthRequired(ctx, input.RequestID, credential, fmt.Sprintf("%s account is blocked", credential.Provider))
+			} else if lastFailure.AccountBlocked || isConsoleNoCreditsFailure(credential.Provider, lastFailure) {
+				reason := fmt.Sprintf("%s account is blocked", credential.Provider)
+				if !lastFailure.AccountBlocked {
+					reason = consoleNoCreditsReason
+				}
+				failureHandled := s.markReauthRequired(ctx, input.RequestID, credential, reason)
 				if lastFailure.AccountScoped && !failureHandled {
 					s.selector.MarkFailure(ctx, credential, response.StatusCode, retryAfter)
 				}
@@ -1523,7 +1527,7 @@ attemptLoop:
 				goto handleResponse
 			}
 			failureHandled := false
-			if lease.QuotaMode != "" && response.StatusCode == http.StatusTooManyRequests {
+			if lease.QuotaMode != "" && (response.StatusCode == http.StatusTooManyRequests || credential.Provider == accountdomain.ProviderConsole && response.StatusCode == http.StatusPaymentRequired) {
 				state, reconcileErr := s.accounts.ReconcileRateLimit(ctx, credential.ID, lease.QuotaMode, retryAfter)
 				s.applyRateLimitReconciliation(ctx, credential, response.StatusCode, retryAfter, state, reconcileErr)
 				failureHandled = true
@@ -2052,6 +2056,31 @@ func (s *Service) markCredentialRejectedAfterPermanentRefresh(ctx context.Contex
 	s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
 }
 
+// consoleNoCreditsReason is recorded on Console accounts the upstream reports
+// as never provisioned. Retrying, cooling down or rotating egress cannot help.
+const consoleNoCreditsReason = accountdomain.LastErrorConsoleUnlinked
+
+func isConsoleNoCreditsFailure(upstreamProvider accountdomain.Provider, failure *UpstreamFailure) bool {
+	return upstreamProvider == accountdomain.ProviderConsole && failure != nil && failure.NoCreditsOrLicenses
+}
+
+// retireConsoleNoCreditsAccount inspects a Console 403 and, when it is the
+// permanent no-credits denial, marks the account reauthRequired. The body is
+// restored on the response either way.
+func (s *Service) retireConsoleNoCreditsAccount(ctx context.Context, requestID string, credential accountdomain.Credential, response *provider.Response) bool {
+	if credential.Provider != accountdomain.ProviderConsole || response == nil || response.StatusCode != http.StatusForbidden {
+		return false
+	}
+	body, _ := readRetryableBody(response.Body)
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	if !provider.IsConsoleNoCreditsText(string(body)) {
+		return false
+	}
+	s.markReauthRequired(ctx, requestID, credential, consoleNoCreditsReason)
+	s.logger.Warn("console_account_no_credits", "request_id", requestID, "account_id", credential.ID)
+	return true
+}
+
 func readRetryableBody(body io.ReadCloser) ([]byte, error) {
 	if body == nil {
 		return nil, nil
@@ -2184,6 +2213,15 @@ func forcesAccountFailover(status int, upstreamProvider accountdomain.Provider) 
 func (s *Service) applyRateLimitReconciliation(ctx context.Context, credential accountdomain.Credential, status int, retryAfter time.Duration, state accountapp.RateLimitReconcileState, reconcileErr error) {
 	s.selector.MarkQuotaStateChanged(credential.Provider, credential.ID)
 	if reconcileErr == nil && state == accountapp.RateLimitReconcileExhausted {
+		return
+	}
+	if credential.Provider == accountdomain.ProviderConsole && status == http.StatusPaymentRequired {
+		// 402 spending-limit is authoritative even when the panel still shows
+		// budget: usage is recorded ~45s after execution. Pause until the next
+		// probe instead of applying an exponential failure cooldown.
+		if err := s.selector.MarkPaymentQuotaExhausted(ctx, credential, quotaRecoveryHints{}); err != nil {
+			s.logger.Warn("console_spending_limit_pause_failed", "account_id", credential.ID, "state", state, "error", err)
+		}
 		return
 	}
 	if credential.Provider == accountdomain.ProviderConsole && status == http.StatusTooManyRequests {
