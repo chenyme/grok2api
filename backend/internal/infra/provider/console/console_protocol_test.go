@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -716,5 +717,19 @@ func TestEgressBreakerCapsBackoff(t *testing.T) {
 	}
 	if breaker.blocked(4) != 0 {
 		t.Fatal("breakers must be per egress node")
+	}
+}
+
+func TestParseConsoleUsageStatusBoundsIntegers(t *testing.T) {
+	t.Parallel()
+	if _, err := parseConsoleUsageStatus([]byte(`{"weeklyIncludedUsage":{"budgetCents":"9223372036854775807"}}`)); err == nil {
+		t.Fatal("out-of-range budgetCents accepted")
+	}
+	status, err := parseConsoleUsageStatus([]byte(`{"weeklyIncludedUsage":{"budgetCents":100,"usedCents":"9223372036854775807"}}`))
+	if err != nil || status.UsedCents != math.MaxInt32 {
+		t.Fatalf("status = %#v, %v", status, err)
+	}
+	if windows := consoleQuotaWindows(1, status, time.Now()); windows[0].Remaining != 0 || windows[0].UsagePercent != 100 {
+		t.Fatalf("windows = %#v", windows[0])
 	}
 }

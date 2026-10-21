@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -33,6 +34,8 @@ const (
 	workosMaxRedirects    = 12
 	workosBodyLimit       = 1 << 20
 	workosSessionMaxBytes = 16 << 10
+	// maxConsoleUsageCents bounds upstream cents to the int32 quota columns.
+	maxConsoleUsageCents = math.MaxInt32
 )
 
 var (
@@ -432,7 +435,7 @@ func parseConsoleUsageStatus(data []byte) (consoleUsageStatus, error) {
 		return consoleUsageStatus{}, errors.New("Console usage-status 缺少 weeklyIncludedUsage")
 	}
 	budget, ok := jsonInteger(payload.Weekly["budgetCents"])
-	if !ok || budget < 0 {
+	if !ok || budget < 0 || budget > maxConsoleUsageCents {
 		return consoleUsageStatus{}, errors.New("Console usage-status budgetCents 无效")
 	}
 	// proto3 JSON omits zero values, so a missing usedCents means 0.
@@ -442,6 +445,11 @@ func parseConsoleUsageStatus(data []byte) (consoleUsageStatus, error) {
 	}
 	if used < 0 {
 		return consoleUsageStatus{}, errors.New("Console usage-status usedCents 无效")
+	}
+	// Overspend only ever means "nothing remaining"; clamping keeps the value
+	// inside the int32 quota columns without changing that outcome.
+	if used > maxConsoleUsageCents {
+		used = maxConsoleUsageCents
 	}
 	result := consoleUsageStatus{BudgetCents: int(budget), UsedCents: int(used)}
 	if resetsAt, ok := jsonTimestamp(payload.Weekly["resetsAt"]); ok {
