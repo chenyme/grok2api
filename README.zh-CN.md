@@ -260,10 +260,11 @@ Web 使用内置目录并按账号等级过滤；更高等级继承低等级模�
 | `grok-chat-auto` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-expert` | 对话 | Super | Chat Completions、Responses、Messages |
 | `grok-chat-heavy` | 对话 | Heavy | Chat Completions、Responses、Messages |
-| `grok-imagine-image-lite` | 图像 | Basic | Images Generations |
-| `grok-imagine-image-quality-lite` | 图像 | Basic | Images Generations |
-| `grok-imagine-image-edit` | 图像编辑 | Super | Images Edits |
-| `grok-imagine-video` | 视频 | Super | Videos |
+| `grok-imagine-image-lite` | 图像、参考图编辑 | Basic | Images Generations、Images Edits、Chat、Responses、Messages |
+| `grok-imagine-image` | 图像、参考图编辑 | Basic | Images Generations、Images Edits、Chat、Responses、Messages |
+| `grok-imagine-image-2.0` | 图像、参考图编辑 | Basic | Images Generations、Images Edits、Chat、Responses、Messages |
+| `grok-imagine-image-edit` | 图像编辑 | Basic | Images Edits、Chat、Responses、Messages（需参考图） |
+| `grok-imagine-video` | 视频 | Basic（720p）；其他分辨率需 Super | Videos |
 
 ### Grok Console
 
@@ -286,6 +287,8 @@ Console 使用当前版本内置目录。对话为无状态转发；图片、视
 | `grok-stt` | 语音 | STT 和 OpenAI 兼容的音频转录 |
 
 同一个 Console 图片模型的生成与编辑能力会聚合展示为一条逻辑模型，不需要创建 `-edit` 模型副本。
+
+Console 对话若未返回可展示的推理内容，网关会在 Chat、Responses、Messages 的下游响应中补上“深度思考中”占位文字。它只是客户端界面提示，不代表上游实际推理内容或推理 token。
 
 公开模型名通常不带 Provider。内部路由使用 `Build/`、`Web/` 或 `Console/` 前缀；带前缀名称可显式限定来源。
 
@@ -322,6 +325,8 @@ Authorization: Bearer g2a_xxx_xxx
 | `GET` | `/v1/media/images/{asset_id}`、`/v1/media/videos/{asset_id}` | 读取归档媒体 |
 
 stored response 和 compact 取决于最终 Provider。登录管理端后可在 `/docs` 查看当前模型与调用示例；仅在 `server.swaggerEnabled: true` 时提供 Swagger。
+
+图片生成和编辑接口同时接受 `application/json` 与 `multipart/form-data`。在 `/v1/images/generations` 中传入 `image`、`images` 或 `reference_images`（JSON URL/data URL 或表单文件）时，会自动改走同名模型的图片编辑能力；Web 普通生图模型会映射到 Web 图片编辑上游。Chat Completions、Responses 和 Messages 也可直接选择图片模型：当前最新用户消息的文字作为提示词，图片内容作为参考图，结果以 Markdown 图片返回；流式客户端会在图片生成完成后收到对应协议的 SSE。Web 图片编辑仍只支持 `n=1`，Console 图片编辑最多支持 3 张参考图。
 
 `/v1/audio/transcriptions` 支持 `json`（默认）、`verbose_json` 和 `text`。视频编辑与延长按实际路由校验 Console `grok-imagine-video`，对外模型名仍可自定义。金额计费以网关能够可靠测量的官方计价单位为准：TTS 按输入字符数预留并结算，REST 与流式 STT 按成功响应返回的实际音频时长结算。STT 时长只能在请求完成后获得，因此并发中的请求可能使有限额 Key 短暂超过金额上限。Realtime、视频编辑与延长，以及未收录官方定价的自定义路由当前记录为“未计费”，保持可调用且不消耗金额额度。
 
