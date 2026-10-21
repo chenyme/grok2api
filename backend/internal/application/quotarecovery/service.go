@@ -107,9 +107,9 @@ func (s *Service) runOne(ctx context.Context, now time.Time, value accountdomain
 	if probeErr == nil && window.ResetAt != nil && window.ResetAt.After(now) {
 		value.DueAt = *window.ResetAt
 	} else if probeErr == nil && value.Mode == "console" {
-		// Console usage currently exposes no reset timestamp. A healthy zero
-		// result is therefore rechecked after the fixed 24-hour prediction
-		// window; transport failures still use bounded exponential backoff.
+		// Console usage-status normally carries resetsAt (handled above). A
+		// snapshot without it is rechecked after the fixed 24-hour window;
+		// transport failures still use bounded exponential backoff.
 		value.DueAt = now.Add(consoleProbeInterval)
 	} else if probeErr == nil && window.WindowSeconds > 0 {
 		// Preserve Provider-specific upstream window semantics. In particular,

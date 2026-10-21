@@ -21,7 +21,13 @@ var (
 	ErrAuthorizationDenied  = errors.New("authorization denied")
 	ErrCredentialLimit      = errors.New("credential count exceeds limit")
 	ErrUnauthorized         = errors.New("upstream credential unauthorized")
-	ErrBirthDateAlreadySet  = errors.New("upstream birth date is already set")
+	// ErrConsoleUnlinked accompanies ErrUnauthorized for Grok Console accounts
+	// never linked to Cursor; they have no Console credit pool at all.
+	ErrConsoleUnlinked = errors.New("grok console account not linked to cursor")
+	// ErrEgressBlocked marks a request skipped locally because its egress is
+	// in a Cloudflare block cool-down; no upstream call was made.
+	ErrEgressBlocked       = errors.New("egress blocked by cloudflare, waiting for cool-down")
+	ErrBirthDateAlreadySet = errors.New("upstream birth date is already set")
 )
 
 // HTTPStatusError preserves the upstream status when a streaming or asynchronous Provider cannot return a Response.
@@ -463,18 +469,22 @@ type DeviceAuthorization struct {
 
 // CredentialSeed represents an OAuth credential not yet persisted after login or import.
 type CredentialSeed struct {
-	Provider                account.Provider
-	AuthType                account.AuthType
-	WebTier                 account.WebTier
-	Name                    string
-	Email                   string
-	UserID                  string
-	TeamID                  string
-	SourceKey               string
-	OIDCClientID            string
-	AccessToken             string
-	RefreshToken            string
-	CloudflareCookies       string
+	Provider          account.Provider
+	AuthType          account.AuthType
+	WebTier           account.WebTier
+	Name              string
+	Email             string
+	UserID            string
+	TeamID            string
+	SourceKey         string
+	OIDCClientID      string
+	AccessToken       string
+	RefreshToken      string
+	CloudflareCookies string
+	// ConsoleAPIKeyID and ConsoleWorkOSSession (plaintext JSON of the WorkOS
+	// cookie triple) are optional grok_console caches supplied by imports.
+	ConsoleAPIKeyID         string
+	ConsoleWorkOSSession    string
 	ExpiresAt               time.Time
 	WebNSFWEnabledAt        *time.Time
 	WebTermsAcceptedAt      *time.Time

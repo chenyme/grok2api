@@ -282,6 +282,27 @@ func (r *AccountRepository) ListBuildBotFlagCredentialBatch(ctx context.Context,
 	return result, nil
 }
 
+// UpdateConsoleAPIKeyID stores the Console team apiKeyId cache. Routing
+// re-reads credential material per request, so no invalidation is needed.
+func (r *AccountRepository) UpdateConsoleAPIKeyID(ctx context.Context, accountID uint64, apiKeyID string) error {
+	return r.updateConsoleCredentialCache(ctx, accountID, "console_api_key_id", strings.TrimSpace(apiKeyID), 64)
+}
+
+// UpdateConsoleWorkOSSession stores the encrypted WorkOS cookie triple.
+func (r *AccountRepository) UpdateConsoleWorkOSSession(ctx context.Context, accountID uint64, encryptedSession string) error {
+	return r.updateConsoleCredentialCache(ctx, accountID, "encrypted_console_workos_session", encryptedSession, 65536)
+}
+
+func (r *AccountRepository) updateConsoleCredentialCache(ctx context.Context, accountID uint64, column, value string, limit int) error {
+	if accountID == 0 || len(value) > limit {
+		return repository.ErrInvalidRecord
+	}
+	return mapError(r.db.db.WithContext(ctx).Model(&accountCredentialModel{}).
+		Where("account_id = ? AND account_id IN (?)", accountID,
+			r.db.db.Model(&accountModel{}).Select("id").Where("provider = ?", account.ProviderConsole)).
+		Update(column, value).Error)
+}
+
 // UpdateBuildBotFlagSources persists a bounded backfill batch transactionally.
 func (r *AccountRepository) UpdateBuildBotFlagSources(ctx context.Context, values []repository.BuildBotFlagSourceUpdate) error {
 	if len(values) == 0 {
@@ -1357,12 +1378,22 @@ func providerSourceLookupKey(providerValue, sourceKey string) string {
 func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existing *accountModel) (repository.AccountUpsertResult, accountModel, error) {
 	row := fromAccountDomain(value)
 	if existing != nil {
-		if value.EncryptedCloudflareCookie == "" {
+		if value.EncryptedCloudflareCookie == "" || value.ConsoleAPIKeyID == "" || value.EncryptedConsoleWorkOSSession == "" {
 			var storedCredential accountCredentialModel
 			if err := tx.Where("account_id = ?", existing.ID).First(&storedCredential).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 				return repository.AccountUpsertResult{}, accountModel{}, err
 			}
-			value.EncryptedCloudflareCookie = storedCredential.EncryptedCloudflareCookie
+			if value.EncryptedCloudflareCookie == "" {
+				value.EncryptedCloudflareCookie = storedCredential.EncryptedCloudflareCookie
+			}
+			// Imports never carry the Console caches; keep the derived values
+			// so a re-import does not force another key read and WorkOS login.
+			if value.ConsoleAPIKeyID == "" {
+				value.ConsoleAPIKeyID = storedCredential.ConsoleAPIKeyID
+			}
+			if value.EncryptedConsoleWorkOSSession == "" {
+				value.EncryptedConsoleWorkOSSession = storedCredential.EncryptedConsoleWorkOSSession
+			}
 		}
 		row.ID = existing.ID
 		row.CreatedAt = existing.CreatedAt
@@ -1794,6 +1825,14 @@ func (r *AccountRepository) DeleteMany(ctx context.Context, ids []uint64) (int64
 		r.notifyInvalidation(ctx, repository.InvalidationEvent{Kind: repository.InvalidationAccountStateChanged})
 	}
 	return deleted, err
+}
+
+func (r *AccountRepository) ListReauthAccountIDsByLastError(ctx context.Context, provider account.Provider, lastError string) ([]uint64, error) {
+	var ids []uint64
+	err := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("provider = ? AND auth_status = ? AND last_error = ?", provider, account.AuthStatusReauthRequired, lastError).
+		Order("id ASC").Pluck("id", &ids).Error
+	return ids, mapError(err)
 }
 
 func (r *AccountRepository) ListAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, error) {

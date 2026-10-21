@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/chenyme/grok2api/backend/internal/domain/account"
@@ -28,6 +29,12 @@ type importEntry struct {
 	SSOToken          string `json:"sso_token"`
 	Token             string `json:"token"`
 	CloudflareCookies string `json:"cloudflare_cookies"`
+	// Optional caches; both are rebuilt from the SSO when absent or stale.
+	APIKeyID           string `json:"api_key_id,omitempty"`
+	XAPIKey            string `json:"x_apikey,omitempty"`
+	WorkOSSessionToken string `json:"workos_session_token,omitempty"`
+	WorkOSXAIOrigin    string `json:"workos_xai_origin,omitempty"`
+	WorkOSID           string `json:"workos_id,omitempty"`
 }
 
 func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
@@ -69,6 +76,7 @@ func parseImportedCredentials(data []byte) ([]provider.CredentialSeed, error) {
 		seed.Email = strings.TrimSpace(entry.Email)
 		seed.UserID = strings.TrimSpace(entry.UserID)
 		seed.CloudflareCookies = entry.CloudflareCookies
+		applyConsoleCaches(&seed, firstNonEmpty(entry.APIKeyID, entry.XAPIKey), entry.WorkOSSessionToken, entry.WorkOSXAIOrigin, entry.WorkOSID)
 		result = append(result, seed)
 	}
 	return result, nil
@@ -79,6 +87,24 @@ func parsePlainTextCredentials(value string) ([]provider.CredentialSeed, error) 
 	seen := make(map[string]struct{}, len(lines))
 	result := make([]provider.CredentialSeed, 0, len(lines))
 	for index, line := range lines {
+		if strings.Contains(line, consoleFieldSeparator) {
+			seed, err := parseSeparatedConsoleLine(line, index+1)
+			if err != nil {
+				return nil, err
+			}
+			if seed == nil {
+				continue
+			}
+			if _, exists := seen[seed.AccessToken]; exists {
+				continue
+			}
+			seen[seed.AccessToken] = struct{}{}
+			result = append(result, *seed)
+			if len(result) > maxImportAccounts {
+				return nil, provider.ErrCredentialLimit
+			}
+			continue
+		}
 		token := sanitizeSSOToken(line)
 		if token == "" {
 			continue
@@ -99,6 +125,62 @@ func parsePlainTextCredentials(value string) ([]provider.CredentialSeed, error) 
 		return nil, fmt.Errorf("文本中没有有效的 sso token")
 	}
 	return result, nil
+}
+
+// consoleFieldSeparator delimits the registration-tool line format:
+//
+//	email----password----sso[----workosSession----workosXaiOrigin----workosId[----x-apikey]]
+//
+// The password is never read or stored: nothing on the Console path uses it.
+const consoleFieldSeparator = "----"
+
+func parseSeparatedConsoleLine(line string, lineNumber int) (*provider.CredentialSeed, error) {
+	fields := strings.Split(strings.TrimSpace(line), consoleFieldSeparator)
+	for index := range fields {
+		fields[index] = strings.TrimSpace(fields[index])
+	}
+	if len(fields) < 3 {
+		return nil, fmt.Errorf("第 %d 行格式无效：应为 邮箱----密码----sso[----workosSession----workosXaiOrigin----workosId----x-apikey]", lineNumber)
+	}
+	token := sanitizeSSOToken(fields[2])
+	if token == "" {
+		return nil, fmt.Errorf("第 %d 行缺少 sso", lineNumber)
+	}
+	if len(token) > maxSSOTokenBytes {
+		return nil, fmt.Errorf("第 %d 行的 sso token 超过 16 KiB", lineNumber)
+	}
+	field := func(index int) string {
+		if index < len(fields) {
+			return fields[index]
+		}
+		return ""
+	}
+	email := field(0)
+	name := email
+	if name == "" {
+		name = "Grok Console " + security.HashToken(token)[:8]
+	}
+	seed := credentialSeed(name, token)
+	seed.Email = email
+	applyConsoleCaches(&seed, field(6), field(3), field(4), field(5))
+	return &seed, nil
+}
+
+var consoleImportAPIKeyPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// applyConsoleCaches accepts only well-formed caches: an apiKeyId UUID and a
+// complete WorkOS triple. Anything else is dropped and re-derived from the SSO.
+func applyConsoleCaches(seed *provider.CredentialSeed, apiKeyID, sessionToken, xaiOrigin, workosID string) {
+	if apiKeyID = strings.TrimSpace(apiKeyID); consoleImportAPIKeyPattern.MatchString(apiKeyID) {
+		seed.ConsoleAPIKeyID = strings.ToLower(apiKeyID)
+	}
+	session := workosSession{SessionToken: strings.TrimSpace(sessionToken), XAIOrigin: strings.TrimSpace(xaiOrigin), WorkOSID: strings.TrimSpace(workosID)}
+	if !session.complete() {
+		return
+	}
+	if data, err := json.Marshal(session); err == nil && len(data) <= workosSessionMaxBytes {
+		seed.ConsoleWorkOSSession = string(data)
+	}
 }
 
 func credentialSeed(name, token string) provider.CredentialSeed {

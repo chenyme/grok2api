@@ -26,6 +26,14 @@ func IsDefinitiveAccountBlockBody(body []byte) bool {
 	return IsDefinitiveAccountBlockText(strings.Join(values, " "))
 }
 
+// IsConsoleNoCreditsText reports Console's 403 "permission-denied: no credits
+// or licenses yet": the account was never granted a credit pool (accounts
+// created before the Grok/Cursor unification). Unlike the 402 spending-limit
+// it never recovers on a reset, so the account must leave the pool.
+func IsConsoleNoCreditsText(value string) bool {
+	return strings.Contains(strings.ToLower(value), "no credits or licenses")
+}
+
 func IsDefinitiveAccountBlockText(value string) bool {
 	value = strings.ToLower(value)
 	return strings.Contains(value, "blocked-user") || strings.Contains(value, "user is blocked")

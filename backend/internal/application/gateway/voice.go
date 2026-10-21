@@ -428,6 +428,15 @@ func (s *Service) executeVoice(
 			lease.Release()
 			continue
 		}
+		if s.retireConsoleNoCreditsAccount(ctx, requestID, credential, response) {
+			_, _ = readRetryableBody(response.Body)
+			failedCredential := credential
+			lastCredentialFailure = &failedCredential
+			lastCredentialError = fmt.Errorf("%s", consoleNoCreditsReason)
+			response = nil
+			lease.Release()
+			continue
+		}
 		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && !responseRequestScoped && attempt == 0 && attemptPolicy.hasNext(attempt) {
 			_, _ = readRetryableBody(response.Body)
 			delete(excluded, credential.ID)

@@ -263,6 +263,15 @@ func (s *Service) executeImage(
 			lease.Release()
 			continue
 		}
+		if s.retireConsoleNoCreditsAccount(ctx, requestID, credential, response) {
+			_, _ = readRetryableBody(response.Body)
+			failedCredential := credential
+			lastCredentialFailure = &failedCredential
+			lastCredentialError = fmt.Errorf("%s", consoleNoCreditsReason)
+			response = nil
+			lease.Release()
+			continue
+		}
 		if s.providers.RetryForbiddenAsEgress(credential.Provider) && response.StatusCode == http.StatusForbidden && attempt == 0 && attemptPolicy.hasNext(attempt) {
 			_, _ = readRetryableBody(response.Body)
 			delete(excluded, credential.ID)

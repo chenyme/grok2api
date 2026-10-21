@@ -2,12 +2,15 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
@@ -230,5 +233,42 @@ func TestSSOBuildConversionSanitizesTokenAndURLs(t *testing.T) {
 		if safeXAIURL(value) {
 			t.Fatalf("unsafe URL accepted: %s", value)
 		}
+	}
+}
+
+// TestConsentTokenBoundByUserCode mirrors the live consent page (2026-10-20):
+// self-closing hidden inputs and a dc claim that is a server-side UUID.
+func TestConsentTokenBoundByUserCode(t *testing.T) {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"typ":"consent+jwt","alg":"ES256","kid":"k"}`))
+	exp := time.Now().Add(5 * time.Minute).Unix()
+	claims := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"dc":"0b7c6f0e-1111-4222-8333-444455556666","aud":"consent","exp":%d}`, exp)))
+	token := header + "." + claims + ".sig"
+	page := []byte(`<form><input type="hidden" name="user_code" value="5C3A-S5Y7"/><input type="hidden" name="principal_type" value="User"/><input type="hidden" name="consent_token" value="` + token + `"/></form>`)
+	if got := extractConsentToken(page); got != token {
+		t.Fatalf("self-closing consent_token = %q", got)
+	}
+	pageUserCode := extractConsentInput(page, "user_code")
+	if !consentTokenMatchesUserCode(token, pageUserCode, "5C3A-S5Y7", time.Now()) {
+		t.Fatal("consent token bound to our user_code was rejected")
+	}
+	if consentTokenMatchesUserCode(token, pageUserCode, "ZZZZ-ZZZZ", time.Now()) {
+		t.Fatal("consent page for another user_code was accepted")
+	}
+	if consentTokenMatchesUserCode(token, pageUserCode, "5C3A-S5Y7", time.Now().Add(time.Hour)) {
+		t.Fatal("expired consent token was accepted")
+	}
+	plain := base64.RawURLEncoding.EncodeToString([]byte(`{"typ":"JWT","alg":"ES256"}`)) + "." + claims + ".sig"
+	if consentTokenMatchesUserCode(plain, pageUserCode, "5C3A-S5Y7", time.Now()) {
+		t.Fatal("non-consent JWT was accepted")
+	}
+}
+
+func TestBrowserVerificationRequiredBody(t *testing.T) {
+	live := []byte(`<h1>Request could not be verified</h1><p>We could not verify this browser. Allow scripts and turn off ad or tracker blockers for this site, then enter the code again.</p>`)
+	if !isBrowserVerificationRequired(live) {
+		t.Fatal("live Castle rejection not recognized")
+	}
+	if isBrowserVerificationRequired([]byte(`{"error":"access_denied"}`)) {
+		t.Fatal("ordinary 403 misclassified as browser verification")
 	}
 }

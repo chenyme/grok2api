@@ -457,3 +457,17 @@ func TestTerminalRequestForbiddenRequiresExplicitRequestSignal(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPUpstreamFailureClassifiesConsoleNoCredits(t *testing.T) {
+	failure := newHTTPUpstreamFailure(http.StatusForbidden, []byte(`{"code":"The caller does not have permission to execute the specified operation","error":"permission-denied: no credits or licenses yet"}`), 1, "console")
+	if !failure.NoCreditsOrLicenses || !failure.AccountScoped || failure.AccountBlocked || failure.RequestScopedForbidden {
+		t.Fatalf("failure = %#v", failure)
+	}
+	if !isConsoleNoCreditsFailure(accountdomain.ProviderConsole, failure) || isConsoleNoCreditsFailure(accountdomain.ProviderBuild, failure) {
+		t.Fatal("no-credits retirement must be Console-only")
+	}
+	spending := newHTTPUpstreamFailure(http.StatusPaymentRequired, []byte(`{"code":"personal-team-blocked:spending-limit","error":"spending limit reached"}`), 1, "console")
+	if spending.NoCreditsOrLicenses || !spending.QuotaExhausted || !spending.SpendingLimitBlocked {
+		t.Fatalf("spending = %#v", spending)
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -78,7 +79,8 @@ const (
 	quotaRefreshSharedPoll                        = time.Second
 	quotaRefreshBackoffBase                       = time.Second
 	quotaRefreshBackoffMax                        = time.Minute
-	consoleQuotaRefreshMinInterval                = 30 * time.Second
+	// usage-status lags execution by ~45s; sampling faster only re-reads stale values.
+	consoleQuotaRefreshMinInterval                = 60 * time.Second
 	unknownRemoteQuotaProbeDelay    time.Duration = 5 * time.Minute
 	consolePredictedQuotaProbeDelay time.Duration = 24 * time.Hour
 	observedModelPersistInterval                  = 30 * time.Minute
@@ -442,9 +444,12 @@ type Service struct {
 	autoCleanRevision      uint64
 	autoCleanWake          chan struct{}
 	excludeBuildBotFlagged bool
-	buildBotFlagCache      *resultcache.Cache[string, []uint64]
-	logger                 *slog.Logger
-	now                    func() time.Time
+	// autoDeleteConsoleUnlinked deletes Console accounts once they are marked
+	// with LastErrorConsoleUnlinked instead of keeping them as reauthRequired.
+	autoDeleteConsoleUnlinked atomic.Bool
+	buildBotFlagCache         *resultcache.Cache[string, []uint64]
+	logger                    *slog.Logger
+	now                       func() time.Time
 }
 
 func (s *Service) SetQuotaRecoveryQueue(queue repository.QuotaRecoveryQueue) {
@@ -2383,7 +2388,59 @@ func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason stri
 	if s.sticky != nil {
 		_ = s.sticky.DeleteByAccount(ctx, id)
 	}
+	if isConsoleUnlinkedAccount(value) && s.autoDeleteConsoleUnlinked.Load() {
+		s.deleteConsoleUnlinkedAccount(ctx, id)
+	}
 	return nil
+}
+
+// ssoRejectedReason keeps the generic SSO rejection text except for Console
+// accounts proven unlinked from Cursor, whose marker drives optional deletion.
+func ssoRejectedReason(value accountdomain.Credential, err error) string {
+	if value.Provider == accountdomain.ProviderConsole && errors.Is(err, provider.ErrConsoleUnlinked) {
+		return accountdomain.LastErrorConsoleUnlinked
+	}
+	return fmt.Sprintf("%s SSO credential rejected", value.Provider)
+}
+
+func isConsoleUnlinkedAccount(value accountdomain.Credential) bool {
+	return value.Provider == accountdomain.ProviderConsole && value.AuthStatus == accountdomain.AuthStatusReauthRequired && value.LastError == accountdomain.LastErrorConsoleUnlinked
+}
+
+// UpdateAutoDeleteConsoleUnlinked hot-updates deletion of unlinked Console
+// accounts. Turning it on also sweeps accounts already marked earlier.
+func (s *Service) UpdateAutoDeleteConsoleUnlinked(enabled bool) {
+	if s.autoDeleteConsoleUnlinked.Swap(enabled) == enabled || !enabled {
+		return
+	}
+	go s.sweepConsoleUnlinkedAccounts(context.Background())
+}
+
+// deleteConsoleUnlinkedAccount removes only the Console row; linked Web/Build
+// accounts stay. A pending video job makes the delete fail closed and the
+// account simply remains reauthRequired.
+func (s *Service) deleteConsoleUnlinkedAccount(ctx context.Context, id uint64) {
+	deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), credentialStateWriteTimeout)
+	defer cancel()
+	if err := s.Delete(deleteCtx, id); err != nil && !errors.Is(err, ErrNotFound) {
+		s.logger.Warn("console_unlinked_account_delete_failed", "account_id", id, "error", err)
+		return
+	}
+	s.logger.Info("console_unlinked_account_deleted", "account_id", id)
+}
+
+func (s *Service) sweepConsoleUnlinkedAccounts(ctx context.Context) {
+	ids, err := s.accounts.ListReauthAccountIDsByLastError(ctx, accountdomain.ProviderConsole, accountdomain.LastErrorConsoleUnlinked)
+	if err != nil {
+		s.logger.Warn("console_unlinked_account_sweep_failed", "error", err)
+		return
+	}
+	for _, id := range ids {
+		if !s.autoDeleteConsoleUnlinked.Load() || ctx.Err() != nil {
+			return
+		}
+		s.deleteConsoleUnlinkedAccount(ctx, id)
+	}
 }
 
 // markSSOCredentialRejected 在上游明确返回 401 后可靠持久化失效状态。
@@ -2994,7 +3051,7 @@ func (s *Service) refreshQuota(ctx context.Context, id uint64) (quotaRefreshResu
 	snapshot, err := adapter.SyncQuota(ctx, value)
 	if err != nil {
 		if errors.Is(err, provider.ErrUnauthorized) {
-			err = errors.Join(err, s.markSSOCredentialRejected(ctx, value, fmt.Sprintf("%s SSO credential rejected", value.Provider)))
+			err = errors.Join(err, s.markSSOCredentialRejected(ctx, value, ssoRejectedReason(value, err)))
 		}
 		return quotaRefreshResult{}, err
 	}
@@ -3174,7 +3231,7 @@ func (s *Service) refreshQuotaGroup(ctx context.Context, id uint64, group string
 	snapshot, err := adapter.SyncQuotaGroup(ctx, value, group)
 	if err != nil {
 		if errors.Is(err, provider.ErrUnauthorized) {
-			err = errors.Join(err, s.markSSOCredentialRejected(ctx, value, fmt.Sprintf("%s SSO credential rejected", value.Provider)))
+			err = errors.Join(err, s.markSSOCredentialRejected(ctx, value, ssoRejectedReason(value, err)))
 		}
 		return quotaRefreshResult{}, err
 	}
@@ -3229,7 +3286,7 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	}
 	if err != nil {
 		if errors.Is(err, provider.ErrUnauthorized) {
-			err = errors.Join(err, s.markSSOCredentialRejected(ctx, value, fmt.Sprintf("%s SSO credential rejected", value.Provider)))
+			err = errors.Join(err, s.markSSOCredentialRejected(ctx, value, ssoRejectedReason(value, err)))
 		}
 		return quotaRefreshResult{}, err
 	}
@@ -3561,10 +3618,14 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		}
 		cancel()
 		if refreshErr != nil || !acquired {
-			if refreshErr != nil && !errors.Is(refreshErr, context.Canceled) {
+			if errors.Is(refreshErr, provider.ErrEgressBlocked) {
+				// The adapter already logged the egress block once; every
+				// account behind it waits for the shared cool-down.
+				s.logger.Debug("quota_refresh_egress_blocked", "account_id", request.accountID, "mode", refreshMode, "retry_after", provider.ErrorRetryAfter(refreshErr))
+			} else if refreshErr != nil && !errors.Is(refreshErr, context.Canceled) {
 				s.logger.Warn("quota_refresh_failed", "account_id", request.accountID, "mode", refreshMode, "error", refreshErr)
 			}
-			s.deferQuotaRefresh(request.key)
+			s.deferQuotaRefreshAfter(request.key, provider.ErrorRetryAfter(refreshErr))
 			perfmetrics.Default.Add("quota_refresh_events", perfmetrics.Labels{Subsystem: "quota", Stage: "refresh", Outcome: "retry"}, 1)
 			return
 		}
@@ -3637,12 +3698,18 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 }
 
 func (s *Service) deferQuotaRefresh(key string) {
+	s.deferQuotaRefreshAfter(key, 0)
+}
+
+// deferQuotaRefreshAfter backs off like deferQuotaRefresh but never retries
+// before an upstream- or adapter-provided minimum delay.
+func (s *Service) deferQuotaRefreshAfter(key string, minimum time.Duration) {
 	s.quotaRefreshMu.Lock()
 	if state := s.quotaRefreshes[key]; state != nil {
 		state.running = false
 		state.pending = true
 		state.failures++
-		state.nextAttemptAt = s.now().UTC().Add(quotaRefreshRetryDelay(state.failures))
+		state.nextAttemptAt = s.now().UTC().Add(max(quotaRefreshRetryDelay(state.failures), minimum))
 	}
 	s.quotaRefreshMu.Unlock()
 	s.wakeQuotaRefreshRecovery()
@@ -4639,6 +4706,14 @@ func (s *Service) credentialFromSeed(seed provider.CredentialSeed) (accountdomai
 	}
 	value := accountdomain.Credential{Provider: providerValue, AuthType: authType, WebTier: seed.WebTier, Name: seed.Name, Email: seed.Email, UserID: seed.UserID, TeamID: seed.TeamID, SourceKey: sourceKey, OIDCClientID: seed.OIDCClientID, EncryptedAccessToken: accessEncrypted, EncryptedRefreshToken: refreshEncrypted, EncryptedCloudflareCookie: cloudflareEncrypted, ExpiresAt: seed.ExpiresAt, Enabled: true, AuthStatus: accountdomain.AuthStatusActive, Priority: accountdomain.DefaultPriority, MaxConcurrent: accountdomain.DefaultMaxConcurrent, MinimumRemaining: accountdomain.DefaultMinimumRemaining, WebNSFWEnabledAt: seed.WebNSFWEnabledAt, WebTermsAcceptedAt: seed.WebTermsAcceptedAt, WebTermsAcceptedVersion: seed.WebTermsAcceptedVersion, WebBirthDateSetAt: seed.WebBirthDateSetAt}
 	value.BuildBotFlagSource = s.credentialMetadata(value).BuildBotFlagSource
+	if providerValue == accountdomain.ProviderConsole {
+		value.ConsoleAPIKeyID = strings.TrimSpace(seed.ConsoleAPIKeyID)
+		if session := strings.TrimSpace(seed.ConsoleWorkOSSession); session != "" {
+			if value.EncryptedConsoleWorkOSSession, err = s.cipher.Encrypt(session); err != nil {
+				return accountdomain.Credential{}, err
+			}
+		}
+	}
 	if providerValue == accountdomain.ProviderWeb && strings.TrimSpace(seed.AccessToken) != "" {
 		value.EgressIdentity = "sso_" + security.HashToken(seed.AccessToken)[:32]
 	}
