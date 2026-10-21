@@ -2,8 +2,9 @@ package console
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -14,8 +15,10 @@ import (
 )
 
 const (
-	consoleQuotaTimeout                = 30 * time.Second
-	consolePredictedChatRecoveryWindow = 24 * time.Hour
+	consoleQuotaTimeout = 45 * time.Second
+	// consoleWeeklyWindow is INCLUDED_USAGE_PERIOD_WEEKLY; the exact reset
+	// instant comes from resetsAt and is aligned to account creation.
+	consoleWeeklyWindow = 7 * 24 * time.Hour
 )
 
 func (a *Adapter) SyncQuota(ctx context.Context, credential account.Credential) (provider.QuotaSnapshot, error) {
@@ -42,6 +45,13 @@ func (a *Adapter) SyncQuotaMode(ctx context.Context, credential account.Credenti
 	return account.QuotaWindow{}, fmt.Errorf("Console usage 响应缺少 %s 额度", consoleQuotaKind(mode))
 }
 
+// syncConsoleQuotas reads the weekly included-usage pool from the grok.com
+// dashboard. The legacy DPoP /v1/usage endpoint reports limit 0 for every
+// free account and says nothing about whether the account can be called.
+//
+// Chat, image and video all draw on the same cents budget, so the three
+// Console modes mirror one snapshot; routing, recovery and display keep
+// their per-mode shape while reading identical values.
 func (a *Adapter) syncConsoleQuotas(ctx context.Context, credential account.Credential) ([]account.QuotaWindow, time.Time, error) {
 	ssoToken, err := a.cipher.Decrypt(credential.EncryptedAccessToken)
 	if err != nil {
@@ -49,94 +59,67 @@ func (a *Adapter) syncConsoleQuotas(ctx context.Context, credential account.Cred
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, consoleQuotaTimeout)
 	defer cancel()
-	lease, err := a.egress.AcquireCredential(requestCtx, egressdomain.ScopeConsole, credential)
+	// The dashboard is served by grok.com, so it shares the Web scope's exit,
+	// browser fingerprint and Clearance, exactly like the Session identity sync.
+	lease, err := a.egress.AcquireCredential(requestCtx, egressdomain.ScopeWeb, credential)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
 	defer lease.Release()
-	endpoint := consoleV1Endpoint(a.config().BaseURL, "/usage")
-	response, err := a.doDPoPRequest(requestCtx, credential, ssoToken, lease, http.MethodGet, endpoint, nil, "application/json")
+	if remaining := a.breaker.blocked(lease.NodeID); remaining > 0 {
+		return nil, time.Time{}, &egressBlockedError{retryAfter: remaining}
+	}
+	usage, err := a.fetchConsoleUsage(requestCtx, credential, ssoToken, lease)
 	if err != nil {
-		a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, 0, err)
+		if errors.Is(err, errCloudflareRejected) {
+			delay, opened := a.breaker.trip(lease.NodeID)
+			if opened {
+				a.logger().Warn("console_quota_egress_blocked", "egress_node_id", lease.NodeID, "pause", delay, "error", err)
+			}
+			return nil, time.Time{}, &egressBlockedError{retryAfter: delay}
+		}
+		if !errors.Is(err, provider.ErrUnauthorized) {
+			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeWeb, lease.NodeID, 0, err)
+		}
 		return nil, time.Time{}, err
 	}
-	data, truncated, readErr := provider.ReadDiagnosticBody(response.Body)
-	_ = response.Body.Close()
-	if readErr != nil {
-		return nil, time.Time{}, readErr
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		if response.StatusCode == http.StatusUnauthorized ||
-			(response.StatusCode == http.StatusForbidden && provider.IsDefinitiveAccountBlockBody(data)) {
-			return nil, time.Time{}, fmt.Errorf("%w: Console usage rejected", provider.ErrUnauthorized)
-		}
-		dpopRequired := response.StatusCode == http.StatusForbidden && provider.IsDPoPProofRequiredBody(data)
-		if response.StatusCode == http.StatusForbidden && shouldInvalidateConsoleClearance(data) {
-			lease.InvalidateClearance()
-		}
-		if !dpopRequired {
-			a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
-		}
-		suffix := ""
-		if truncated {
-			suffix = " (响应已截断)"
-		}
-		return nil, time.Time{}, fmt.Errorf("Console usage 接口返回 %d%s", response.StatusCode, suffix)
-	}
-	a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeConsole, lease.NodeID, response.StatusCode, nil)
-	var payload struct {
-		Quotas []struct {
-			Kind           string `json:"kind"`
-			Limit          int    `json:"limit"`
-			Used           int    `json:"used"`
-			Remaining      int    `json:"remaining"`
-			LastConsumedAt int64  `json:"last_consumed_at"`
-		} `json:"quotas"`
-	}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, time.Time{}, fmt.Errorf("解析 Console usage: %w", err)
-	}
+	a.breaker.reset(lease.NodeID)
+	a.egress.FeedbackForScope(context.WithoutCancel(ctx), egressdomain.ScopeWeb, lease.NodeID, http.StatusOK, nil)
 	now := time.Now().UTC()
-	byMode := make(map[string]account.QuotaWindow, 3)
-	for _, quota := range payload.Quotas {
-		mode := consoleQuotaMode(quota.Kind)
-		if mode == "" {
-			continue
-		}
-		if quota.Limit < 0 || quota.Used < 0 || quota.Remaining < 0 || quota.Remaining > quota.Limit {
-			return nil, time.Time{}, fmt.Errorf("Console %s 额度响应无效", consoleQuotaKind(mode))
-		}
-		usagePercent := 0.0
-		if quota.Limit > 0 {
-			usagePercent = float64(quota.Limit-quota.Remaining) / float64(quota.Limit) * 100
-		}
-		windowSeconds := 0
-		var resetAt *time.Time
-		if mode == QuotaMode {
-			windowSeconds = int(consolePredictedChatRecoveryWindow / time.Second)
-			if quota.Remaining == 0 {
-				predicted := now.Add(consolePredictedChatRecoveryWindow)
-				resetAt = &predicted
-			}
-		}
-		byMode[mode] = account.QuotaWindow{
-			AccountID: credential.ID, Mode: mode, Remaining: quota.Remaining, Total: quota.Limit,
-			UsagePercent: usagePercent, WindowSeconds: windowSeconds, ResetAt: resetAt,
-			SyncedAt: &now, Source: account.QuotaSourceUpstream, UpdatedAt: now,
-		}
+	return consoleQuotaWindows(credential.ID, usage, now), now, nil
+}
+
+func consoleQuotaWindows(accountID uint64, usage consoleUsageStatus, now time.Time) []account.QuotaWindow {
+	remaining := usage.BudgetCents - usage.UsedCents
+	if remaining < 0 {
+		// The upstream records cost after execution, so one large call can
+		// overshoot the weekly budget several times.
+		remaining = 0
 	}
-	for _, mode := range []string{QuotaMode, QuotaModeImage, QuotaModeVideo} {
-		if _, ok := byMode[mode]; !ok {
-			return nil, time.Time{}, fmt.Errorf("Console usage 响应缺少 %s 额度", consoleQuotaKind(mode))
-		}
+	usagePercent := 100.0
+	if usage.BudgetCents > 0 {
+		usagePercent = math.Min(100, float64(usage.UsedCents)/float64(usage.BudgetCents)*100)
+	}
+	var resetAt *time.Time
+	if usage.ResetsAt != nil {
+		value := usage.ResetsAt.UTC()
+		resetAt = &value
 	}
 	windows := make([]account.QuotaWindow, 0, 3)
 	for _, mode := range []string{QuotaMode, QuotaModeImage, QuotaModeVideo} {
-		if window, ok := byMode[mode]; ok {
-			windows = append(windows, window)
+		var modeResetAt *time.Time
+		if resetAt != nil {
+			value := *resetAt
+			modeResetAt = &value
 		}
+		syncedAt := now
+		windows = append(windows, account.QuotaWindow{
+			AccountID: accountID, Mode: mode, Remaining: remaining, Total: usage.BudgetCents,
+			UsagePercent: usagePercent, WindowSeconds: int(consoleWeeklyWindow / time.Second), ResetAt: modeResetAt,
+			SyncedAt: &syncedAt, Source: account.QuotaSourceUpstream, UpdatedAt: now,
+		})
 	}
-	return windows, now, nil
+	return windows
 }
 
 func isConsoleQuotaMode(mode string) bool {

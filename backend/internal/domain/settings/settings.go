@@ -157,6 +157,8 @@ type AccountsConfig struct {
 	// ExcludeBuildBotFlaggedFromScheduling 为 true 时，bot_flag_source/bfs∈{1,2} 的 Build 账号不参与调度。
 	// 仅影响 ProviderBuild 选号；关联 Web/Console 账号调度不受影响。
 	ExcludeBuildBotFlaggedFromScheduling bool
+	// AutoDeleteConsoleUnlinked 为 true 时，删除被判定为未与 Cursor 关联（无 Console 额度）的 grok_console 老号；默认 false 仅标记失效。
+	AutoDeleteConsoleUnlinked bool
 	// AutoCleanReauthEnabled 为 true 时，周期性删除已标记 reauthRequired 且超过 minAge 的账号。
 	AutoCleanReauthEnabled bool
 	// AutoCleanReauthInterval 自动清理扫描间隔。

@@ -949,6 +949,13 @@ func TestGatewaySSOBlockedForbiddenMarksInvalidAndSwitchesAccount(t *testing.T) 
 	}
 }
 
+// Console accounts created before the Grok/Cursor unification answer every
+// call with 403 "no credits or licenses yet". That is permanent, so the
+// account must be retired instead of being retried as an egress 403.
+func TestGatewayConsoleNoCreditsForbiddenMarksInvalidAndSwitchesAccount(t *testing.T) {
+	testGatewaySSOFailureMarksInvalidAndSwitchesAccount(t, account.ProviderConsole, http.StatusForbidden, `{"code":"The caller does not have permission to execute the specified operation","error":"permission-denied: no credits or licenses yet"}`)
+}
+
 func testGatewaySSOFailureMarksInvalidAndSwitchesAccount(t *testing.T, providerValue account.Provider, failureStatus int, failureBody string) {
 	t.Helper()
 	ctx := context.Background()

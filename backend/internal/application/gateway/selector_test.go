@@ -1956,7 +1956,9 @@ func TestConsoleRateLimitReconciliationUsesNonAccumulatingCooldown(t *testing.T)
 		{name: "quota confirmed available", status: http.StatusTooManyRequests, state: accountapp.RateLimitReconcileAvailable, wantFailureCount: 3},
 		{name: "another replica refreshing", status: http.StatusTooManyRequests, state: accountapp.RateLimitReconcileRefreshing, wantFailureCount: 3},
 		{name: "quota probe inconclusive", status: http.StatusTooManyRequests, state: accountapp.RateLimitReconcileInconclusive, err: errors.New("usage probe failed"), wantFailureCount: 3},
-		{name: "payment failure keeps hard penalty", status: http.StatusPaymentRequired, state: accountapp.RateLimitReconcileAvailable, wantFailureCount: 4},
+		// 402 spending-limit is authoritative even while the lagging usage panel
+		// still shows budget: pause via quota recovery, never grow failures.
+		{name: "payment failure pauses until probe", status: http.StatusPaymentRequired, state: accountapp.RateLimitReconcileAvailable, wantFailureCount: 3},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1998,16 +2000,22 @@ func TestConsoleRateLimitReconciliationUsesNonAccumulatingCooldown(t *testing.T)
 			if updated.FailureCount != test.wantFailureCount {
 				t.Fatalf("failure count = %d, want %d", updated.FailureCount, test.wantFailureCount)
 			}
+			if test.status == http.StatusPaymentRequired {
+				recovery, err := accounts.GetQuotaRecovery(ctx, credential.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if recovery.Status != account.QuotaRecoveryStatusExhausted || recovery.NextProbeAt == nil || recovery.NextProbeAt.Before(before.Add(23*time.Hour)) {
+					t.Fatalf("quota recovery = %#v", recovery)
+				}
+				return
+			}
 			if updated.CooldownUntil == nil {
 				t.Fatal("expected Console 429 cooldown")
 			}
 			cooldown := updated.CooldownUntil.Sub(before)
-			if test.status == http.StatusTooManyRequests {
-				if cooldown < 11*time.Second || cooldown > 13*time.Second {
-					t.Fatalf("cooldown = %s, want ~12s", cooldown)
-				}
-			} else if cooldown < 2*time.Minute {
-				t.Fatalf("hard failure cooldown = %s, want at least 2m", cooldown)
+			if cooldown < 11*time.Second || cooldown > 13*time.Second {
+				t.Fatalf("cooldown = %s, want ~12s", cooldown)
 			}
 		})
 	}

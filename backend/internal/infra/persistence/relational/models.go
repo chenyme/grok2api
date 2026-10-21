@@ -76,16 +76,19 @@ type accountCredentialModel struct {
 	ExpiresAt                       *time.Time
 	RefreshDueAt                    *time.Time
 	LastRefreshAt                   *time.Time
-	RefreshFailures                 int           `gorm:"not null;default:0;check:chk_account_credentials_refresh_failures,refresh_failures >= 0"`
-	RefreshUnclassifiedAuthFailures int           `gorm:"not null;default:0;check:chk_account_credentials_refresh_unclassified_auth_failures,refresh_unclassified_auth_failures >= 0"`
-	LastRefreshErrorStatus          int           `gorm:"not null;default:0;check:chk_account_credentials_refresh_error_status,last_refresh_error_status >= 0"`
-	LastRefreshError                string        `gorm:"size:100;not null;default:'';check:chk_account_credentials_refresh_error,length(last_refresh_error) <= 100"`
-	LastRefreshErrorMessage         string        `gorm:"size:512;not null;default:'';check:chk_account_credentials_refresh_error_message,length(last_refresh_error_message) <= 512"`
-	LastRefreshErrorResponse        string        `gorm:"size:4096;not null;default:'';check:chk_account_credentials_refresh_error_response,length(last_refresh_error_response) <= 4096"`
-	RefreshPermanent                bool          `gorm:"not null;default:false"`
-	BuildBotFlagSource              int           `gorm:"not null;default:0;check:chk_account_credentials_build_bot_flag_source,build_bot_flag_source IN (0,1,2)"`
-	UpdatedAt                       time.Time     `gorm:"not null"`
-	Account                         *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
+	RefreshFailures                 int    `gorm:"not null;default:0;check:chk_account_credentials_refresh_failures,refresh_failures >= 0"`
+	RefreshUnclassifiedAuthFailures int    `gorm:"not null;default:0;check:chk_account_credentials_refresh_unclassified_auth_failures,refresh_unclassified_auth_failures >= 0"`
+	LastRefreshErrorStatus          int    `gorm:"not null;default:0;check:chk_account_credentials_refresh_error_status,last_refresh_error_status >= 0"`
+	LastRefreshError                string `gorm:"size:100;not null;default:'';check:chk_account_credentials_refresh_error,length(last_refresh_error) <= 100"`
+	LastRefreshErrorMessage         string `gorm:"size:512;not null;default:'';check:chk_account_credentials_refresh_error_message,length(last_refresh_error_message) <= 512"`
+	LastRefreshErrorResponse        string `gorm:"size:4096;not null;default:'';check:chk_account_credentials_refresh_error_response,length(last_refresh_error_response) <= 4096"`
+	RefreshPermanent                bool   `gorm:"not null;default:false"`
+	BuildBotFlagSource              int    `gorm:"not null;default:0;check:chk_account_credentials_build_bot_flag_source,build_bot_flag_source IN (0,1,2)"`
+	// Console-only acceleration caches; both are rebuildable from the SSO.
+	ConsoleAPIKeyID               string        `gorm:"column:console_api_key_id;size:64;not null;default:'';check:chk_account_credentials_console_api_key_id,length(console_api_key_id) <= 64"`
+	EncryptedConsoleWorkOSSession string        `gorm:"column:encrypted_console_workos_session;type:text;not null;default:'';check:chk_account_credentials_console_workos_session,length(encrypted_console_workos_session) <= 65536"`
+	UpdatedAt                     time.Time     `gorm:"not null"`
+	Account                       *accountModel `gorm:"foreignKey:AccountID;references:ID;constraint:OnUpdate:CASCADE,OnDelete:CASCADE"`
 }
 
 func (accountCredentialModel) TableName() string { return "account_credentials" }

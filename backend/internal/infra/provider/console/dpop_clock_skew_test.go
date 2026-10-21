@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 )
 
 func TestDPoPClockSkewFromDateHeaderAlwaysUsable(t *testing.T) {
@@ -86,7 +88,7 @@ func TestFetchDPoPSessionStoresClockSkewFromDateHeader(t *testing.T) {
 				t.Fatalf("missing DPoP auth headers")
 			}
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(writer, `{"quotas":[{"kind":"chat","limit":10,"used":0,"remaining":10},{"kind":"image","limit":5,"used":0,"remaining":5},{"kind":"video","limit":2,"used":0,"remaining":2}]}`)
+			_, _ = io.WriteString(writer, `{}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -94,9 +96,16 @@ func TestFetchDPoPSessionStoresClockSkewFromDateHeader(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	adapter, credential := newConsoleTestAdapter(t, server.URL)
-	if _, err := adapter.SyncQuota(t.Context(), credential); err != nil {
-		t.Fatalf("SyncQuota: %v", err)
+	lease, err := adapter.egress.AcquireCredential(t.Context(), egressdomain.ScopeConsole, credential)
+	if err != nil {
+		t.Fatal(err)
 	}
+	response, err := adapter.doDPoPRequest(t.Context(), credential, "test-sso", lease, http.MethodGet, server.URL+"/v1/usage", nil, "application/json")
+	lease.Release()
+	if err != nil {
+		t.Fatalf("DPoP request: %v", err)
+	}
+	_ = response.Body.Close()
 
 	var sawSkew time.Duration
 	adapter.dpop.mu.Lock()

@@ -958,3 +958,34 @@ func TestUpdateRejectsInvalidBuildForbiddenCodes(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateAutoDeleteConsoleUnlinkedDefaultsOffAndRoundTrips(t *testing.T) {
+	cfg := testConfig(t)
+	repo := &runtimeSettingsRepositoryStub{}
+	var applied config.Config
+	service := NewService(cfg, time.Time{}, 0, repo, nil, func(next config.Config) { applied = next })
+	if service.Get().Config.Accounts.AutoDeleteConsoleUnlinked {
+		t.Fatal("auto-delete of unlinked Console accounts must default to off")
+	}
+	input := service.Get().Config
+	input.Accounts.AutoDeleteConsoleUnlinked = true
+	input.Accounts.AutoDeleteConsoleUnlinkedProvided = true
+	snapshot, err := service.Update(context.Background(), service.Get().Revision, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !applied.Accounts.AutoDeleteConsoleUnlinked || !snapshot.Config.Accounts.AutoDeleteConsoleUnlinked {
+		t.Fatalf("applied = %#v snapshot = %#v", applied.Accounts, snapshot.Config.Accounts)
+	}
+	// An older management client that omits the field must not reset it.
+	input = snapshot.Config
+	input.Accounts.AutoDeleteConsoleUnlinked = false
+	input.Accounts.AutoDeleteConsoleUnlinkedProvided = false
+	snapshot, err = service.Update(context.Background(), snapshot.Revision, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Config.Accounts.AutoDeleteConsoleUnlinked {
+		t.Fatal("omitted field reset the switch")
+	}
+}

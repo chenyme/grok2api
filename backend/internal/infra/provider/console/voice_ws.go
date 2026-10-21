@@ -58,6 +58,14 @@ func (a *Adapter) DialVoiceWebSocket(ctx context.Context, request provider.Voice
 		cleanup()
 		return nil, nil, err
 	}
+	apiKey, apiKeyErr := a.consoleAPIKey(requestCtx, request.Credential, token, lease, false)
+	if apiKeyErr != nil {
+		if requestCtx.Err() != nil {
+			cleanup()
+			return nil, nil, apiKeyErr
+		}
+		a.logger().Warn("console_api_key_resolve_failed", "account_id", request.Credential.ID, "error", apiKeyErr)
+	}
 	for attempt := 0; attempt < 2; attempt++ {
 		session, cacheKey, sessionErr := a.dpop.get(requestCtx, a, request.Credential, token, lease)
 		if sessionErr != nil {
@@ -81,6 +89,9 @@ func (a *Adapter) DialVoiceWebSocket(ctx context.Context, request provider.Voice
 		httpReq.Header.Set("Sec-Fetch-Site", "same-origin")
 		httpReq.Header.Set("Cache-Control", "no-cache")
 		httpReq.Header.Set("Pragma", "no-cache")
+		if apiKey != "" {
+			httpReq.Header.Set(consoleAPIKeyHeader, apiKey)
+		}
 		if requestErr := applyDPoPAuthorization(httpReq, session); requestErr != nil {
 			cleanup()
 			return nil, nil, requestErr

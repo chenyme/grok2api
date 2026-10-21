@@ -137,6 +137,8 @@ type AccountRepository interface {
 	DeleteAccountStatusBatchWithLinked(ctx context.Context, provider account.Provider, status string, now time.Time, afterID uint64, limit int, targets []account.Provider) (LinkedDeleteOutcome, int, uint64, error)
 	// CountCleanupWithLinked returns root and linked-peer counts using SQL COUNT queries only.
 	CountCleanupWithLinked(ctx context.Context, provider account.Provider, statuses []string, now time.Time, targets []account.Provider) (CleanupPreview, error)
+	// ListReauthAccountIDsByLastError 列出指定 Provider 下 last_error 精确匹配的 reauthRequired 账号。
+	ListReauthAccountIDsByLastError(ctx context.Context, provider account.Provider, lastError string) ([]uint64, error)
 	// ListAutoCleanReauthCandidates 以 ID 游标列出达到清理年龄的 reauthRequired 账号。
 	ListAutoCleanReauthCandidates(ctx context.Context, markedBefore time.Time, includeDisabled bool, afterID uint64, limit int) ([]uint64, error)
 	// DeleteAutoCleanReauthCandidates 在事务内重新校验状态与年龄并跳过活动视频任务，返回实际删除 ID。

@@ -519,6 +519,13 @@ export function SettingsPage() {
                     </div>
                   )} />
                 </SettingsField>
+                <SettingsField controlId="accounts-auto-delete-console-unlinked" label={t("settings.accounts.autoDeleteConsoleUnlinked")} description={t("settings.accounts.autoDeleteConsoleUnlinkedHelp")}>
+                  <Controller control={form.control} name="accounts.autoDeleteConsoleUnlinked" render={({ field }) => (
+                    <div className="flex h-9 items-center">
+                      <Switch id="accounts-auto-delete-console-unlinked" checked={Boolean(field.value)} onCheckedChange={field.onChange} />
+                    </div>
+                  )} />
+                </SettingsField>
                 <SettingsField controlId="accounts-auto-clean-reauth-interval" label={t("settings.accounts.autoCleanReauthInterval")} description={t("settings.accounts.autoCleanReauthIntervalHelp")} error={form.formState.errors.accounts?.autoCleanReauthInterval?.message}>
                   <Controller control={form.control} name="accounts.autoCleanReauthInterval" render={({ field }) => (
                     <DurationInput id="accounts-auto-clean-reauth-interval" value={field.value} onChange={field.onChange} disabled={!autoCleanEnabled} />

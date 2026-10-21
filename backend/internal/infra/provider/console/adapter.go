@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,17 +33,50 @@ type Config struct {
 }
 
 type Adapter struct {
-	mu     sync.RWMutex
-	cfg    Config
-	egress *infraegress.Manager
-	cipher *security.Cipher
-	assets provider.ImageAssetStore
-	dpop   *dpopSessionManager
+	mu      sync.RWMutex
+	cfg     Config
+	egress  *infraegress.Manager
+	cipher  *security.Cipher
+	assets  provider.ImageAssetStore
+	dpop    *dpopSessionManager
+	apiKeys *consoleAPIKeyCache
+	breaker *egressBreaker
+	store   CredentialCacheStore
+	log     *slog.Logger
 }
 
 func NewAdapter(cfg Config, egress *infraegress.Manager, cipher *security.Cipher, assets provider.ImageAssetStore) *Adapter {
 	cfg = normalizedConfig(cfg)
-	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, assets: assets, dpop: newDPoPSessionManager()}
+	return &Adapter{cfg: cfg, egress: egress, cipher: cipher, assets: assets, dpop: newDPoPSessionManager(), apiKeys: newConsoleAPIKeyCache(), breaker: newEgressBreaker()}
+}
+
+func (a *Adapter) SetLogger(logger *slog.Logger) {
+	a.mu.Lock()
+	a.log = logger
+	a.mu.Unlock()
+}
+
+// SetCredentialCacheStore wires persistence for the apiKeyId and WorkOS
+// session caches. Without it both are re-derived from the SSO on demand.
+func (a *Adapter) SetCredentialCacheStore(store CredentialCacheStore) {
+	a.mu.Lock()
+	a.store = store
+	a.mu.Unlock()
+}
+
+func (a *Adapter) cacheStore() CredentialCacheStore {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.store
+}
+
+func (a *Adapter) logger() *slog.Logger {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.log != nil {
+		return a.log
+	}
+	return slog.Default()
 }
 
 func normalizedConfig(cfg Config) Config {

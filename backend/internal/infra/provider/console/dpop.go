@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -310,7 +311,48 @@ func (a *Adapter) doDPoPRequestWithContentType(
 	contentType string,
 	accept string,
 ) (*http.Response, error) {
-	for attempt := 0; attempt < 2; attempt++ {
+	return a.doDPoPRequestWithOptions(ctx, credential, ssoToken, lease, method, endpoint, body, dpopRequestOptions{contentType: contentType, accept: accept})
+}
+
+type dpopRequestOptions struct {
+	contentType string
+	accept      string
+	referer     string
+	// skipAPIKey disables x-apikey injection for Console management RPCs such
+	// as CreateApiKey, which run before any key exists.
+	skipAPIKey bool
+}
+
+func (a *Adapter) doDPoPRequestWithOptions(
+	ctx context.Context,
+	credential account.Credential,
+	ssoToken string,
+	lease *infraegress.Lease,
+	method, endpoint string,
+	body []byte,
+	options dpopRequestOptions,
+) (*http.Response, error) {
+	apiKey := ""
+	useAPIKey := !options.skipAPIKey && requiresConsoleAPIKey(endpoint)
+	// apiKeyRepaired allows exactly one key re-resolution per request after the
+	// upstream rejects the cached key.
+	apiKeyRepaired := false
+	if useAPIKey {
+		value, err := a.consoleAPIKey(ctx, credential, ssoToken, lease, false)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, err
+			}
+			// Without a key the upstream still returns a classified error
+			// (429 provision key / 403 no credits), which is more useful to the
+			// gateway than a synthetic local failure.
+			a.logger().Warn("console_api_key_resolve_failed", "account_id", credential.ID, "error", err)
+			apiKeyRepaired = true
+		}
+		apiKey = value
+	}
+	dpopRetried := false
+	for attempt := 0; attempt < 3; attempt++ {
 		session, cacheKey, err := a.dpop.get(ctx, a, credential, ssoToken, lease)
 		if err != nil {
 			var endpointErr *dpopTokenEndpointError
@@ -325,16 +367,23 @@ func (a *Adapter) doDPoPRequestWithContentType(
 		}
 		applyBrowserHeaders(request, ssoToken, lease)
 		if len(body) > 0 {
+			contentType := options.contentType
 			if strings.TrimSpace(contentType) == "" {
 				contentType = "application/json"
 			}
 			request.Header.Set("Content-Type", contentType)
 		}
-		if strings.TrimSpace(accept) != "" {
-			request.Header.Set("Accept", accept)
+		if strings.TrimSpace(options.accept) != "" {
+			request.Header.Set("Accept", options.accept)
+		}
+		if strings.TrimSpace(options.referer) != "" {
+			request.Header.Set("Referer", options.referer)
 		}
 		if strings.HasSuffix(request.URL.Path, "/responses") {
 			request.Header.Set("x-cluster", "https://us-east-1.api.x.ai")
+		}
+		if apiKey != "" {
+			request.Header.Set(consoleAPIKeyHeader, apiKey)
 		}
 		if err := applyDPoPAuthorization(request, session); err != nil {
 			return nil, err
@@ -343,14 +392,79 @@ func (a *Adapter) doDPoPRequestWithContentType(
 		if err != nil {
 			return nil, err
 		}
-		if response.StatusCode != http.StatusUnauthorized || attempt > 0 {
+		if response.StatusCode == http.StatusUnauthorized && !dpopRetried {
+			dpopRetried = true
+			_, _, _ = provider.ReadDiagnosticBody(response.Body)
+			_ = response.Body.Close()
+			a.dpop.invalidate(cacheKey, session.accessToken)
+			continue
+		}
+		if response.StatusCode == http.StatusUnauthorized {
+			return normalizeConsoleTransientUnauthorized(response)
+		}
+		if useAPIKey && !apiKeyRepaired && (response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusForbidden) {
+			data, truncated, readErr := provider.ReadDiagnosticBody(response.Body)
+			_ = response.Body.Close()
+			if readErr != nil {
+				return nil, readErr
+			}
+			if isConsoleMissingAPIKeyBody(data) {
+				apiKeyRepaired = true
+				a.invalidateConsoleAPIKey(credential, ssoToken, apiKey)
+				if repaired, repairErr := a.consoleAPIKey(ctx, credential, ssoToken, lease, true); repairErr == nil && repaired != "" {
+					a.logger().Info("console_api_key_repaired", "account_id", credential.ID, "status", response.StatusCode)
+					apiKey = repaired
+					continue
+				} else if repairErr != nil {
+					a.logger().Warn("console_api_key_repair_failed", "account_id", credential.ID, "status", response.StatusCode, "error", repairErr)
+				}
+			}
+			restoreResponseBody(response, data, truncated)
 			return response, nil
 		}
-		_, _, _ = provider.ReadDiagnosticBody(response.Body)
-		_ = response.Body.Close()
-		a.dpop.invalidate(cacheKey, session.accessToken)
+		return response, nil
 	}
 	return nil, errors.New("Console DPoP 重试状态无效")
+}
+
+// requiresConsoleAPIKey limits x-apikey to Console /v1 inference resources.
+// The DPoP token exchange itself must stay key-less.
+func requiresConsoleAPIKey(endpoint string) bool {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	path := parsed.Path
+	return strings.HasPrefix(path, "/v1/") && !strings.HasPrefix(path, "/v1/dpop/")
+}
+
+// normalizeConsoleTransientUnauthorized maps a second 401 that is not a JSON
+// authentication error (the Console edge answers "401 Authorization Required"
+// HTML on transient faults) to 503 so the gateway retries instead of
+// invalidating a healthy SSO. JSON 401s keep their credential semantics.
+func normalizeConsoleTransientUnauthorized(response *http.Response) (*http.Response, error) {
+	data, truncated, err := provider.ReadDiagnosticBody(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] != '{' && trimmed[0] != '[' {
+		response.StatusCode = http.StatusServiceUnavailable
+		response.Status = "503 Service Unavailable"
+		response.Header.Set("X-Grok2API-Upstream-Status", "401")
+	}
+	restoreResponseBody(response, data, truncated)
+	return response, nil
+}
+
+func restoreResponseBody(response *http.Response, data []byte, truncated bool) {
+	response.Body = io.NopCloser(bytes.NewReader(data))
+	response.ContentLength = int64(len(data))
+	response.Header.Set("Content-Length", strconv.Itoa(len(data)))
+	if truncated {
+		response.Header.Set("X-Grok2API-Body-Truncated", "1")
+	}
 }
 
 func publicDPoPJWK(key *ecdsa.PublicKey) dpopJWK {
