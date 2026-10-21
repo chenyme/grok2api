@@ -41,7 +41,10 @@ func TestBuildDirectTransportEnablesHTTP2Health(t *testing.T) {
 	if transport.IdleConnTimeout != buildtransport.IdleConnTimeout {
 		t.Fatalf("idle connection timeout = %s", transport.IdleConnTimeout)
 	}
-	if transport.TLSNextProto["h2"] == nil {
+	// Go 1.27 moved the HTTP/2 switch from TLSNextProto["h2"] to the public
+	// Transport.Protocols field; accept whichever one is enabled.
+	http2Enabled := transport.Protocols != nil && transport.Protocols.HTTP2()
+	if !http2Enabled && transport.TLSNextProto["h2"] == nil {
 		t.Fatal("Build direct transport did not install HTTP/2 health checks")
 	}
 }
