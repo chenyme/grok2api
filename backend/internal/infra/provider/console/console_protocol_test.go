@@ -732,4 +732,10 @@ func TestParseConsoleUsageStatusBoundsIntegers(t *testing.T) {
 	if windows := consoleQuotaWindows(1, status, time.Now()); windows[0].Remaining != 0 || windows[0].UsagePercent != 100 {
 		t.Fatalf("windows = %#v", windows[0])
 	}
+	if _, err := parseConsoleUsageStatus([]byte(`{"weeklyIncludedUsage":{"budgetCents":100,"usedCents":"-99999999999"}}`)); err == nil {
+		t.Fatal("negative overflow usedCents accepted")
+	}
+	if status, err := parseConsoleUsageStatus([]byte(`{"weeklyIncludedUsage":{"budgetCents":"100","usedCents":37.0}}`)); err != nil || status.BudgetCents != 100 || status.UsedCents != 37 {
+		t.Fatalf("string/float cents = %#v, %v", status, err)
+	}
 }

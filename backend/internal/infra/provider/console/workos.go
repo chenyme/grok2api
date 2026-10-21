@@ -34,8 +34,6 @@ const (
 	workosMaxRedirects    = 12
 	workosBodyLimit       = 1 << 20
 	workosSessionMaxBytes = 16 << 10
-	// maxConsoleUsageCents bounds upstream cents to the int32 quota columns.
-	maxConsoleUsageCents = math.MaxInt32
 )
 
 var (
@@ -434,28 +432,54 @@ func parseConsoleUsageStatus(data []byte) (consoleUsageStatus, error) {
 	if payload.Weekly == nil {
 		return consoleUsageStatus{}, errors.New("Console usage-status 缺少 weeklyIncludedUsage")
 	}
-	budget, ok := jsonInteger(payload.Weekly["budgetCents"])
-	if !ok || budget < 0 || budget > maxConsoleUsageCents {
+	budget, ok, overflow := jsonCents(payload.Weekly["budgetCents"])
+	if !ok || overflow || budget < 0 {
 		return consoleUsageStatus{}, errors.New("Console usage-status budgetCents 无效")
 	}
 	// proto3 JSON omits zero values, so a missing usedCents means 0.
-	used, ok := jsonInteger(payload.Weekly["usedCents"])
-	if !ok {
+	used, ok, overflow := jsonCents(payload.Weekly["usedCents"])
+	switch {
+	case overflow:
+		// Overspend only ever means "nothing remaining"; saturating keeps the
+		// value inside the int32 quota columns without changing that outcome.
+		used = math.MaxInt32
+	case !ok:
 		used = 0
-	}
-	if used < 0 {
+	case used < 0:
 		return consoleUsageStatus{}, errors.New("Console usage-status usedCents 无效")
 	}
-	// Overspend only ever means "nothing remaining"; clamping keeps the value
-	// inside the int32 quota columns without changing that outcome.
-	if used > maxConsoleUsageCents {
-		used = maxConsoleUsageCents
-	}
-	result := consoleUsageStatus{BudgetCents: int(budget), UsedCents: int(used)}
+	result := consoleUsageStatus{BudgetCents: budget, UsedCents: used}
 	if resetsAt, ok := jsonTimestamp(payload.Weekly["resetsAt"]); ok {
 		result.ResetsAt = &resetsAt
 	}
 	return result, nil
+}
+
+// jsonCents parses a cents amount with a 32-bit bound, matching the quota
+// columns. overflow reports a well-formed value outside that range.
+func jsonCents(raw json.RawMessage) (int, bool, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, false, false
+	}
+	text := strings.TrimSpace(string(raw))
+	var quoted string
+	if json.Unmarshal(raw, &quoted) == nil {
+		text = strings.TrimSpace(quoted)
+	}
+	text = strings.TrimSuffix(strings.TrimSuffix(text, ".0"), ".00")
+	value, err := strconv.ParseInt(text, 10, 32)
+	if err != nil {
+		var numError *strconv.NumError
+		if errors.As(err, &numError) && errors.Is(numError.Err, strconv.ErrRange) {
+			if strings.HasPrefix(text, "-") {
+				// Negative amounts are invalid regardless of magnitude.
+				return -1, true, false
+			}
+			return 0, true, true
+		}
+		return 0, false, false
+	}
+	return int(value), true, false
 }
 
 // jsonInteger accepts both JSON numbers and the decimal strings proto3 JSON
