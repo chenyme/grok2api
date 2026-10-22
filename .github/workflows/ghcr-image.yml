@@ -26,6 +26,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 发布 tag 必须与 VERSION 一致：容器镜像直接 COPY 该文件作为自报版本号，
+      # 两者不一致会发布出版本号错误的镜像。仅对 v* tag 生效，不影响分支构建。
+      - name: Verify VERSION matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          version="${version#v}"
+          if [ "$version" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::error::VERSION ($version) does not match release tag (${GITHUB_REF_NAME}); bump VERSION before tagging"
+            exit 1
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
