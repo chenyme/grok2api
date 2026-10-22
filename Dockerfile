@@ -1,11 +1,11 @@
-ARG NODE_VERSION=22
-ARG GO_VERSION=1.26
+ARG NODE_VERSION=26.12.1
+ARG GO_VERSION=1.26.10
 ARG ALPINE_VERSION=3.23
 
 FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS frontend-builder
 
 WORKDIR /src/frontend
-RUN corepack enable
+RUN npm install -g pnpm@11.5.2
 
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 RUN --mount=type=cache,id=grok2api-pnpm,target=/pnpm/store \
@@ -49,7 +49,7 @@ FROM alpine:${ALPINE_VERSION}
 ENV TZ=Asia/Shanghai \
     GROK2API_CONFIG_SOURCE=/run/grok2api/config.yaml
 
-RUN apk add --no-cache ca-certificates su-exec tzdata && \
+RUN apk add --no-cache 'ca-certificates-bundle>=20261020-r0' ca-certificates su-exec tzdata && \
     addgroup -S -g 10001 grok2api && \
     adduser -S -D -H -u 10001 -G grok2api grok2api && \
     mkdir -p /app/data /run/grok2api /var/lib/grok2api-quality-guard && \
