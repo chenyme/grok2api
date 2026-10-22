@@ -107,7 +107,10 @@ func (p *realityProxy) handshake(ctx context.Context, connection net.Conn) (net.
 		return nil, err
 	}
 	hello := secure.HandshakeState.Hello
-	privateKey := secure.HandshakeState.State13.EcdheKey
+	privateKey := realityKeyShareECDHE(secure)
+	if privateKey == nil {
+		return nil, errors.New("Reality 客户端未提供 TLS 1.3 ECDHE key share")
+	}
 
 	hello.SessionId = make([]byte, 32)
 	copy(hello.Raw[39:], hello.SessionId)
@@ -177,11 +180,28 @@ func buildRealityClientHello(connection net.Conn, serverName string, alpn []stri
 		config.NextProtos = append([]string(nil), alpn...)
 		secure.HandshakeState.Hello.AlpnProtocols = append([]string(nil), alpn...)
 	}
-	privateKey := secure.HandshakeState.State13.EcdheKey
+	privateKey := realityKeyShareECDHE(secure)
 	if privateKey == nil || privateKey.Curve() != ecdh.X25519() {
 		return nil, fmt.Errorf("Reality 客户端指纹 %q 未提供 X25519 TLS 1.3 key share", helloID.Client)
 	}
 	return secure, nil
+}
+
+// realityKeyShareECDHE 返回 ClientHello 中实际发送的 ECDHE 私钥。
+// utls v1.8 起废弃 State13.EcdheKey，改用 KeyShareKeys；与上游 Xray 的 REALITY
+// 客户端保持一致：优先取经典 ECDHE 共享，缺失时回退到 X25519MLKEM768 混合共享里的 X25519 部分。
+func realityKeyShareECDHE(secure *utls.UConn) *ecdh.PrivateKey {
+	if secure == nil {
+		return nil
+	}
+	keys := secure.HandshakeState.State13.KeyShareKeys
+	if keys == nil {
+		return nil
+	}
+	if keys.Ecdhe != nil {
+		return keys.Ecdhe
+	}
+	return keys.MlkemEcdhe
 }
 
 func realityPrefersAESGCM(cipherSuites []uint16) bool {
