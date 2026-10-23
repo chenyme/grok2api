@@ -2394,6 +2394,29 @@ func (s *Service) MarkReauthRequired(ctx context.Context, id uint64, reason stri
 	return nil
 }
 
+// clearReauthMarkAfterValidation 在上游确认凭据可用后解除 reauthRequired。
+// Web SSO 没有 OAuth 刷新路径，只能靠真实上游校验恢复；否则一次误判或凭据
+// 已授权的账号会被永久排除在路由之外。
+func (s *Service) clearReauthMarkAfterValidation(ctx context.Context, value accountdomain.Credential) {
+	if value.AuthStatus != accountdomain.AuthStatusReauthRequired {
+		return
+	}
+	clearer, ok := s.accounts.(interface {
+		ClearReauthMark(context.Context, uint64) (bool, error)
+	})
+	if !ok {
+		return
+	}
+	cleared, err := clearer.ClearReauthMark(ctx, value.ID)
+	if err != nil {
+		s.logger.Warn("reauth_mark_clear_failed", "account_id", value.ID, "error", err)
+		return
+	}
+	if cleared {
+		s.logger.Info("reauth_mark_cleared_after_validation", "account_id", value.ID, "provider", string(value.Provider))
+	}
+}
+
 // ssoRejectedReason keeps the generic SSO rejection text except for Console
 // accounts proven unlinked from Cursor, whose marker drives optional deletion.
 func ssoRejectedReason(value accountdomain.Credential, err error) string {
@@ -3066,6 +3089,8 @@ func (s *Service) refreshQuota(ctx context.Context, id uint64) (quotaRefreshResu
 	if err := s.accounts.ReplaceQuotaWindows(ctx, id, snapshot.Tier, snapshot.SyncedAt, snapshot.Windows); err != nil {
 		return quotaRefreshResult{}, err
 	}
+	// 上游已确认凭据可用：解除此前的 reauthRequired，避免只能靠 OAuth 刷新恢复。
+	s.clearReauthMarkAfterValidation(ctx, value)
 	return quotaRefreshResult{Credential: value, Windows: snapshot.Windows}, nil
 }
 
@@ -3244,6 +3269,8 @@ func (s *Service) refreshQuotaGroup(ctx context.Context, id uint64, group string
 	if err := s.accounts.ReplaceQuotaWindowGroup(ctx, id, snapshot.SyncedAt, snapshot.Modes, snapshot.Windows); err != nil {
 		return quotaRefreshResult{}, err
 	}
+	// 上游已确认凭据可用：解除此前的 reauthRequired，避免只能靠 OAuth 刷新恢复。
+	s.clearReauthMarkAfterValidation(ctx, value)
 	return quotaRefreshResult{Credential: value, Windows: snapshot.Windows, Modes: snapshot.Modes}, nil
 }
 
@@ -3306,6 +3333,8 @@ func (s *Service) refreshQuotaMode(ctx context.Context, id uint64, mode string) 
 	} else if err := s.accounts.SaveQuotaWindows(ctx, id, tier, syncedAt, windows); err != nil {
 		return quotaRefreshResult{}, err
 	}
+	// 上游已确认凭据可用：解除此前的 reauthRequired，避免只能靠 OAuth 刷新恢复。
+	s.clearReauthMarkAfterValidation(ctx, value)
 	return quotaRefreshResult{Credential: value, Windows: windows}, nil
 }
 
