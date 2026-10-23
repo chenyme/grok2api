@@ -2398,6 +2398,19 @@ function AccountStatus({ account }: { account: AccountDTO }) {
   if (account.cooldownUntil && new Date(account.cooldownUntil) > new Date()) {
     return <Badge variant="secondary" className="bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.statusCooldown")}</Badge>;
   }
+  const lastError = account.lastError?.trim();
+  if (lastError) {
+    return (
+      <StatusTooltip content={(
+        <div className="grid w-72 max-w-[calc(100vw-2rem)] grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs font-normal leading-5">
+          <span className="text-primary-foreground/60">{t("accounts.lastError")}</span>
+          <span className="break-words">{lastError}</span>
+        </div>
+      )}>
+        <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300">{t("accounts.statusActiveWithError")}</Badge>
+      </StatusTooltip>
+    );
+  }
   return <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-300">{t("accounts.statusActive")}</Badge>;
 }
 
