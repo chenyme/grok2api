@@ -1318,7 +1318,13 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	c.Status(result.StatusCode)
 	var err error
 	if stream {
-		metadata, copyErr := copyStreamWithFallbackModel(c.Writer, result.Body, protocol, result.MarkFirstToken, fallbackModel)
+		// Long high-reasoning turns can stay silent well past Cloudflare's
+		// origin read timeout, so the downstream connection gets SSE comment
+		// heartbeats while the upstream is thinking.
+		keepalive := newStreamKeepalive(c.Writer, streamKeepaliveInterval)
+		defer keepalive.stop()
+		metadata, copyErr := copyStreamWithFallbackModel(keepalive, result.Body, protocol, result.MarkFirstToken, fallbackModel)
+		keepalive.stop()
 		usage, responseID, err = metadata.Usage, metadata.ResponseID, copyErr
 		if metadata.StreamFailure != nil && result.RecordStreamFailure != nil {
 			result.RecordStreamFailure(*metadata.StreamFailure)
