@@ -1397,6 +1397,12 @@ func upsertKnownAccountByIdentity(tx *gorm.DB, value account.Credential, existin
 		}
 		row.ID = existing.ID
 		row.CreatedAt = existing.CreatedAt
+		// 重导入只是内容同步，不是凭据更新：处于 reauthRequired 的账号只能由
+		// UpdateTokens（真实换 token）或上游校验成功后的 ClearReauthMark 解除，
+		// 否则被上游拒绝的凭据会被重新洗回 active 并再次参与路由。
+		if existing.AuthStatus == string(account.AuthStatusReauthRequired) {
+			row.AuthStatus = existing.AuthStatus
+		}
 		row.Enabled = existing.Enabled
 		row.Priority = existing.Priority
 		row.MaxConcurrent = existing.MaxConcurrent
@@ -2251,6 +2257,34 @@ func (r *AccountRepository) UpdateHealth(ctx context.Context, id uint64, provide
 		FailureCount: failureCount, CooldownUntil: cooldownUntil, HealthMarker: account.NormalizeHealthMarker(lastError),
 	})
 	return nil
+}
+
+// ClearReauthMark 在上游已确认凭据可用后解除 reauthRequired 标记：只有仍处于
+// reauthRequired 的账号会被改动，重复调用安全；解除后账号重新参与路由。
+func (r *AccountRepository) ClearReauthMark(ctx context.Context, id uint64) (bool, error) {
+	if id == 0 {
+		return false, nil
+	}
+	result := r.db.db.WithContext(ctx).Model(&accountModel{}).
+		Where("id = ? AND auth_status = ?", id, string(account.AuthStatusReauthRequired)).
+		Updates(map[string]any{
+			"auth_status":      string(account.AuthStatusActive),
+			"last_error":       "",
+			"reauth_marked_at": nil,
+		})
+	if result.Error != nil {
+		return false, mapError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return false, nil
+	}
+	var stored struct{ Provider string }
+	if err := r.db.db.WithContext(ctx).Model(&accountModel{}).Select("provider").Where("id = ?", id).Take(&stored).Error; err == nil && stored.Provider != "" {
+		r.notifyInvalidation(ctx, repository.InvalidationEvent{
+			Kind: repository.InvalidationAccountStateChanged, Provider: account.Provider(stored.Provider), AccountID: id,
+		})
+	}
+	return true, nil
 }
 
 func (r *AccountRepository) TouchLastUsed(ctx context.Context, id uint64, usedAt time.Time) error {
