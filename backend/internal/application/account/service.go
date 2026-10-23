@@ -81,6 +81,13 @@ const (
 	quotaRefreshBackoffMax                        = time.Minute
 	// usage-status lags execution by ~45s; sampling faster only re-reads stale values.
 	consoleQuotaRefreshMinInterval                = 60 * time.Second
+	// quotaRefreshReauthDelay is the retry delay for an account already marked
+	// reauthRequired. Its credential was rejected upstream, so every attempt only
+	// adds load and 403 noise without ever succeeding; the account returns to the
+	// normal cadence as soon as an operator re-authorizes it (and a manual
+	// "refresh quota" always runs immediately because it bypasses this queue).
+	quotaRefreshReauthDelay = time.Hour
+
 	unknownRemoteQuotaProbeDelay    time.Duration = 5 * time.Minute
 	consolePredictedQuotaProbeDelay time.Duration = 24 * time.Hour
 	observedModelPersistInterval                  = 30 * time.Minute
@@ -3519,6 +3526,16 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		state.pending = false
 		s.quotaRefreshMu.Unlock()
 
+		// Skip upstream quota probes for an account whose credential upstream has
+		// already rejected. Re-checked on every attempt, so re-authorizing the
+		// account puts it back on the normal cadence without a restart.
+		if credential, getErr := s.accounts.Get(parent, request.accountID); getErr == nil &&
+			credential.AuthStatus == accountdomain.AuthStatusReauthRequired {
+			perfmetrics.Default.Add("quota_refresh_events", perfmetrics.Labels{Subsystem: "quota", Stage: "refresh", Outcome: "reauth_skipped"}, 1)
+			s.deferQuotaRefreshFor(request.key, quotaRefreshReauthDelay)
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(parent, quotaRefreshTimeout)
 		if s.quotaRefreshState != nil && publishedGeneration < localGeneration {
 			generation, err := s.quotaRefreshState.MarkQuotaRefreshDirty(ctx, request.accountID, request.mode, quotaRefreshDirtyTTL)
@@ -3710,6 +3727,19 @@ func (s *Service) deferQuotaRefreshAfter(key string, minimum time.Duration) {
 		state.pending = true
 		state.failures++
 		state.nextAttemptAt = s.now().UTC().Add(max(quotaRefreshRetryDelay(state.failures), minimum))
+	}
+	s.quotaRefreshMu.Unlock()
+	s.wakeQuotaRefreshRecovery()
+}
+
+// deferQuotaRefreshFor reschedules a key after an explicit delay without
+// touching the failure counter, for attempts that are intentionally skipped.
+func (s *Service) deferQuotaRefreshFor(key string, delay time.Duration) {
+	s.quotaRefreshMu.Lock()
+	if state := s.quotaRefreshes[key]; state != nil {
+		state.running = false
+		state.pending = true
+		state.nextAttemptAt = s.now().UTC().Add(delay)
 	}
 	s.quotaRefreshMu.Unlock()
 	s.wakeQuotaRefreshRecovery()
