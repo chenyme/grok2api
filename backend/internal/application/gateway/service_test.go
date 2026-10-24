@@ -3541,6 +3541,81 @@ func TestGatewayGeneric429CoolsAccountAndRotates(t *testing.T) {
 	}
 }
 
+func TestGatewayIncorrectAPIKey400CoolsAccountAndRotates(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "incorrect-api-key.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accountRepo := relational.NewAccountRepository(database)
+	modelRepo := relational.NewModelRepository(database)
+	auditRepo := relational.NewAuditRepository(database)
+	responseRepo := relational.NewResponseRepository(database)
+	keyRepo := relational.NewClientKeyRepository(database)
+
+	credentials := make([]account.Credential, 0, 2)
+	for index, name := range []string{"key-a", "key-b"} {
+		credential, _, createErr := accountRepo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderBuild, Name: name, SourceKey: name, EncryptedAccessToken: name,
+			ExpiresAt: time.Now().Add(time.Hour), Enabled: true, AuthStatus: account.AuthStatusActive,
+			Priority: 200 - index, MaxConcurrent: 1,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := modelRepo.UpsertDiscovered(ctx, account.ProviderBuild, []string{"grok-fast"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, credential := range credentials {
+		if err := modelRepo.ReplaceAccountCapabilities(ctx, credential.ID, []string{"grok-fast"}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clientKey, err := keyRepo.Create(ctx, clientkey.Key{
+		Name: "console-key", Prefix: "ckey", SecretHash: strings.Repeat("3", 64), EncryptedSecret: "encrypted",
+		Enabled: true, RPMLimit: 120, MaxConcurrent: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejected := `{"code":"invalid-argument","error":"Incorrect API key provided. You can obtain an API key from https://console.x.ai."}`
+	adapter := &scriptedBuildAdapter{responses: map[uint64][]scriptedBuildResponse{
+		credentials[0].ID: {{status: http.StatusBadRequest, body: rejected}},
+		credentials[1].ID: {{status: http.StatusOK, body: `{"id":"resp-key-b"}`}},
+	}}
+	registry := provider.NewRegistry(adapter)
+	sticky := memory.NewStickyStore()
+	accountService := accountapp.NewService(accountRepo, auditRepo, memory.NewDeviceSessionStore(), sticky, registry, testCipher(t), nil)
+	selector := NewSelector(accountRepo, memory.NewConcurrencyLimiter(), sticky, registry, time.Hour, time.Second, time.Minute)
+	service := NewService(modelRepo, auditRepo, accountService, clientkeyapp.NewService(nil, nil, nil, 60, 4, nil), registry, selector, responseRepo, 3)
+
+	result, err := service.CreateResponse(ctx, Input{
+		RequestID: "req-incorrect-api-key", ClientKey: clientKey, PublicModel: "grok-fast",
+		Body: []byte(`{"model":"grok-fast","input":"ping"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result.Finalize(Usage{}, "resp-key-b", "")
+	_ = result.Body.Close()
+	if attempts := adapter.Attempts(); len(attempts) != 2 || attempts[0] != credentials[0].ID || attempts[1] != credentials[1].ID {
+		t.Fatalf("incorrect api key 400 must rotate, attempts=%#v", attempts)
+	}
+	cooled, err := accountRepo.Get(ctx, credentials[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cooled.AuthStatus != account.AuthStatusActive || cooled.FailureCount != 1 || cooled.CooldownUntil == nil {
+		t.Fatalf("incorrect api key must briefly cool account A without permanent invalidation: %#v", cooled)
+	}
+}
+
 func TestGatewayRetryStreamFailureRecordsPrior429AndRetryStream(t *testing.T) {
 	ctx := context.Background()
 	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "retry-stream-failure.db"))

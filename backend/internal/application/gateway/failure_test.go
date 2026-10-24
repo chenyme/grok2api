@@ -176,6 +176,21 @@ func TestClassifyUpstreamHTTPErrorInvalidArgument(t *testing.T) {
 	}
 }
 
+func TestIncorrectAPIKey400StaysOnAccountRotationPath(t *testing.T) {
+	body := []byte(`{"code":"invalid-argument","error":"Incorrect API key provided. You can obtain an API key from https://console.x.ai."}`)
+	failure := newHTTPUpstreamFailure(http.StatusBadRequest, body, 42, "console")
+	if !failure.AccountScoped || failure.RequestScopedForbidden || failure.Code != "invalid_argument" {
+		t.Fatalf("incorrect api key must rotate accounts, failure = %#v", failure)
+	}
+	if failure.PublicMessage != "Incorrect API key provided. You can obtain an API key from https://console.x.ai." {
+		t.Fatalf("message = %q", failure.PublicMessage)
+	}
+	toolSchema := newHTTPUpstreamFailure(http.StatusBadRequest, []byte(`{"code":"invalid-argument","error":"tool parameter root must be an object type"}`), 42, "console")
+	if !toolSchema.RequestScopedForbidden || toolSchema.AccountScoped {
+		t.Fatalf("other invalid-argument 400s must stay request-scoped, failure = %#v", toolSchema)
+	}
+}
+
 func TestClassifyUpstreamHTTPErrorKeepsOther4xxMessage(t *testing.T) {
 	code, message := ClassifyUpstreamHTTPError(http.StatusNotFound, []byte(`{"error":{"code":"not_found","message":"requested response is missing"}}`))
 	if code != "upstream_error" || message != "requested response is missing" {
@@ -309,6 +324,32 @@ func TestRetryableResponseRotatesOnlyOnInternalBuildReasoningRecoveryFailure(t *
 	}
 	if isRetryableResponse(unrelated, accountdomain.ProviderBuild) {
 		t.Fatal("unrelated 400 must not match encrypted_content/decode substrings")
+	}
+}
+
+func TestIncorrectAPIKey400IsRetryableDespiteUpstreamVeto(t *testing.T) {
+	body := `{"code":"invalid-argument","error":"Incorrect API key provided. You can obtain an API key from https://console.x.ai."}`
+	header := make(http.Header)
+	header.Set("X-Should-Retry", "false")
+	response := &provider.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     header,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	if !isRetryableResponse(response, accountdomain.ProviderConsole) {
+		t.Fatal("incorrect api key 400 must rotate accounts")
+	}
+	rest, err := io.ReadAll(response.Body)
+	if err != nil || string(rest) != body {
+		t.Fatalf("retry classification consumed the body: %q %v", rest, err)
+	}
+	other := &provider.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"code":"invalid-argument","error":"unsupported request field"}`)),
+	}
+	if isRetryableResponse(other, accountdomain.ProviderConsole) {
+		t.Fatal("other 400 invalid-argument responses must not rotate accounts")
 	}
 }
 
