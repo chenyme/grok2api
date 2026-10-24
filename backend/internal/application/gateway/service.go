@@ -2175,6 +2175,9 @@ func isRetryableResponse(response *provider.Response, upstreamProvider accountdo
 	if response.StatusCode == http.StatusBadRequest && isReasoningRecoveryFailedResponse(response, upstreamProvider) {
 		return true
 	}
+	if responseHasIncorrectAPIKey(response) {
+		return true
+	}
 	if !isRetryable(response.StatusCode) {
 		return false
 	}
@@ -2184,6 +2187,28 @@ func isRetryableResponse(response *provider.Response, upstreamProvider accountdo
 		return true
 	}
 	return !strings.EqualFold(strings.TrimSpace(response.Header.Get("X-Should-Retry")), "false")
+}
+
+// responseHasIncorrectAPIKey reports a 400 whose body says the API key is
+// wrong. The body is restored so a later read can still classify and audit it.
+// Diagnostic is preferred when the provider already buffered the upstream body.
+func responseHasIncorrectAPIKey(response *provider.Response) bool {
+	if response == nil || response.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	if response.Diagnostic != nil && isIncorrectAPIKeyText(string(response.Diagnostic.Body)) {
+		return true
+	}
+	if response.Body == nil {
+		return false
+	}
+	data, _, err := provider.ReadDiagnosticBody(response.Body)
+	_ = response.Body.Close()
+	response.Body = io.NopCloser(bytes.NewReader(data))
+	if err != nil {
+		return false
+	}
+	return isIncorrectAPIKeyText(string(data))
 }
 
 // isTerminalRequestForbidden identifies request-level 403 responses that must

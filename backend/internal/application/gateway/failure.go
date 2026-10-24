@@ -158,6 +158,18 @@ func newHTTPUpstreamFailure(status int, body []byte, accountID uint64, accountNa
 		failure.NoCreditsOrLicenses = provider.IsConsoleNoCreditsText(metadataText) || provider.IsConsoleNoCreditsText(string(body))
 		failure.AccountScoped = failure.NoCreditsOrLicenses || failure.AccountBlocked || failure.PermanentAccountDenial || failure.QuotaExhausted || failure.CredentialRejected || isAccountScopedForbidden(metadataText)
 	case http.StatusBadRequest:
+		// "Incorrect API key" is the account's x-apikey, not the caller's
+		// request. Other invalid-argument 400s stay request-scoped.
+		if isIncorrectAPIKeyText(metadataText) || isIncorrectAPIKeyText(string(body)) {
+			failure.Code = "invalid_argument"
+			failure.AccountScoped = true
+			if upstreamMessage != "" {
+				failure.PublicMessage = upstreamMessage
+			} else {
+				failure.PublicMessage = "请求参数无效"
+			}
+			break
+		}
 		if isRequestScopedForbidden(upstreamCode, metadataText) {
 			failure.Code = "invalid_argument"
 			failure.RequestScopedForbidden = true
@@ -270,6 +282,12 @@ func isSafetyRejection(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "content violates usage guidelines") ||
 		strings.Contains(lower, "safety_check_type_")
+}
+
+// isIncorrectAPIKeyText matches the upstream rejection of the credential sent
+// as x-apikey. It is account-scoped: another account can serve the same request.
+func isIncorrectAPIKeyText(text string) bool {
+	return strings.Contains(strings.ToLower(text), "incorrect api key")
 }
 
 // isRequestScopedForbidden recognizes only high-confidence request-level
