@@ -268,8 +268,15 @@ func isSafetyRejection(text string) bool {
 		return false
 	}
 	lower := strings.ToLower(text)
+	// Grok Build/CLI 的内容拒答形如 403 {"code":"permission-denied",
+	// "error":"I'm sorry, I can't help with that request."}。这是请求级内容拒绝，
+	// 换账号重试没有意义，还会把一次拒答拖成整池轮换 + 7 分钟后 503。
+	// 归一化弯引号以覆盖 ’ 变体。
+	lower = strings.ReplaceAll(lower, "\u2019", "'")
 	return strings.Contains(lower, "content violates usage guidelines") ||
-		strings.Contains(lower, "safety_check_type_")
+		strings.Contains(lower, "safety_check_type_") ||
+		strings.Contains(lower, "i can't help with that request") ||
+		strings.Contains(lower, "i cannot help with that request")
 }
 
 // isRequestScopedForbidden recognizes only high-confidence request-level

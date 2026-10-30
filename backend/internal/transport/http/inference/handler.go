@@ -454,7 +454,7 @@ func (h *Handler) writeMediaResult(c *gin.Context, result *gateway.Result) {
 	errorCode := ""
 	defer result.Body.Close()
 	defer func() { result.Finalize(gateway.Usage{}, "", errorCode) }()
-	if isUpstreamCredentialStatus(result.StatusCode) {
+	if isUpstreamCredentialStatus(result.StatusCode) && !result.SafetyRejection {
 		errorCode = "upstream_unavailable"
 		clientCode := readCredentialErrorCode(result.StatusCode, result.Body)
 		writeOpenAIError(c, http.StatusServiceUnavailable, clientCode, credentialErrorMessage(clientCode))
@@ -1251,7 +1251,7 @@ func (h *Handler) writeProtocolResult(c *gin.Context, result *gateway.Result, st
 	errorCode := ""
 	defer result.Body.Close()
 	defer func() { result.Finalize(usage, responseID, errorCode) }()
-	if isUpstreamCredentialStatus(result.StatusCode) {
+	if isUpstreamCredentialStatus(result.StatusCode) && !result.SafetyRejection {
 		errorCode = "upstream_unavailable"
 		clientCode := readCredentialErrorCode(result.StatusCode, result.Body)
 		if anthropic {
