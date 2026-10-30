@@ -1431,3 +1431,41 @@ func (a *quotaCountingAdapter) SyncQuotaMode(_ context.Context, credential accou
 		WindowSeconds: 3600, ResetAt: &resetAt, SyncedAt: &now, Source: accountdomain.QuotaSourceUpstream, UpdatedAt: now,
 	}, nil
 }
+
+// A refresh queued for an account that is deleted before it runs must be
+// dropped, not deferred: deferring leaves a pending state that the recovery
+// loop re-enqueues on every pass, so a deleted account would be retried for as
+// long as the process lives.
+func TestQuotaRefreshDropsDeletedAccountInsteadOfRetrying(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quota-deleted-account.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(relational.NewAccountRepository(database), nil, nil, nil, nil, nil, nil)
+
+	const accountID = 9_999_999
+	service.QueueQuotaRefresh(accountID, "console")
+	// The queue keys states by account and mode ("<id>:<mode>"); quotaSyncKey
+	// groups the three Console modes into one refresh, which is a different map.
+	key := strconv.FormatUint(accountID, 10) + ":console"
+	service.quotaRefreshMu.Lock()
+	queued := service.quotaRefreshes[key]
+	service.quotaRefreshMu.Unlock()
+	if queued == nil {
+		t.Fatal("refresh state was not queued")
+	}
+
+	service.runQuotaRefresh(ctx, quotaRefreshRequest{key: key, accountID: accountID, mode: "console"})
+
+	service.quotaRefreshMu.Lock()
+	state := service.quotaRefreshes[key]
+	service.quotaRefreshMu.Unlock()
+	if state != nil {
+		t.Fatalf("deleted account kept a retry state: pending=%t failures=%d", state.pending, state.failures)
+	}
+}
