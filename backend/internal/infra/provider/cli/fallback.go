@@ -185,8 +185,11 @@ func isDefinitiveAccountBlockBody(body []byte) bool {
 // trigger XAI plane fallback or account rotation.
 func isSafetyRejectionBody(body []byte) bool {
 	lower := strings.ToLower(string(body))
+	lower = strings.ReplaceAll(lower, "\u2019", "'")
 	return strings.Contains(lower, "content violates usage guidelines") ||
-		strings.Contains(lower, "safety_check_type_")
+		strings.Contains(lower, "safety_check_type_") ||
+		strings.Contains(lower, "i can't help with that request") ||
+		strings.Contains(lower, "i cannot help with that request")
 }
 
 // shouldSkipXAIFallback reports whether a primary 403 body is terminal for the request.
