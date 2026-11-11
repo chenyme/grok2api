@@ -1596,6 +1596,22 @@ attemptLoop:
 			continue
 		}
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
+			if !input.Streaming && operation == audit.OperationResponses && qualityRequestUsesHostedWebSearch(input.Body) {
+				replay, degraded := inspectDegradedResponsesWebSearch(input.Body, response.Body)
+				response.Body = replay
+				if degraded {
+					_ = response.Body.Close()
+					lease.Release()
+					lastErr = errQualityDegraded
+					lastFailure = &UpstreamFailure{
+						HTTPStatus: http.StatusServiceUnavailable, Code: ErrorQualityDegraded,
+						PublicMessage: "上游 Web Search 返回占位查询，已拒绝不相关结果",
+						AccountID:     credential.ID, AccountName: credential.Name, Cause: errQualityDegraded,
+					}
+					s.logger.Info("quality_degraded_web_search", "request_id", input.RequestID, "account_id", credential.ID)
+					break attemptLoop
+				}
+			}
 			s.selector.markSuccess(ctx, credential, lease.QuotaProbe)
 			if qualityHoldEnabled {
 				replay, verdict, peekUsage, _, peekErr := peekQualityStream(ctx, response.Body, qualityProtocolForOperation(operation), holdCfg)
