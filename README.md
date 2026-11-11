@@ -35,10 +35,6 @@
 
 <table>
 <tr>
-<td width="200" align="center" valign="middle"><a href="https://go.apimart.ai/gh-grok2api"><img src="frontend/public/sponner/api-mart.jpg" alt="APIMart" width="180"></a></td>
-<td valign="middle">Thanks to APIMart for sponsoring this project! APIMart is a low-cost API platform for AI image &amp; video generation — GPT-Image-2 from $0.006/image, 160+ images per dollar. One async API covers both image and video: submit a task, get an ID, fetch results via polling or callback. Batch tens of thousands of images without timeouts, switch models without changing code. Pay-as-you-go with no monthly fee — <a href="https://go.apimart.ai/gh-grok2api">sign up here</a> to get started.</td>
-</tr>
-<tr>
 <td width="200" align="center" valign="middle"><a href="https://www.packyapi.com/register"><img src="frontend/public/sponner/packycode.png" alt="PackyCode" width="180"></a></td>
 <td valign="middle">PackyCode is a stable and professional API relay for Claude Code, Codex, Gemini, and leading Chinese models. With fast unified access, full-stack observability, risk controls, elastic scaling, and cost optimization, it delivers a smooth developer experience. <a href="https://www.packyapi.com/register">Sign up here</a> to bring production-ready AI into your workflows.</td>
 </tr>
@@ -49,10 +45,6 @@
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.right.codes/register"><img src="frontend/public/sponner/rightcode.jpg" alt="RightCode" width="160"></a></td>
 <td valign="middle">Right Code is an enterprise-grade AI Agent distribution platform that primarily provides stable access services for Claude Code, Codex, Gemini, and other models. It supports invoicing and dedicated one-to-one assistance for enterprises and teams. Thanks to Right Code for providing token support. Click <a href="https://www.right.codes/register">here</a> to register and get started.</td>
-</tr>
-<tr>
-<td width="200" align="center" valign="middle"><a href="https://www.rapidproxy.io/?ref=grok2api"><img src="frontend/public/sponner/rapid-proxy.jpg" alt="RapidProxy" width="180"></a></td>
-<td valign="middle">RapidProxy is a data collection proxy solution built for developers, providing stable and reliable residential proxy services. With 90M+ global residential IPs and 200+ country coverage, intelligent rotation, and precise geo-targeting, it helps projects such as web scraping, AI data training, SEO monitoring, and e-commerce data analysis break through access restrictions and improve data collection efficiency. It supports mainstream automation frameworks such as Playwright, Selenium, and Puppeteer, with prices as low as $0.65/GB — <a href="https://www.rapidproxy.io/?ref=grok2api">start your free test now</a>.</td>
 </tr>
 </table>
 
