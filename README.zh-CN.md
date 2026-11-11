@@ -31,10 +31,7 @@
 > [希望赞助这个项目？](mailto:chenyme03@gmail.com)
 
 <table>
-<tr>
-<td width="200" align="center" valign="middle"><a href="https://go.apimart.ai/gh-grok2api"><img src="frontend/public/sponner/api-mart.jpg" alt="APIMart" width="180"></a></td>
-<td valign="middle">感谢 APIMart 赞助了本项目！APIMart 是专注 AI 图片/视频生成的低价 API 平台，GPT-Image-2 低至 $0.006/张，1 美元可出图 160+ 张。图片、视频一套异步 API 通吃，提交任务拿 ID、回调取结果，跑批万张不超时、换模型不改代码。按量付费、无月费，通过此 <a href="https://go.apimart.ai/gh-grok2api">注册链接</a> 注册即可开用。</td>
-</tr>
+
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.packyapi.com/register"><img src="frontend/public/sponner/packycode.png" alt="PackyCode" width="180"></a></td>
 <td valign="middle">PackyCode 是稳定专业的 API 中转服务商，支持 Claude Code、Codex、Gemini 及多种国模，提供统一高速入口、全栈可观测、风控与弹性扩容。<a href="https://www.packyapi.com/register">点此注册</a>，轻松将大模型接入业务流程。</td>
@@ -46,10 +43,6 @@
 <tr>
 <td width="200" align="center" valign="middle"><a href="https://www.right.codes/register"><img src="frontend/public/sponner/rightcode.jpg" alt="RightCode" width="160"></a></td>
 <td valign="middle">Right Code 是一个企业级 AI Agent 分发平台，主要提供稳定的 Claude Code、Codex、Gemini 等模型的中转服务。充值即可开票，企业、团队用户一对一对接。感谢 Right Code 提供的 Tokens 支持，点击 <a href="https://www.right.codes/register">此处</a> 注册并开始使用！</td>
-</tr>
-<tr>
-<td width="200" align="center" valign="middle"><a href="https://www.rapidproxy.io/?ref=grok2api"><img src="frontend/public/sponner/rapid-proxy.jpg" alt="RapidProxy" width="180"></a></td>
-<td valign="middle">RapidProxy 是面向开发者的数据采集代理方案，提供稳定可靠的住宅代理服务。拥有 9000 万+ 全球住宅 IP，覆盖 200+ 个国家和地区，支持智能轮换与精准地域定位，帮助网页抓取、AI 数据训练、SEO 监控、电商数据分析等项目突破访问限制、提升采集效率。支持 Playwright、Selenium、Puppeteer 等主流自动化框架，价格低至 $0.65/GB，<a href="https://www.rapidproxy.io/?ref=grok2api">立即免费测试</a>。</td>
 </tr>
 </table>
 
