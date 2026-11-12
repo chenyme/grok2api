@@ -20,6 +20,10 @@ definitions:
         type: string
       image:
         $ref: '#/definitions/httpserver.SwaggerImageReference'
+      images:
+        items:
+          $ref: '#/definitions/httpserver.SwaggerImageReference'
+        type: array
       model:
         example: grok-imagine-image-edit
         type: string
@@ -50,6 +54,12 @@ definitions:
       aspect_ratio:
         example: "16:9"
         type: string
+      image:
+        $ref: '#/definitions/httpserver.SwaggerImageReference'
+      images:
+        items:
+          $ref: '#/definitions/httpserver.SwaggerImageReference'
+        type: array
       model:
         example: grok-imagine-image-quality
         type: string
@@ -62,6 +72,10 @@ definitions:
       prompt:
         example: A cinematic city at night
         type: string
+      reference_images:
+        items:
+          $ref: '#/definitions/httpserver.SwaggerImageReference'
+        type: array
       resolution:
         example: 2k
         type: string
@@ -237,6 +251,7 @@ paths:
     post:
       consumes:
       - application/json
+      - multipart/form-data
       parameters:
       - description: 请求
         in: body
@@ -266,6 +281,7 @@ paths:
     post:
       consumes:
       - application/json
+      - multipart/form-data
       parameters:
       - description: 请求
         in: body

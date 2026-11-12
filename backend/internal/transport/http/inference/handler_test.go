@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -764,8 +765,30 @@ func TestImageEditAcceptsOfficialJSONShape(t *testing.T) {
 	multipartRequest.Header.Set("Content-Type", "multipart/form-data; boundary=test")
 	multipartRecorder := httptest.NewRecorder()
 	router.ServeHTTP(multipartRecorder, multipartRequest)
-	if multipartRecorder.Code != http.StatusUnsupportedMediaType || !strings.Contains(multipartRecorder.Body.String(), "application/json") {
+	if multipartRecorder.Code != http.StatusBadRequest {
 		t.Fatalf("multipart status=%d body=%s", multipartRecorder.Code, multipartRecorder.Body.String())
+	}
+
+	for _, path := range []string{"/v1/images/edits", "/v1/images/generations"} {
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		_ = form.WriteField("model", "grok-imagine-image")
+		_ = form.WriteField("prompt", "将背景改成蓝色")
+		file, err := form.CreateFormFile("image", "reference.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = file.Write([]byte("\x89PNG\r\n\x1a\n"))
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, path, &body)
+		request.Header.Set("Content-Type", form.FormDataContentType())
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s multipart status=%d body=%s", path, recorder.Code, recorder.Body.String())
+		}
 	}
 }
 

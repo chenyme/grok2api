@@ -73,6 +73,26 @@ func TestCatalogMatchesSupportedSurface(t *testing.T) {
 	}
 }
 
+func TestGenerationPublicNamesAlsoRouteReferenceEdits(t *testing.T) {
+	want := map[string]bool{
+		"Web/grok-imagine-image-lite": false,
+		"Web/grok-imagine-image":      false,
+		"Web/grok-imagine-image-2.0":  false,
+	}
+	for _, route := range Routes() {
+		if route.Capability == modeldomain.CapabilityImageEdit && route.UpstreamModel == "imagine-image-edit" {
+			if _, exists := want[route.PublicID]; exists {
+				want[route.PublicID] = true
+			}
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Fatalf("missing reference-edit route for %s", name)
+		}
+	}
+}
+
 func TestWebImagePublicNamesMatchProtocolProducts(t *testing.T) {
 	tests := map[string]struct {
 		publicID string

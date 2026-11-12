@@ -34,10 +34,16 @@ var catalog = []ModelSpec{
 func Catalog() []ModelSpec { return append([]ModelSpec(nil), catalog...) }
 
 func Routes() []modeldomain.Route {
-	values := make([]modeldomain.Route, 0, len(catalog))
+	values := make([]modeldomain.Route, 0, len(catalog)+3)
 	for _, spec := range catalog {
 		publicID, _ := modeldomain.NormalizePublicID(account.ProviderWeb, spec.PublicID)
 		values = append(values, modeldomain.Route{PublicID: publicID, Provider: account.ProviderWeb, UpstreamModel: spec.UpstreamModel, Capability: spec.Capability, Enabled: true})
+		// The Web editing product is a separate upstream route. Give each
+		// generation model an edit capability under its public name so clients
+		// can attach a reference image without switching model IDs.
+		if spec.Capability == modeldomain.CapabilityImage {
+			values = append(values, modeldomain.Route{PublicID: publicID, Provider: account.ProviderWeb, UpstreamModel: "imagine-image-edit", Capability: modeldomain.CapabilityImageEdit, Enabled: true})
+		}
 	}
 	return values
 }
