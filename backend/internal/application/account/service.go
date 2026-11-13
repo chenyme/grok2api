@@ -3618,6 +3618,16 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		}
 		cancel()
 		if refreshErr != nil || !acquired {
+			if errors.Is(refreshErr, ErrNotFound) {
+				// The account row is gone: deleted by an admin or by cleanup while
+				// this refresh was still queued. Retrying can never succeed, so drop
+				// the state instead of deferring it. Deferring leaves a pending entry
+				// that the recovery loop re-enqueues forever, once per deleted
+				// account and mode, for as long as the process lives.
+				s.forgetQuotaRefresh(request.key)
+				perfmetrics.Default.Add("quota_refresh_events", perfmetrics.Labels{Subsystem: "quota", Stage: "refresh", Outcome: "account_missing"}, 1)
+				return
+			}
 			if errors.Is(refreshErr, provider.ErrEgressBlocked) {
 				// The adapter already logged the egress block once; every
 				// account behind it waits for the shared cool-down.
@@ -3699,6 +3709,14 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 
 func (s *Service) deferQuotaRefresh(key string) {
 	s.deferQuotaRefreshAfter(key, 0)
+}
+
+// forgetQuotaRefresh drops the retry state of a refresh that can never succeed,
+// so the recovery loop stops re-enqueueing it.
+func (s *Service) forgetQuotaRefresh(key string) {
+	s.quotaRefreshMu.Lock()
+	delete(s.quotaRefreshes, key)
+	s.quotaRefreshMu.Unlock()
 }
 
 // deferQuotaRefreshAfter backs off like deferQuotaRefresh but never retries
