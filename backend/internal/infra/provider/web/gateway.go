@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,7 +24,7 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/searchresult"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/sessionidentity"
-	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
+	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
@@ -103,16 +104,7 @@ func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Creden
 		return nil, nil, nil, "", err
 	}
 	requestCtx, totalCancel := context.WithTimeout(ctx, time.Duration(cfg.ChatTimeoutSeconds)*time.Second)
-	var idleCancel context.CancelCauseFunc
-	if options.enforceStreamIdle && cfg.StreamIdleTimeoutSeconds > 0 {
-		requestCtx, idleCancel = context.WithCancelCause(requestCtx)
-	}
-	cancel := func() {
-		if idleCancel != nil {
-			idleCancel(nil)
-		}
-		totalCancel()
-	}
+	cancel := totalCancel
 	var connection *websocket.Conn
 	var handshake *fhttp.Response
 	var dialErr error
@@ -131,21 +123,18 @@ func (a *Adapter) openGatewayChat(ctx context.Context, credential account.Creden
 		return nil, nil, nil, "", dialErr
 	}
 	reader, writer := io.Pipe()
+	var idleTimeout time.Duration
+	if options.enforceStreamIdle {
+		idleTimeout = time.Duration(cfg.StreamIdleTimeoutSeconds) * time.Second
+	}
 	go func() {
-		<-requestCtx.Done()
-		_ = connection.Close()
-	}()
-	go func() {
-		streamErr := runGatewayStream(requestCtx, connection, writer, spec.Mode, input.Prompt, attachments, previous)
+		streamErr := runGatewayStream(requestCtx, connection, writer, spec.Mode, input.Prompt, attachments, previous, idleTimeout)
 		cancel()
 		_ = connection.Close()
 		_ = writer.CloseWithError(streamErr)
 	}()
 	request, _ := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
 	body := io.ReadCloser(&cancelBody{ReadCloser: reader, cancel: cancel})
-	if idleCancel != nil {
-		body = providerstreamidle.New(body, time.Duration(cfg.StreamIdleTimeoutSeconds)*time.Second, idleCancel)
-	}
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Status:     "200 OK",
@@ -228,11 +217,12 @@ func gatewayHandshakeResponse(response *fhttp.Response, endpoint string) *http.R
 	}
 }
 
-func runGatewayStream(ctx context.Context, connection *websocket.Conn, writer io.Writer, model, prompt string, attachments []string, previous *inferencedomain.WebResponseState) error {
+func runGatewayStream(ctx context.Context, connection *websocket.Conn, writer io.Writer, model, prompt string, attachments []string, previous *inferencedomain.WebResponseState, idleTimeout time.Duration) error {
 	connection.SetReadLimit(gatewayMaxFrameBytes)
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = connection.SetReadDeadline(deadline)
-	}
+	remaining := idleTimeout
+	activity := newGatewayActivity()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
 	sender := &gatewaySender{connection: connection}
 	initialEventID := "evt_init_" + newRequestUUID()
 	initial := map[string]any{
@@ -256,8 +246,32 @@ func runGatewayStream(ctx context.Context, connection *websocket.Conn, writer io
 	attached := false
 	turnSent := false
 	for {
+		readStarted := time.Now()
+		deadline, hasDeadline := ctx.Deadline()
+		idleDeadline := false
+		if idleTimeout > 0 {
+			candidate := readStarted.Add(remaining)
+			if !hasDeadline || candidate.Before(deadline) {
+				deadline, hasDeadline, idleDeadline = candidate, true, true
+			}
+		}
+		if hasDeadline {
+			if err := connection.SetReadDeadline(deadline); err != nil {
+				return fmt.Errorf("设置 Grok Gateway 读取期限: %w", err)
+			}
+		}
 		messageType, data, err := connection.ReadMessage()
+		if idleTimeout > 0 {
+			remaining -= time.Since(readStarted)
+		}
 		if err != nil {
+			if ctx.Err() != nil {
+				return context.Cause(ctx)
+			}
+			var networkError net.Error
+			if idleDeadline && errors.As(err, &networkError) && networkError.Timeout() {
+				return &neterror.IdleTimeoutError{DataObserved: activity.observed}
+			}
 			return fmt.Errorf("读取 Grok Gateway: %w", err)
 		}
 		if messageType != websocket.TextMessage {
@@ -269,6 +283,9 @@ func runGatewayStream(ctx context.Context, connection *websocket.Conn, writer io
 		var envelope gatewayEnvelope
 		if err := json.Unmarshal(data, &envelope); err != nil {
 			continue
+		}
+		if idleTimeout > 0 && activity.observeFrame(data) {
+			remaining = idleTimeout
 		}
 		if _, err := writer.Write(append(append([]byte(nil), data...), '\n')); err != nil {
 			return err

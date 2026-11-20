@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 	fhttptest "github.com/bogdanfinn/fhttp/httptest"
@@ -29,7 +30,6 @@ import (
 	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
-	providerstreamidle "github.com/chenyme/grok2api/backend/internal/infra/provider/streamidle"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/neterror"
 	"github.com/chenyme/grok2api/backend/internal/repository"
@@ -600,16 +600,19 @@ func TestOpenChatScopesStreamIdleTimeoutToTextStreams(t *testing.T) {
 	}
 
 	for _, enforceStreamIdle := range []bool{false, true} {
-		upstream, lease, _, _, openErr := adapter.openChat(context.Background(), credential, "", spec, normalizedChatInput{Prompt: "hello"}, gatewayOpenOptions{enforceStreamIdle: enforceStreamIdle})
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		upstream, lease, _, _, openErr := adapter.openChat(ctx, credential, "", spec, normalizedChatInput{Prompt: "hello"}, gatewayOpenOptions{enforceStreamIdle: enforceStreamIdle})
 		if openErr != nil {
+			cancel()
 			t.Fatal(openErr)
 		}
-		_, wrapped := upstream.Body.(*providerstreamidle.ReadCloser)
-		if wrapped != enforceStreamIdle {
-			t.Fatalf("stream-idle wrapper present = %t, enforce = %t", wrapped, enforceStreamIdle)
-		}
+		_, readErr := io.Copy(io.Discard, upstream.Body)
 		_ = upstream.Body.Close()
 		lease.Release()
+		cancel()
+		if errors.Is(readErr, neterror.ErrUpstreamStreamIdleTimeout) != enforceStreamIdle {
+			t.Fatalf("read error = %v, enforce idle = %t", readErr, enforceStreamIdle)
+		}
 	}
 }
 
