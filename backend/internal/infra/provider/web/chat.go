@@ -443,8 +443,10 @@ func (a *Adapter) handleResponseResource(ctx context.Context, request provider.R
 
 func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser, lease *infraegress.Lease, credential account.Credential, responseID, model, operation, prompt string, previous *inferencedomain.WebResponseState, tools toolConfiguration, parallelTools bool, options conversation.ResponseOptions) io.ReadCloser {
 	reader, writer := io.Pipe()
+	body := &gatewayStreamBody{ReadCloser: reader, upstream: source, done: make(chan struct{})}
 	go func() {
-		defer source.Close()
+		defer close(body.done)
+		defer body.closeUpstream()
 		defer lease.Release()
 		parsed := &parsedChat{
 			ResponseID: responseID, InputTokens: estimateTokens(prompt), Tools: tools.ResponseTools,
@@ -574,6 +576,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 			return flushSideChannel()
 		})
 		if err != nil {
+			err = body.upstreamError(ctx, err)
 			a.egress.Feedback(context.WithoutCancel(ctx), lease.NodeID, 0, err)
 			_ = writer.CloseWithError(err)
 			return
@@ -640,7 +643,7 @@ func (a *Adapter) streamOpenAIResponse(ctx context.Context, source io.ReadCloser
 		}
 		_ = writer.Close()
 	}()
-	return reader
+	return body
 }
 
 func (a *Adapter) saveResponseState(ctx context.Context, accountID uint64, responseID string, parsed parsedChat, data []byte) {
