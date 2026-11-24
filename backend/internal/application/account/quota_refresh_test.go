@@ -12,6 +12,7 @@ import (
 	"time"
 
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/persistence/relational"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/runtime/memory"
@@ -919,6 +920,142 @@ func TestSyncStaleConsoleQuotasRefreshesOnlyOldCompleteSnapshots(t *testing.T) {
 	if completeConsoleUsageSnapshot(stored[legacy.ID]) {
 		t.Fatalf("legacy snapshot must remain owned by migration: %#v", stored[legacy.ID])
 	}
+}
+
+func TestQuotaRefreshDropsPermanentErrorsWithoutRetrying(t *testing.T) {
+	ctx := context.Background()
+	database, err := relational.OpenSQLite(ctx, filepath.Join(t.TempDir(), "quota-refresh-permanent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if err := database.InitializeSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	accounts := relational.NewAccountRepository(database)
+	credential, _, err := accounts.UpsertByIdentity(ctx, accountdomain.Credential{
+		Provider: accountdomain.ProviderConsole, AuthType: accountdomain.AuthTypeSSO,
+		Name: "perm-console", SourceKey: "perm-console", EncryptedAccessToken: "encrypted",
+		Enabled: true, AuthStatus: accountdomain.AuthStatusActive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name      string
+		accountID uint64
+		adapterEr error
+	}{
+		{name: "not_found", accountID: 999999, adapterEr: nil},
+		{name: "unauthorized", accountID: credential.ID, adapterEr: provider.ErrUnauthorized},
+		{name: "bound_node_unavailable", accountID: credential.ID, adapterEr: fmt.Errorf("%w: incompatible scope", egressdomain.ErrBoundNodeUnavailable)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &rateLimitConsoleQuotaAdapter{err: tc.adapterEr}
+			service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+			service.QueueQuotaRefresh(tc.accountID, "console")
+			request := <-service.quotaRefreshQueue
+			service.quotaRefreshMu.Lock()
+			state := service.quotaRefreshes[request.key]
+			state.queued = false
+			state.running = true
+			service.quotaRefreshMu.Unlock()
+
+			service.runQuotaRefresh(ctx, request)
+
+			service.quotaRefreshMu.Lock()
+			_, exists := service.quotaRefreshes[request.key]
+			service.quotaRefreshMu.Unlock()
+			if exists {
+				t.Fatalf("permanent error %q retained retry state in quotaRefreshes", tc.name)
+			}
+		})
+	}
+
+	t.Run("drop_resets_failures_for_newer_generation", func(t *testing.T) {
+		adapter := &rateLimitConsoleQuotaAdapter{err: fmt.Errorf("%w: incompatible scope", egressdomain.ErrBoundNodeUnavailable)}
+		service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+		service.QueueQuotaRefresh(credential.ID, "console")
+		request := <-service.quotaRefreshQueue
+		service.quotaRefreshMu.Lock()
+		state := service.quotaRefreshes[request.key]
+		state.queued = false
+		state.running = true
+		state.failures = 4
+		service.quotaRefreshMu.Unlock()
+
+		service.dropQuotaRefresh(ctx, request, state.generation-1, 0)
+
+		service.quotaRefreshMu.Lock()
+		updated := service.quotaRefreshes[request.key]
+		service.quotaRefreshMu.Unlock()
+		if updated == nil || updated.running || !updated.pending || updated.failures != 0 {
+			t.Fatalf("updated state after concurrent generation = %#v", updated)
+		}
+	})
+
+	t.Run("reconcile_rate_limit_skips_queue_on_permanent_error", func(t *testing.T) {
+		adapter := &rateLimitConsoleQuotaAdapter{err: fmt.Errorf("%w: incompatible scope", egressdomain.ErrBoundNodeUnavailable)}
+		service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+		state, err := service.ReconcileRateLimit(ctx, credential.ID, "console", 0)
+		if state != RateLimitReconcileInconclusive || !errors.Is(err, egressdomain.ErrBoundNodeUnavailable) {
+			t.Fatalf("ReconcileRateLimit = %q, %v", state, err)
+		}
+		service.quotaRefreshMu.Lock()
+		queuedCount := len(service.quotaRefreshes)
+		service.quotaRefreshMu.Unlock()
+		if queuedCount != 0 {
+			t.Fatalf("expected 0 queued retries after permanent ReconcileRateLimit error, got %d", queuedCount)
+		}
+	})
+
+	t.Run("syncConsoleQuotaAccounts_queue_policy", func(t *testing.T) {
+		// Periodic migration disables re-queuing even for transient errors.
+		transientAdapter := &rateLimitConsoleQuotaAdapter{err: errors.New("temporary upstream timeout")}
+		migrationService := NewService(accounts, nil, nil, nil, provider.NewRegistry(transientAdapter), nil, nil)
+		if _, failed, runErr := migrationService.syncConsoleQuotaAccounts(ctx, "console_usage_migration", []uint64{credential.ID}, false); runErr != nil || failed != 1 {
+			t.Fatalf("migration err=%v failed=%d", runErr, failed)
+		}
+		migrationService.quotaRefreshMu.Lock()
+		migrationQueued := len(migrationService.quotaRefreshes)
+		migrationService.quotaRefreshMu.Unlock()
+		if migrationQueued != 0 {
+			t.Fatalf("expected 0 queued retries for migration, got %d", migrationQueued)
+		}
+
+		// Catch-up queues transient errors but still skips permanent and egress-blocked errors.
+		catchupTransient := NewService(accounts, nil, nil, nil, provider.NewRegistry(transientAdapter), nil, nil)
+		if _, failed, runErr := catchupTransient.syncConsoleQuotaAccounts(ctx, "console_quota_stale_catchup", []uint64{credential.ID}, true); runErr != nil || failed != 1 {
+			t.Fatalf("catchup transient err=%v failed=%d", runErr, failed)
+		}
+		catchupTransient.quotaRefreshMu.Lock()
+		catchupTransientQueued := len(catchupTransient.quotaRefreshes)
+		catchupTransient.quotaRefreshMu.Unlock()
+		if catchupTransientQueued != 1 {
+			t.Fatalf("expected 1 queued retry for transient catchup error, got %d", catchupTransientQueued)
+		}
+
+		for _, testErr := range []error{
+			fmt.Errorf("%w: scope mismatch", egressdomain.ErrBoundNodeUnavailable),
+			provider.ErrUnauthorized,
+			provider.ErrEgressBlocked,
+		} {
+			adapter := &rateLimitConsoleQuotaAdapter{err: testErr}
+			service := NewService(accounts, nil, nil, nil, provider.NewRegistry(adapter), nil, nil)
+			_, failed, runErr := service.syncConsoleQuotaAccounts(ctx, "console_quota_stale_catchup", []uint64{credential.ID}, true)
+			if runErr != nil || failed != 1 {
+				t.Fatalf("err=%v failed=%d for %v", runErr, failed, testErr)
+			}
+			service.quotaRefreshMu.Lock()
+			queuedCount := len(service.quotaRefreshes)
+			service.quotaRefreshMu.Unlock()
+			if queuedCount != 0 {
+				t.Fatalf("expected 0 queued retries for %v, got %d", testErr, queuedCount)
+			}
+		}
+	})
 }
 
 func TestObserveResponseModelCoalescesUnchangedValues(t *testing.T) {

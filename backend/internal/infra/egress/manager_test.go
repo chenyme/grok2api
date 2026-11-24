@@ -1182,6 +1182,100 @@ func TestAcquireCredentialUsesConfiguredFixedFallbackWhenBoundNodeIsUnavailable(
 	}
 }
 
+type notFoundEgressRepository struct {
+	egressRepositoryTestStub
+	getErr error
+}
+
+func (r notFoundEgressRepository) GetEgressNode(ctx context.Context, id uint64) (domain.Node, error) {
+	if r.getErr != nil {
+		return domain.Node{}, r.getErr
+	}
+	return r.egressRepositoryTestStub.GetEgressNode(ctx, id)
+}
+
+func TestAcquireCredentialBoundNodeUnavailableClassification(t *testing.T) {
+	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyURL, err := cipher.Encrypt("http://proxy.example:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().UTC().Add(5 * time.Minute)
+	cred := accountdomain.Credential{ID: 42, Provider: accountdomain.ProviderConsole, EgressNodeID: 1}
+
+	permanentCases := []struct {
+		name string
+		repo repository.EgressRepository
+	}{
+		{name: "missing_node", repo: notFoundEgressRepository{getErr: repository.ErrNotFound}},
+		{name: "incompatible_scope", repo: egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "build", Scope: domain.ScopeBuild, Enabled: true, Health: 1, EncryptedProxyURL: proxyURL}}}},
+		{name: "disabled_node", repo: egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "disabled", Scope: domain.ScopeConsole, Enabled: false, Health: 1, EncryptedProxyURL: proxyURL}}}},
+		{name: "empty_proxy_url", repo: egressRepositoryTestStub{nodes: []domain.Node{{ID: 1, Name: "empty", Scope: domain.ScopeConsole, Enabled: true, Health: 1}}}},
+	}
+	for _, tc := range permanentCases {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := NewManager(tc.repo, cipher)
+			_, acquireErr := manager.AcquireCredential(context.Background(), domain.ScopeConsole, cred)
+			if !errors.Is(acquireErr, domain.ErrBoundNodeUnavailable) {
+				t.Fatalf("err = %v, want ErrBoundNodeUnavailable", acquireErr)
+			}
+		})
+	}
+
+	t.Run("transient_db_read_error_is_not_permanent", func(t *testing.T) {
+		manager := NewManager(notFoundEgressRepository{getErr: errors.New("database locked")}, cipher)
+		_, acquireErr := manager.AcquireCredential(context.Background(), domain.ScopeConsole, cred)
+		if acquireErr == nil || errors.Is(acquireErr, domain.ErrBoundNodeUnavailable) {
+			t.Fatalf("db read err = %v, want transient error", acquireErr)
+		}
+	})
+
+	t.Run("bound_node_cooldown_is_transient", func(t *testing.T) {
+		manager := NewManager(egressRepositoryTestStub{nodes: []domain.Node{
+			{ID: 1, Name: "cooling", Scope: domain.ScopeConsole, Enabled: true, Health: 1, EncryptedProxyURL: proxyURL, CooldownUntil: &future},
+		}}, cipher)
+		_, acquireErr := manager.AcquireCredential(context.Background(), domain.ScopeConsole, cred)
+		if acquireErr == nil || errors.Is(acquireErr, domain.ErrBoundNodeUnavailable) {
+			t.Fatalf("cooldown err = %v, want transient error", acquireErr)
+		}
+	})
+
+	t.Run("disabled_bound_node_with_cooling_fallback_is_transient", func(t *testing.T) {
+		cfg := domain.DefaultOperationsConfig()
+		cfg.Fallbacks[domain.ScopeConsole] = domain.FallbackConfig{Mode: domain.FallbackModeFixed, NodeID: 2}
+		manager := NewManager(fallbackEgressRepository{
+			egressRepositoryTestStub: egressRepositoryTestStub{nodes: []domain.Node{
+				{ID: 1, Name: "disabled", Scope: domain.ScopeConsole, Enabled: false, EncryptedProxyURL: proxyURL},
+				{ID: 2, Name: "cooling-fallback", Scope: domain.ScopeConsole, Enabled: true, Health: 1, EncryptedProxyURL: proxyURL, CooldownUntil: &future},
+			}},
+			config: cfg,
+		}, cipher)
+		_, acquireErr := manager.AcquireCredential(context.Background(), domain.ScopeConsole, cred)
+		if acquireErr == nil || errors.Is(acquireErr, domain.ErrBoundNodeUnavailable) {
+			t.Fatalf("cooling fallback err = %v, want transient error", acquireErr)
+		}
+	})
+
+	t.Run("disabled_bound_node_with_disabled_fallback_is_permanent", func(t *testing.T) {
+		cfg := domain.DefaultOperationsConfig()
+		cfg.Fallbacks[domain.ScopeConsole] = domain.FallbackConfig{Mode: domain.FallbackModeFixed, NodeID: 2}
+		manager := NewManager(fallbackEgressRepository{
+			egressRepositoryTestStub: egressRepositoryTestStub{nodes: []domain.Node{
+				{ID: 1, Name: "disabled", Scope: domain.ScopeConsole, Enabled: false, EncryptedProxyURL: proxyURL},
+				{ID: 2, Name: "disabled-fallback", Scope: domain.ScopeConsole, Enabled: false, EncryptedProxyURL: proxyURL},
+			}},
+			config: cfg,
+		}, cipher)
+		_, acquireErr := manager.AcquireCredential(context.Background(), domain.ScopeConsole, cred)
+		if !errors.Is(acquireErr, domain.ErrBoundNodeUnavailable) {
+			t.Fatalf("disabled fallback err = %v, want ErrBoundNodeUnavailable", acquireErr)
+		}
+	})
+}
+
 func TestFlareSolverrModeIgnoresCredentialCookie(t *testing.T) {
 	cipher, err := security.NewCipher("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
 	if err != nil {

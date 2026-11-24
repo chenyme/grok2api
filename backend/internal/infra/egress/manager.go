@@ -827,16 +827,16 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 				if !errors.Is(err, repository.ErrNotFound) {
 					return nil, true, primaryErr
 				}
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr, true)
 			}
 			if !domain.SupportsScope(selected.Scope, scope) {
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope))
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope), true)
 			}
 			if !selected.Enabled && !qualityProbe {
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID))
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID), true)
 			}
 			if strings.TrimSpace(selected.EncryptedProxyURL) == "" {
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID))
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID), true)
 			}
 			proxyPool := m.isProxyPoolNode(selected)
 			if !qualityProbe && !proxyPool && selected.CooldownUntil != nil && now.Before(*selected.CooldownUntil) {
@@ -850,7 +850,7 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 						continue
 					}
 				}
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 正在冷却", boundNodeID))
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 正在冷却", boundNodeID), false)
 			}
 			return m.leaseForNode(ctx, scope, affinity, encryptedCredentialCookies, managedClearance, selected)
 		}
@@ -924,14 +924,22 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 
 // acquireUnavailableFallback keeps the primary selection error when fallback
 // is disabled. A fixed fallback is never silently replaced with direct traffic
-// when it is invalid or unavailable.
-func (m *Manager) acquireUnavailableFallback(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, managedClearance bool, primaryErr error) (*Lease, bool, error) {
+// when it is invalid or unavailable. Only when no fallback can transiently
+// recover a permanent primary failure is the error marked with
+// domain.ErrBoundNodeUnavailable.
+func (m *Manager) acquireUnavailableFallback(ctx context.Context, scope domain.Scope, affinity string, allowDirect bool, encryptedCredentialCookies string, managedClearance bool, primaryErr error, permanent bool) (*Lease, bool, error) {
 	lease, configured, applied, err := m.acquireFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
 	if err != nil {
+		if permanent && errors.Is(err, errPermanentFallbackConfig) {
+			return nil, configured, wrapBoundNodeUnavailable(err)
+		}
 		return nil, configured, err
 	}
 	if applied {
 		return lease, configured, nil
+	}
+	if permanent {
+		return nil, true, wrapBoundNodeUnavailable(primaryErr)
 	}
 	return nil, true, primaryErr
 }
@@ -975,7 +983,7 @@ func (m *Manager) applyFallback(ctx context.Context, scope domain.Scope, affinit
 		}
 		return lease, true, true, nil
 	default:
-		return nil, false, false, fallbackError(primaryErr, fmt.Errorf("出口回退模式 %q 无效", fallback.Mode))
+		return nil, false, false, fallbackError(primaryErr, wrapPermanentFallbackConfig(fmt.Errorf("出口回退模式 %q 无效", fallback.Mode)))
 	}
 }
 
@@ -1028,46 +1036,77 @@ func (m *Manager) loadOperationsConfig(ctx context.Context, now time.Time) (doma
 
 func (m *Manager) fixedFallbackNode(ctx context.Context, scope domain.Scope, nodeID uint64) (domain.Node, error) {
 	if nodeID == 0 {
-		return domain.Node{}, errors.New("固定回退节点未指定")
+		return domain.Node{}, wrapPermanentFallbackConfig(errors.New("固定回退节点未指定"))
 	}
 	selected, err := m.repository.GetEgressNode(ctx, nodeID)
 	if err != nil {
-		return domain.Node{}, fmt.Errorf("读取固定回退节点 %d: %w", nodeID, err)
+		readErr := fmt.Errorf("读取固定回退节点 %d: %w", nodeID, err)
+		if errors.Is(err, repository.ErrNotFound) {
+			return domain.Node{}, wrapPermanentFallbackConfig(readErr)
+		}
+		return domain.Node{}, readErr
 	}
 	if !domain.SupportsScope(selected.Scope, scope) {
-		return domain.Node{}, fmt.Errorf("固定回退节点 %d 与 %s 作用域不兼容", nodeID, scope)
+		return domain.Node{}, wrapPermanentFallbackConfig(fmt.Errorf("固定回退节点 %d 与 %s 作用域不兼容", nodeID, scope))
 	}
 	if !selected.Enabled {
-		return domain.Node{}, fmt.Errorf("固定回退节点 %d 已禁用", nodeID)
+		return domain.Node{}, wrapPermanentFallbackConfig(fmt.Errorf("固定回退节点 %d 已禁用", nodeID))
 	}
 	if selected.ProxyPool {
-		return domain.Node{}, fmt.Errorf("固定回退节点 %d 使用代理池模式", nodeID)
+		return domain.Node{}, wrapPermanentFallbackConfig(fmt.Errorf("固定回退节点 %d 使用代理池模式", nodeID))
 	}
 	if strings.TrimSpace(selected.EncryptedProxyURL) == "" {
-		return domain.Node{}, fmt.Errorf("固定回退节点 %d 未配置代理地址", nodeID)
+		return domain.Node{}, wrapPermanentFallbackConfig(fmt.Errorf("固定回退节点 %d 未配置代理地址", nodeID))
 	}
 	if selected.CooldownUntil != nil && time.Now().UTC().Before(*selected.CooldownUntil) {
 		return domain.Node{}, fmt.Errorf("固定回退节点 %d 正在冷却", nodeID)
 	}
 	proxyURL, err := m.cipher.Decrypt(selected.EncryptedProxyURL)
 	if err != nil {
-		return domain.Node{}, fmt.Errorf("读取固定回退节点 %d 代理配置: %w", nodeID, err)
+		return domain.Node{}, wrapPermanentFallbackConfig(fmt.Errorf("读取固定回退节点 %d 代理配置: %w", nodeID, err))
 	}
 	proxyURL, err = application.NormalizeProxyURL(proxyURL)
 	if err != nil || proxyURL == "" {
-		return domain.Node{}, fmt.Errorf("固定回退节点 %d 代理地址无效", nodeID)
+		return domain.Node{}, wrapPermanentFallbackConfig(fmt.Errorf("固定回退节点 %d 代理地址无效", nodeID))
 	}
 	if strings.Contains(proxyURL, application.ProxyAccountPlaceholder) {
-		return domain.Node{}, fmt.Errorf("固定回退节点 %d 使用账号代理模板", nodeID)
+		return domain.Node{}, wrapPermanentFallbackConfig(fmt.Errorf("固定回退节点 %d 使用账号代理模板", nodeID))
 	}
 	return selected, nil
+}
+
+var errPermanentFallbackConfig = errors.New("permanent fallback configuration")
+
+type taggedError struct {
+	err error
+	tag error
+}
+
+func (e taggedError) Error() string { return e.err.Error() }
+
+func (e taggedError) Unwrap() []error {
+	return []error{e.err, e.tag}
+}
+
+func wrapBoundNodeUnavailable(err error) error {
+	if err == nil {
+		return nil
+	}
+	return taggedError{err: err, tag: domain.ErrBoundNodeUnavailable}
+}
+
+func wrapPermanentFallbackConfig(err error) error {
+	if err == nil {
+		return nil
+	}
+	return taggedError{err: err, tag: errPermanentFallbackConfig}
 }
 
 func fallbackError(primaryErr, fallbackErr error) error {
 	if primaryErr == nil {
 		return fallbackErr
 	}
-	return fmt.Errorf("%w；出口回退不可用: %v", primaryErr, fallbackErr)
+	return fmt.Errorf("%w；出口回退不可用: %w", primaryErr, fallbackErr)
 }
 
 type clientOptions struct {
