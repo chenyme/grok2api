@@ -755,6 +755,15 @@ func TestSyncQuotaAndIdentityUseBoundConsoleScopedEgressNode(t *testing.T) {
 	defer originServer.Close()
 
 	var proxiedRequests atomic.Int32
+	var connsMu sync.Mutex
+	var hijackedConns []net.Conn
+	t.Cleanup(func() {
+		connsMu.Lock()
+		for _, conn := range hijackedConns {
+			_ = conn.Close()
+		}
+		connsMu.Unlock()
+	})
 	proxyServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		proxiedRequests.Add(1)
 		if request.Method != http.MethodConnect {
@@ -777,6 +786,9 @@ func TestSyncQuotaAndIdentityUseBoundConsoleScopedEgressNode(t *testing.T) {
 			_ = upstream.Close()
 			return
 		}
+		connsMu.Lock()
+		hijackedConns = append(hijackedConns, clientConn, upstream)
+		connsMu.Unlock()
 		_, _ = io.WriteString(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 		go func() {
 			defer upstream.Close()
