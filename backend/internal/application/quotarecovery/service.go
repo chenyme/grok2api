@@ -2,11 +2,14 @@ package quotarecovery
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
 	"github.com/chenyme/grok2api/backend/internal/repository"
 )
@@ -94,7 +97,7 @@ func (s *Service) runOne(ctx context.Context, now time.Time, value accountdomain
 	probeCtx, cancel := context.WithTimeout(ctx, recoveryProbeTimeout)
 	window, probeErr := s.syncer.ProbeQuotaMode(probeCtx, value.AccountID, value.Mode)
 	cancel()
-	if probeErr == nil && window.Remaining > 0 {
+	if (probeErr == nil && window.Remaining > 0) || isTerminalQuotaRecoveryError(probeErr) {
 		if err := s.queue.AckQuotaRecovery(ctx, value); err != nil {
 			s.logger.Warn("quota_recovery_ack_failed", "account_id", value.AccountID, "mode", value.Mode, "error", err)
 		}
@@ -116,11 +119,18 @@ func (s *Service) runOne(ctx context.Context, now time.Time, value accountdomain
 		// Grok Web can report a duration without an absolute reset timestamp.
 		value.DueAt = now.Add(time.Duration(window.WindowSeconds) * time.Second)
 	} else {
-		value.DueAt = now.Add(s.backoff(value.Attempts))
+		delay := max(s.backoff(value.Attempts), provider.ErrorRetryAfter(probeErr))
+		value.DueAt = now.Add(delay)
 	}
 	if err := s.queue.RescheduleQuotaRecovery(ctx, value); err != nil {
 		s.logger.Warn("quota_recovery_reschedule_failed", "account_id", value.AccountID, "mode", value.Mode, "error", err)
 	}
+}
+
+func isTerminalQuotaRecoveryError(err error) bool {
+	return errors.Is(err, accountapp.ErrNotFound) ||
+		errors.Is(err, repository.ErrNotFound) ||
+		errors.Is(err, provider.ErrUnauthorized)
 }
 
 func (s *Service) reconcileDue(ctx context.Context, now time.Time) {

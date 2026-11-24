@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	accountapp "github.com/chenyme/grok2api/backend/internal/application/account"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	"github.com/chenyme/grok2api/backend/internal/infra/provider"
+	"github.com/chenyme/grok2api/backend/internal/repository"
 )
 
 func TestRunDueClaimsBoundedBatchAndProcessesConcurrently(t *testing.T) {
@@ -73,6 +76,49 @@ func TestRunOnePreservesNonConsoleWindowDuration(t *testing.T) {
 	}
 }
 
+type retryAfterStubError struct {
+	delay time.Duration
+}
+
+func (e retryAfterStubError) Error() string                     { return "egress blocked" }
+func (e retryAfterStubError) RetryAfterDuration() time.Duration { return e.delay }
+
+func TestRunOneAcksTerminalErrorsAndRespectsRetryAfter(t *testing.T) {
+	now := time.Date(2026, 8, 5, 8, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "account_not_found", err: accountapp.ErrNotFound},
+		{name: "repo_not_found", err: repository.ErrNotFound},
+		{name: "unauthorized", err: provider.ErrUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			queue := &quotaQueueStub{}
+			syncer := &quotaSyncStub{err: tc.err}
+			service := NewService(testLogger(), queue, syncer, 30*time.Second, 30*time.Minute)
+
+			service.runOne(context.Background(), now, accountdomain.QuotaRecoveryEvent{AccountID: 9, Mode: "fast", DueAt: now, ClaimToken: "claim"})
+
+			if queue.acked != 1 || len(queue.rescheduled) != 0 {
+				t.Fatalf("acked=%d rescheduled=%#v, want acked=1 rescheduled=0", queue.acked, queue.rescheduled)
+			}
+		})
+	}
+
+	t.Run("transient_error_uses_max_of_backoff_and_retry_after", func(t *testing.T) {
+		queue := &quotaQueueStub{}
+		syncer := &quotaSyncStub{err: retryAfterStubError{delay: 5 * time.Minute}}
+		service := NewService(testLogger(), queue, syncer, 30*time.Second, 30*time.Minute)
+
+		service.runOne(context.Background(), now, accountdomain.QuotaRecoveryEvent{AccountID: 10, Mode: "console", DueAt: now, ClaimToken: "claim"})
+
+		if queue.acked != 0 || len(queue.rescheduled) != 1 || !queue.rescheduled[0].DueAt.Equal(now.Add(5*time.Minute)) {
+			t.Fatalf("acked=%d rescheduled=%#v", queue.acked, queue.rescheduled)
+		}
+	})
+}
+
 type quotaQueueStub struct {
 	mu          sync.Mutex
 	claimed     []accountdomain.QuotaRecoveryEvent
@@ -132,6 +178,7 @@ type quotaSyncStub struct {
 	maxConcurrent int
 	due           []accountdomain.QuotaWindow
 	window        accountdomain.QuotaWindow
+	err           error
 }
 
 func (s *quotaSyncStub) ProbeQuotaMode(_ context.Context, accountID uint64, mode string) (accountdomain.QuotaWindow, error) {
@@ -145,6 +192,9 @@ func (s *quotaSyncStub) ProbeQuotaMode(_ context.Context, accountID uint64, mode
 	s.mu.Lock()
 	s.current--
 	s.mu.Unlock()
+	if s.err != nil {
+		return accountdomain.QuotaWindow{}, s.err
+	}
 	if s.window.Mode != "" {
 		window := s.window
 		window.AccountID = accountID
