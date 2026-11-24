@@ -437,3 +437,112 @@ func TestStatsigInvalidationOnlyAppliesToURLMode(t *testing.T) {
 		t.Fatal("URL Statsig must be invalidated after anti-bot rejection")
 	}
 }
+
+func TestStatsigSignerBacksOffConsecutiveFailuresAndResets(t *testing.T) {
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	var fetches int
+	var fetchErr error = errStatsigMetaMissing
+	signer := newStatsigSigner()
+	signer.now = func() time.Time { return now }
+	signer.validateEndpoint = func(context.Context, string) error { return nil }
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		fetches++
+		if fetchErr != nil {
+			return "", fetchErr
+		}
+		return "recovered-meta", nil
+	}
+	raw := make([]byte, 70)
+	raw[0] = 9
+	validSig := base64.RawStdEncoding.EncodeToString(raw)
+	signer.client = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		body, _ := json.Marshal(map[string]string{"x-statsig-id": validSig})
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body))), Header: http.Header{}}, nil
+	})}
+
+	// 1st failure records a 5s cooldown.
+	_, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/media/imagine/quota_info")
+	if !errors.Is(err, errStatsigMetaMissing) || fetches != 1 {
+		t.Fatalf("first err=%v fetches=%d", err, fetches)
+	}
+	// Within 5s cooldown, Sign short-circuits without hitting fetchMeta.
+	now = now.Add(4 * time.Second)
+	_, _, err = signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/media/imagine/quota_info")
+	if !errors.Is(err, errStatsigCooldown) || !errors.Is(err, errStatsigMetaMissing) || fetches != 1 {
+		t.Fatalf("suppressed err=%v fetches=%d", err, fetches)
+	}
+	// Another path is unaffected by cooldown on the failing path.
+	fetchErr = nil
+	if sig, _, otherErr := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/other"); otherErr != nil || sig != validSig || fetches != 2 {
+		t.Fatalf("other path sig=%q err=%v fetches=%d", sig, otherErr, fetches)
+	}
+	// After 5s, 2nd failure doubles cooldown to 10s.
+	fetchErr = errStatsigMetaMissing
+	now = now.Add(2 * time.Second)
+	_, _, err = signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/media/imagine/quota_info")
+	if !errors.Is(err, errStatsigMetaMissing) || fetches != 3 {
+		t.Fatalf("second err=%v fetches=%d", err, fetches)
+	}
+	now = now.Add(9 * time.Second)
+	_, _, err = signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/media/imagine/quota_info")
+	if !errors.Is(err, errStatsigCooldown) || fetches != 3 {
+		t.Fatalf("second cooldown err=%v fetches=%d", err, fetches)
+	}
+	// Explicit Invalidate clears cooldown immediately.
+	signer.Invalidate("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/media/imagine/quota_info")
+	fetchErr = nil
+	sig, source, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/media/imagine/quota_info")
+	if err != nil || sig != validSig || source != "refresh" || fetches != 4 {
+		t.Fatalf("recovered sig=%q source=%q err=%v fetches=%d", sig, source, err, fetches)
+	}
+
+	// Caller context cancellation / deadline must not record a shared failure cooldown.
+	signer.Invalidate("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/cancel")
+	fetchErr = context.Canceled
+	_, _, err = signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/cancel")
+	if !errors.Is(err, context.Canceled) || fetches != 5 {
+		t.Fatalf("canceled err=%v fetches=%d", err, fetches)
+	}
+	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	fetchErr = context.DeadlineExceeded
+	_, _, err = signer.Sign(expiredCtx, "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/cancel")
+	if !errors.Is(err, context.DeadlineExceeded) || fetches != 6 {
+		t.Fatalf("caller deadline err=%v fetches=%d", err, fetches)
+	}
+	fetchErr = nil
+	if sig, _, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/cancel"); err != nil || sig != validSig || fetches != 7 {
+		t.Fatalf("after cancel sig=%q err=%v fetches=%d", sig, err, fetches)
+	}
+}
+
+func TestStatsigSignerServesStaleDuringFailureCooldown(t *testing.T) {
+	now := time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC)
+	raw := make([]byte, 70)
+	raw[0] = 3
+	staleSig := base64.RawStdEncoding.EncodeToString(raw)
+	var fetches int
+	signer := newStatsigSigner()
+	signer.now = func() time.Time { return now }
+	signer.fetchMeta = func(context.Context, string, string, *infraegress.Lease) (string, error) {
+		fetches++
+		return "", errStatsigMetaMissing
+	}
+	key, _, err := statsigSignatureKey("https://grok.com", "https://signer.example/sign", http.MethodPost, "https://grok.com/rest/test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer.store(key, staleSig, now.Add(-time.Minute), now)
+
+	// Expired entry triggers 1 refresh attempt, falls back to stale, and records cooldown.
+	sig, source, err := signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil || sig != staleSig || source != "stale" || fetches != 1 {
+		t.Fatalf("first stale sig=%q source=%q err=%v fetches=%d", sig, source, err, fetches)
+	}
+	// Within cooldown, stale value is still served without re-fetching or warning spam.
+	now = now.Add(2 * time.Second)
+	sig, source, err = signer.Sign(context.Background(), "https://grok.com", "https://signer.example/sign", "tok", nil, http.MethodPost, "https://grok.com/rest/test")
+	if err != nil || sig != staleSig || source != "stale_cooldown" || fetches != 1 {
+		t.Fatalf("cooldown stale sig=%q source=%q err=%v fetches=%d", sig, source, err, fetches)
+	}
+}

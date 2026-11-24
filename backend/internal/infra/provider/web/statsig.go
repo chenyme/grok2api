@@ -23,18 +23,49 @@ import (
 )
 
 const (
-	defaultStatsigSignerURL = "https://grok.wodf.de/sign"
-	statsigCacheTTL         = time.Hour
-	statsigCacheMaxEntries  = 4096
-	statsigMetaBodyLimit    = 4 << 20
-	statsigResponseLimit    = 4 << 10
+	defaultStatsigSignerURL   = "https://grok.wodf.de/sign"
+	statsigCacheTTL           = time.Hour
+	statsigCacheMaxEntries    = 4096
+	statsigMetaBodyLimit      = 4 << 20
+	statsigResponseLimit      = 4 << 10
+	statsigFailureBackoffBase = 5 * time.Second
+	statsigFailureBackoffMax  = 2 * time.Minute
 )
 
-var errStatsigMetaMissing = errors.New("Grok index 缺少 grok-site-verification")
+var (
+	errStatsigMetaMissing = errors.New("Grok index 缺少 grok-site-verification")
+	errStatsigCooldown    = errors.New("Statsig 刷新退避中")
+)
+
+type statsigCooldownError struct {
+	err        error
+	retryAfter time.Duration
+}
+
+func (e *statsigCooldownError) Error() string {
+	wait := max(e.retryAfter.Round(time.Second), time.Second)
+	if e.err != nil {
+		return fmt.Sprintf("Statsig 刷新退避中（%s 后重试）: %v", wait, e.err)
+	}
+	return fmt.Sprintf("Statsig 刷新退避中（%s 后重试）", wait)
+}
+
+func (e *statsigCooldownError) Unwrap() []error {
+	if e.err == nil {
+		return []error{errStatsigCooldown}
+	}
+	return []error{errStatsigCooldown, e.err}
+}
 
 type statsigCacheEntry struct {
 	value     string
 	expiresAt time.Time
+}
+
+type statsigFailureState struct {
+	count      int
+	retryAfter time.Time
+	lastErr    error
 }
 
 type statsigSignResult struct {
@@ -54,6 +85,7 @@ type statsigSigner struct {
 	now              func() time.Time
 	mu               sync.Mutex
 	entries          map[string]statsigCacheEntry
+	failures         map[string]statsigFailureState
 	refreshes        singleflight.Group
 }
 
@@ -67,6 +99,7 @@ func newStatsigSigner() *statsigSigner {
 		validateEndpoint: validateStatsigSignerEndpoint,
 		now:              time.Now,
 		entries:          make(map[string]statsigCacheEntry),
+		failures:         make(map[string]statsigFailureState),
 	}
 }
 
@@ -75,22 +108,39 @@ func (s *statsigSigner) Sign(ctx context.Context, baseURL, signerURL, token stri
 	if err != nil {
 		return "", "", err
 	}
-	if value, ok := s.cached(key, s.now().UTC()); ok {
+	now := s.now().UTC()
+	if value, ok := s.cached(key, now); ok {
 		return value, "cache", nil
+	}
+	if cooldownErr := s.failureCooldown(key, now); cooldownErr != nil {
+		if stale, ok := s.stale(key); ok {
+			return stale, "stale_cooldown", nil
+		}
+		return "", "", cooldownErr
 	}
 	value, err, _ := s.refreshes.Do(key, func() (any, error) {
 		now := s.now().UTC()
 		if cached, ok := s.cached(key, now); ok {
 			return statsigSignResult{value: cached, source: "cache"}, nil
 		}
+		if cooldownErr := s.failureCooldown(key, now); cooldownErr != nil {
+			if stale, ok := s.stale(key); ok {
+				return statsigSignResult{value: stale, source: "stale_cooldown"}, nil
+			}
+			return statsigSignResult{}, cooldownErr
+		}
 		fresh, refreshErr := s.freshSignature(ctx, baseURL, signerURL, token, lease, method, path)
 		if refreshErr != nil {
+			if ctx.Err() == nil && !errors.Is(refreshErr, context.Canceled) {
+				s.recordFailure(key, refreshErr, s.now().UTC())
+			}
 			if stale, ok := s.stale(key); ok {
 				return statsigSignResult{value: stale, source: "stale"}, nil
 			}
 			return statsigSignResult{}, refreshErr
 		}
-		s.store(key, fresh, now.Add(statsigCacheTTL), now)
+		storedAt := s.now().UTC()
+		s.store(key, fresh, storedAt.Add(statsigCacheTTL), storedAt)
 		return statsigSignResult{value: fresh, source: "refresh"}, nil
 	})
 	if err != nil {
@@ -166,13 +216,59 @@ func (s *statsigSigner) Invalidate(baseURL, signerURL, method, target string) {
 	}
 	s.mu.Lock()
 	delete(s.entries, key)
+	delete(s.failures, key)
 	s.mu.Unlock()
 }
 
 func (s *statsigSigner) Clear() {
 	s.mu.Lock()
 	clear(s.entries)
+	clear(s.failures)
 	s.mu.Unlock()
+}
+
+func (s *statsigSigner) failureCooldown(key string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state, ok := s.failures[key]
+	if !ok || !now.Before(state.retryAfter) {
+		return nil
+	}
+	return &statsigCooldownError{err: state.lastErr, retryAfter: state.retryAfter.Sub(now)}
+}
+
+func (s *statsigSigner) recordFailure(key string, err error, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failures == nil {
+		s.failures = make(map[string]statsigFailureState)
+	}
+	state := s.failures[key]
+	state.count++
+	shift := min(state.count-1, 5)
+	delay := statsigFailureBackoffBase << shift
+	if delay > statsigFailureBackoffMax {
+		delay = statsigFailureBackoffMax
+	}
+	state.retryAfter = now.Add(delay)
+	state.lastErr = err
+	if _, exists := s.failures[key]; !exists && len(s.failures) >= statsigCacheMaxEntries {
+		oldestKey := ""
+		var oldestRetry time.Time
+		for existingKey, existing := range s.failures {
+			if !now.Before(existing.retryAfter) {
+				delete(s.failures, existingKey)
+				continue
+			}
+			if oldestKey == "" || existing.retryAfter.Before(oldestRetry) {
+				oldestKey, oldestRetry = existingKey, existing.retryAfter
+			}
+		}
+		if len(s.failures) >= statsigCacheMaxEntries && oldestKey != "" {
+			delete(s.failures, oldestKey)
+		}
+	}
+	s.failures[key] = state
 }
 
 func (s *statsigSigner) cached(key string, now time.Time) (string, bool) {
@@ -195,6 +291,10 @@ func (s *statsigSigner) stale(key string) (string, bool) {
 func (s *statsigSigner) store(key, value string, expiresAt, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = make(map[string]statsigCacheEntry)
+	}
+	delete(s.failures, key)
 	for existingKey, entry := range s.entries {
 		if !now.Before(entry.expiresAt) {
 			delete(s.entries, existingKey)
@@ -440,7 +540,13 @@ func (a *Adapter) applySignedStatsig(ctx context.Context, request *http.Request,
 			a.log().Info("web_statsig_refreshed", "method", request.Method, "path", request.URL.EscapedPath())
 		} else if source == "stale" {
 			a.log().Warn("web_statsig_refresh_failed_using_stale", "method", request.Method, "path", request.URL.EscapedPath())
+		} else if source == "stale_cooldown" {
+			a.log().Debug("web_statsig_using_stale_during_cooldown", "method", request.Method, "path", request.URL.EscapedPath())
 		}
+		return
+	}
+	if errors.Is(err, errStatsigCooldown) {
+		a.log().Debug("web_statsig_fetch_suppressed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)
 		return
 	}
 	a.log().Warn("web_statsig_fetch_failed", "method", request.Method, "path", request.URL.EscapedPath(), "error", err)

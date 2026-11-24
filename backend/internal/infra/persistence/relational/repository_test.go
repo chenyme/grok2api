@@ -297,6 +297,58 @@ func TestAccountRepositoryReplacesQuotaGroupWithoutTouchingOtherModes(t *testing
 	}
 }
 
+func TestAccountRepositoryListDueAndRecoveryQuotaWindowsFiltersInactiveAccounts(t *testing.T) {
+	ctx := context.Background()
+	repo := NewAccountRepository(openTestDatabase(t))
+	now := time.Now().UTC().Truncate(time.Second)
+	past := now.Add(-time.Minute)
+	future := now.Add(time.Hour)
+
+	create := func(name string, enabled bool, status account.AuthStatus, resetAt time.Time) account.Credential {
+		value, _, err := repo.UpsertByIdentity(ctx, account.Credential{
+			Provider: account.ProviderWeb, AuthType: account.AuthTypeSSO, Name: name, SourceKey: name,
+			EncryptedAccessToken: testEncryptedToken, AuthStatus: account.AuthStatusActive,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !enabled || status != account.AuthStatusActive {
+			value.Enabled = enabled
+			value.AuthStatus = status
+			if _, err := repo.Update(ctx, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := repo.SaveQuotaWindows(ctx, value.ID, account.WebTierSuper, now, []account.QuotaWindow{{
+			AccountID: value.ID, Mode: "fast", Remaining: 0, Total: 20, ResetAt: &resetAt, UpdatedAt: now,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+
+	activeDue := create("active-due", true, account.AuthStatusActive, past)
+	activeFuture := create("active-future", true, account.AuthStatusActive, future)
+	_ = create("disabled-due", false, account.AuthStatusActive, past)
+	_ = create("reauth-due", true, account.AuthStatusReauthRequired, past)
+
+	due, err := repo.ListDueQuotaWindows(ctx, now, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 1 || due[0].AccountID != activeDue.ID {
+		t.Fatalf("ListDueQuotaWindows = %#v, want only active due account %d", due, activeDue.ID)
+	}
+
+	recovery, err := repo.ListQuotaRecoveryWindows(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recovery) != 2 || recovery[0].AccountID != activeDue.ID || recovery[1].AccountID != activeFuture.ID {
+		t.Fatalf("ListQuotaRecoveryWindows = %#v, want [%d, %d]", recovery, activeDue.ID, activeFuture.ID)
+	}
+}
+
 func TestAccountRepositorySummarizesOperationalStates(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()

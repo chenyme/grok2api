@@ -2801,7 +2801,14 @@ func (r *AccountRepository) ListDueQuotaWindows(ctx context.Context, now time.Ti
 		limit = 100
 	}
 	var rows []quotaWindowModel
-	if err := r.db.db.WithContext(ctx).Where("remaining = 0 AND reset_at IS NOT NULL AND reset_at <= ?", now).Order("reset_at ASC, account_id ASC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := r.db.db.WithContext(ctx).
+		Model(&quotaWindowModel{}).
+		Select("account_quota_windows.*").
+		Joins("JOIN provider_accounts AS account ON account.id = account_quota_windows.account_id").
+		Where("account.enabled = ? AND account.auth_status = ? AND account_quota_windows.remaining = 0 AND account_quota_windows.reset_at IS NOT NULL AND account_quota_windows.reset_at <= ?", true, account.AuthStatusActive, now).
+		Order("account_quota_windows.reset_at ASC, account_quota_windows.account_id ASC").
+		Limit(limit).
+		Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	values := make([]account.QuotaWindow, 0, len(rows))
@@ -2816,7 +2823,14 @@ func (r *AccountRepository) ListQuotaRecoveryWindows(ctx context.Context, limit 
 		limit = 100000
 	}
 	var rows []quotaWindowModel
-	if err := r.db.db.WithContext(ctx).Where("remaining = 0 AND reset_at IS NOT NULL").Order("reset_at ASC, account_id ASC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := r.db.db.WithContext(ctx).
+		Model(&quotaWindowModel{}).
+		Select("account_quota_windows.*").
+		Joins("JOIN provider_accounts AS account ON account.id = account_quota_windows.account_id").
+		Where("account.enabled = ? AND account.auth_status = ? AND account_quota_windows.remaining = 0 AND account_quota_windows.reset_at IS NOT NULL", true, account.AuthStatusActive).
+		Order("account_quota_windows.reset_at ASC, account_quota_windows.account_id ASC").
+		Limit(limit).
+		Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	values := make([]account.QuotaWindow, 0, len(rows))
