@@ -2,11 +2,13 @@ package console
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,8 +18,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chenyme/grok2api/backend/internal/domain/account"
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
+	infraegress "github.com/chenyme/grok2api/backend/internal/infra/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider/conversation"
+	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 
@@ -737,5 +743,116 @@ func TestParseConsoleUsageStatusBoundsIntegers(t *testing.T) {
 	}
 	if status, err := parseConsoleUsageStatus([]byte(`{"weeklyIncludedUsage":{"budgetCents":"100","usedCents":37.0}}`)); err != nil || status.BudgetCents != 100 || status.UsedCents != 37 {
 		t.Fatalf("string/float cents = %#v, %v", status, err)
+	}
+}
+
+func TestSyncQuotaAndIdentityUseBoundConsoleScopedEgressNode(t *testing.T) {
+	stub := &dashboardStub{
+		t:         t,
+		usageBody: `{"weeklyIncludedUsage":{"budgetCents":100,"usedCents":25}}`,
+	}
+	originServer := httptest.NewServer(stub)
+	defer originServer.Close()
+
+	var proxiedRequests atomic.Int32
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		proxiedRequests.Add(1)
+		if request.Method != http.MethodConnect {
+			stub.ServeHTTP(writer, request)
+			return
+		}
+		upstream, err := net.DialTimeout("tcp", request.Host, 2*time.Second)
+		if err != nil {
+			http.Error(writer, err.Error(), http.StatusBadGateway)
+			return
+		}
+		hijacker, ok := writer.(http.Hijacker)
+		if !ok {
+			_ = upstream.Close()
+			http.Error(writer, "hijack unsupported", http.StatusInternalServerError)
+			return
+		}
+		clientConn, _, err := hijacker.Hijack()
+		if err != nil {
+			_ = upstream.Close()
+			return
+		}
+		_, _ = io.WriteString(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		go func() {
+			defer upstream.Close()
+			defer clientConn.Close()
+			_, _ = io.Copy(upstream, clientConn)
+		}()
+		go func() {
+			defer upstream.Close()
+			defer clientConn.Close()
+			_, _ = io.Copy(clientConn, upstream)
+		}()
+	}))
+	defer proxyServer.Close()
+
+	cipher, err := security.NewCipher(base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedProxy, err := cipher.Encrypt(proxyServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encryptedSSO, err := cipher.Encrypt("test-sso")
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &recordingConsoleEgressRepository{
+		node: egressdomain.Node{
+			ID:                136957,
+			Name:              "grok-console-resin-10",
+			Scope:             egressdomain.ScopeConsole,
+			Enabled:           true,
+			ProxyPool:         true,
+			Health:            1,
+			EncryptedProxyURL: encryptedProxy,
+		},
+	}
+	adapter := NewAdapter(Config{
+		BaseURL:        originServer.URL,
+		SessionBaseURL: originServer.URL,
+		TimeoutSeconds: 5,
+	}, infraegress.NewManager(repo, cipher), cipher, nil)
+	credential := account.Credential{
+		ID:                   25963,
+		Provider:             account.ProviderConsole,
+		AuthType:             account.AuthTypeSSO,
+		EncryptedAccessToken: encryptedSSO,
+		EgressNodeID:         136957,
+	}
+
+	snapshot, err := adapter.SyncQuota(context.Background(), credential)
+	if err != nil {
+		t.Fatalf("SyncQuota with bound grok_console node failed: %v", err)
+	}
+	if len(snapshot.Windows) != 3 || snapshot.Windows[0].Remaining != 75 {
+		t.Fatalf("snapshot = %#v", snapshot.Windows)
+	}
+	identity, err := adapter.SyncAccountIdentity(context.Background(), credential)
+	if err != nil {
+		t.Fatalf("SyncAccountIdentity with bound grok_console node failed: %v", err)
+	}
+	if identity.UserID != "u1" {
+		t.Fatalf("identity = %#v", identity)
+	}
+	if proxiedRequests.Load() == 0 {
+		t.Fatal("expected requests to traverse bound grok_console proxy node")
+	}
+
+	// An account bound to an incompatible scope (e.g. grok_build) must fail
+	// with ErrBoundNodeUnavailable so background quota queues drop it instead
+	// of retrying forever.
+	repo.mu.Lock()
+	repo.node.Scope = egressdomain.ScopeBuild
+	repo.mu.Unlock()
+	_, err = adapter.SyncQuota(context.Background(), credential)
+	if !errors.Is(err, egressdomain.ErrBoundNodeUnavailable) {
+		t.Fatalf("incompatible scope err = %v, want ErrBoundNodeUnavailable", err)
 	}
 }

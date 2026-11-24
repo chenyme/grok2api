@@ -827,16 +827,16 @@ func (m *Manager) acquire(ctx context.Context, scope domain.Scope, affinity stri
 				if !errors.Is(err, repository.ErrNotFound) {
 					return nil, true, primaryErr
 				}
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, primaryErr)
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, wrapBoundNodeUnavailable(primaryErr))
 			}
 			if !domain.SupportsScope(selected.Scope, scope) {
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope))
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, wrapBoundNodeUnavailable(fmt.Errorf("绑定出口节点 %d 与 %s 作用域不兼容", boundNodeID, scope)))
 			}
 			if !selected.Enabled && !qualityProbe {
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID))
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, wrapBoundNodeUnavailable(fmt.Errorf("绑定出口节点 %d 已禁用", boundNodeID)))
 			}
 			if strings.TrimSpace(selected.EncryptedProxyURL) == "" {
-				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID))
+				return m.acquireUnavailableFallback(ctx, scope, affinity, allowDirect, encryptedCredentialCookies, managedClearance, wrapBoundNodeUnavailable(fmt.Errorf("绑定出口节点 %d 未配置代理地址", boundNodeID)))
 			}
 			proxyPool := m.isProxyPoolNode(selected)
 			if !qualityProbe && !proxyPool && selected.CooldownUntil != nil && now.Before(*selected.CooldownUntil) {
@@ -1061,6 +1061,23 @@ func (m *Manager) fixedFallbackNode(ctx context.Context, scope domain.Scope, nod
 		return domain.Node{}, fmt.Errorf("固定回退节点 %d 使用账号代理模板", nodeID)
 	}
 	return selected, nil
+}
+
+type boundNodeUnavailableError struct {
+	err error
+}
+
+func (e boundNodeUnavailableError) Error() string { return e.err.Error() }
+
+func (e boundNodeUnavailableError) Unwrap() []error {
+	return []error{e.err, domain.ErrBoundNodeUnavailable}
+}
+
+func wrapBoundNodeUnavailable(err error) error {
+	if err == nil {
+		return nil
+	}
+	return boundNodeUnavailableError{err: err}
 }
 
 func fallbackError(primaryErr, fallbackErr error) error {

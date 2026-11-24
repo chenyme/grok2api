@@ -19,6 +19,7 @@ import (
 
 	egressapp "github.com/chenyme/grok2api/backend/internal/application/egress"
 	accountdomain "github.com/chenyme/grok2api/backend/internal/domain/account"
+	egressdomain "github.com/chenyme/grok2api/backend/internal/domain/egress"
 	"github.com/chenyme/grok2api/backend/internal/infra/provider"
 	"github.com/chenyme/grok2api/backend/internal/infra/security"
 	"github.com/chenyme/grok2api/backend/internal/pkg/batch"
@@ -3618,6 +3619,16 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 		}
 		cancel()
 		if refreshErr != nil || !acquired {
+			if refreshErr != nil && isPermanentQuotaRefreshError(refreshErr) {
+				if errors.Is(refreshErr, ErrNotFound) {
+					s.logger.Debug("quota_refresh_dropped", "account_id", request.accountID, "mode", refreshMode, "error", refreshErr)
+				} else {
+					s.logger.Warn("quota_refresh_failed", "account_id", request.accountID, "mode", refreshMode, "error", refreshErr)
+				}
+				s.dropQuotaRefresh(parent, request, localGeneration, sharedGeneration)
+				perfmetrics.Default.Add("quota_refresh_events", perfmetrics.Labels{Subsystem: "quota", Stage: "refresh", Outcome: "dropped"}, 1)
+				return
+			}
 			if errors.Is(refreshErr, provider.ErrEgressBlocked) {
 				// The adapter already logged the egress block once; every
 				// account behind it waits for the shared cool-down.
@@ -3694,6 +3705,36 @@ func (s *Service) runQuotaRefresh(parent context.Context, request quotaRefreshRe
 			return
 		}
 		s.quotaRefreshMu.Unlock()
+	}
+}
+
+func isPermanentQuotaRefreshError(err error) bool {
+	return errors.Is(err, ErrNotFound) ||
+		errors.Is(err, provider.ErrUnauthorized) ||
+		errors.Is(err, egressdomain.ErrBoundNodeUnavailable)
+}
+
+func (s *Service) dropQuotaRefresh(parent context.Context, request quotaRefreshRequest, localGeneration, sharedGeneration uint64) {
+	if s.quotaRefreshState != nil && sharedGeneration > 0 {
+		clearCtx, clearCancel := context.WithTimeout(context.WithoutCancel(parent), 3*time.Second)
+		_, _ = s.quotaRefreshState.ClearQuotaRefreshDirty(clearCtx, request.accountID, request.mode, sharedGeneration)
+		clearCancel()
+	}
+	shouldWake := false
+	s.quotaRefreshMu.Lock()
+	if state := s.quotaRefreshes[request.key]; state != nil {
+		if state.generation == localGeneration {
+			delete(s.quotaRefreshes, request.key)
+		} else {
+			state.running = false
+			state.pending = true
+			state.nextAttemptAt = s.now().UTC()
+			shouldWake = true
+		}
+	}
+	s.quotaRefreshMu.Unlock()
+	if shouldWake {
+		s.wakeQuotaRefreshRecovery()
 	}
 }
 
@@ -4045,7 +4086,7 @@ func (s *Service) syncConsoleQuotaAccounts(ctx context.Context, operation string
 			// queuing the same account locally only creates a trailing duplicate probe.
 			return nil
 		}
-		if refreshErr != nil && workCtx.Err() == nil {
+		if refreshErr != nil && workCtx.Err() == nil && !isPermanentQuotaRefreshError(refreshErr) && !errors.Is(refreshErr, provider.ErrEgressBlocked) {
 			s.QueueQuotaRefresh(id, "console")
 		}
 		return refreshErr

@@ -1,6 +1,14 @@
 package egress
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrBoundNodeUnavailable marks a non-self-healing bound egress node
+// configuration failure (missing node, incompatible scope, disabled node,
+// or empty proxy URL) when no fallback can satisfy the request.
+var ErrBoundNodeUnavailable = errors.New("bound egress node unavailable")
 
 type Mode string
 
